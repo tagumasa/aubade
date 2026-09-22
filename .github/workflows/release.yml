@@ -1,0 +1,218 @@
+name: Release
+
+# A tag push builds every platform and files a DRAFT release with the
+# archives and checksums attached; publishing stays a manual step.
+# workflow_dispatch exists so the pipeline can be exercised on a branch
+# without cutting a tag (the release job itself only runs on tags).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-amd64
+          - os: ubuntu-26.04-arm
+            platform: linux-arm64
+          - os: macos-latest
+            platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-amd64
+          - os: windows-latest
+            platform: windows-amd64
+    steps:
+      # lexbor (third_party/lexbor) is a git submodule the build compiles
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # The nightly distribution replaces assets under the same date key
+      # (verified: the listed sha1 no longer matches the served object),
+      # so consecutive runs can silently test different compilers — one
+      # run linked a bare `libSystem.dylib` operand that no shipped core
+      # source contains. The dev-YYYY-MM GitHub releases are frozen
+      # assets; dev-2026-09 is exactly dev-2026-09-nightly:a2fb372, the
+      # build this repository is developed against. Re-pin deliberately
+      # when bumping the toolchain.
+      - name: Set up Odin (dev-2026-09)
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-09
+
+      # Hard gate: anything other than the pinned toolchain fails the job
+      # here (the setup action's failure modes silently fall back to a
+      # git-based build of a different revision — a fallback must be
+      # visible, not discovered from link errors three steps later).
+      - name: Assert Odin toolchain (dev-2026-09-nightly:a2fb372)
+        shell: bash
+        run: |
+          odin version
+          odin version | grep -q 'dev-2026-09-nightly:a2fb372'
+
+      # Odin invokes `clang` from PATH for every link; which clang answers
+      # on darwin is environment state we do not control (the setup action
+      # prepends Homebrew LLVM directories to PATH). Odin honors
+      # ODIN_CLANG_PATH; pin it to the Apple toolchain's own clang and log
+      # the toolchain facts for diagnosis.
+      - name: Pin Odin's linker to the Apple toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "clang on PATH: $(command -v clang)"
+          clang --version
+          echo "xcode-select: $(xcode-select -p)"
+          echo "sdk: $(xcrun --show-sdk-path)"
+          echo "ODIN_CLANG_PATH=$(xcrun --find clang)" >> "$GITHUB_ENV"
+
+      # `just` is not preinstalled on any GitHub-hosted runner image
+      # (the ubuntu/macos/windows image manifests all omit it).
+      - name: Set up just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # vendor:curl links the system libcurl on Linux (its import block
+      # also names the mbedTLS libraries); Windows needs a provided
+      # libcurl.lib in the toolchain's vendor/curl/lib directory.
+      - name: Install libcurl (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libmbedtls-dev
+
+      - name: Provide libcurl (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # vcpkg's curl port has no [schannel] feature any more —
+          # Schannel is its default TLS backend on Windows.
+          vcpkg install curl:x64-windows-static-md
+          $odinDir = Split-Path (Split-Path (Get-Command odin).Source)
+          New-Item -ItemType Directory -Force "$odinDir\vendor\curl\lib" | Out-Null
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md\lib\libcurl.lib" "$odinDir\vendor\curl\lib\libcurl.lib"
+
+      # Same key scheme as CI, so a tag run restores whatever the default
+      # branch warmed. Tag runs can only restore caches from their own ref
+      # or the default branch, so until the Odin tree is the default
+      # branch every tag run builds the C artifacts cold (~35-40 min per
+      # leg, legs run in parallel). The explicit save (instead of plain
+      # actions/cache, which only saves on job success) also warms re-runs
+      # of a failed tag build, without ever caching a partial lib/ — a
+      # failed build skips the save step by default.
+      - name: Restore C artifacts cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lib
+          key: lib-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/grammars.odin', 'tools/build/build_impl.odin', 'tools/build/io.odin') }}
+
+      - name: Build C artifacts (tree-sitter, SQLite, PCRE2, lexbor, grammars)
+        run: |
+          odin run tools/build -- install
+          odin run tools/build -- install-parsers
+
+      - name: Save C artifacts cache
+        uses: actions/cache/save@v4
+        with:
+          path: lib
+          key: lib-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/grammars.odin', 'tools/build/build_impl.odin', 'tools/build/io.odin') }}
+
+      - name: Build binary
+        run: just build-binary
+
+      # The binary must report the tagged version (on a workflow_dispatch
+      # run the version comes from the source constant instead). Exporting
+      # VERSION here also feeds the packaging steps below.
+      - name: Smoke test (unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(sed -n 's/^AUBADE_VERSION :: "\(.*\)"$/\1/p' src/version/version.odin)
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          out=$(./aubade --version)
+          echo "$out"
+          echo "$out" | grep -qF "$VERSION" || { echo "::error::version output is missing $VERSION"; exit 1; }
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $VERSION = $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            $VERSION = (Select-String -Path src/version/version.odin -Pattern '^AUBADE_VERSION :: "(.+)"$').Matches[0].Groups[1].Value
+          }
+          Add-Content $env:GITHUB_ENV "VERSION=$VERSION"
+          $out = (& .\aubade.exe --version) -join "`n"
+          $out
+          if (-not ($out.Contains($VERSION))) { Write-Error "version output is missing $VERSION"; exit 1 }
+
+      # Smoke the packaged archive, not just the built tree (odin-lang's
+      # own nightly pipeline does the same): tar preserves the exec bit a
+      # zip would drop, and the run proves the distributed file works.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar -czf "aubade-${VERSION}-${{ matrix.platform }}.tar.gz" aubade
+          mkdir smoke && tar -xzf "aubade-${VERSION}-${{ matrix.platform }}.tar.gz" -C smoke
+          ./smoke/aubade --version
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path aubade.exe -DestinationPath "aubade-${env:VERSION}-${{ matrix.platform }}.zip"
+          Expand-Archive "aubade-${env:VERSION}-${{ matrix.platform }}.zip" -DestinationPath smoke
+          & .\smoke\aubade.exe --version
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: aubade-${{ matrix.platform }}
+          path: aubade-*
+
+  release:
+    name: Create draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          files=(dist/*)
+          gh release create "$TAG" --draft --title "aubade $VERSION" --generate-notes "${files[@]}" \
+            || gh release upload "$TAG" dist/* --clobber

@@ -1,0 +1,2 @@
+SQLite amalgamation 3.53.0 (2026, sqlite.org, Public Domain)
+Downloaded from https://sqlite.org/2026/sqlite-amalgamation-3530400.zip

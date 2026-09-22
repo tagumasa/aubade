@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "aubade hook activate --client claudecode",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tracker-context.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "aubade hook remind --client claudecode",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "aubade hook auto-approve --client claudecode",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "aubade hook cleanup --client claudecode",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

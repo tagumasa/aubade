@@ -1,0 +1,6 @@
+# The vendored C trees are hashed byte-for-byte by
+# third_party/CHECKSUMS.txt; any EOL conversion on checkout would break
+# the registry across operating systems. (third_party/lexbor is a
+# submodule — attributes cannot apply inside it, and its checkout keeps
+# its own bytes.)
+third_party/** -text

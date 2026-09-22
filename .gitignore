@@ -1,0 +1,37 @@
+tmp/
+_test/
+
+# AI development tool directories
+.aubade/
+.claude/
+.codex/
+.opencode/
+.sisyphus/
+.zcode/
+/aubade
+/aubade-*
+/cache
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+*.log
+
+# Core dumps (a crashed test or daemon drops them at the root)
+core
+core.*
+vendor/
+/reference
+
+# Odin build artifacts (C libraries and grammar parsers)
+/lib/
+/tools/build/cache/
+
+# Odin build/test binaries (odin build/test drops them in the repo root)
+/*.bin
+/build
