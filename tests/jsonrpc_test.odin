@@ -8,6 +8,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 import "core:sync"
+import "core:sync/chan"
 import "core:testing"
 import "core:thread"
 import "core:time"
@@ -190,14 +191,36 @@ frame_oversize_rejected :: proc(t: ^testing.T) {
 @(test)
 frame_header_without_separator_capped :: proc(t: ^testing.T) {
 	// A peer streaming header bytes without ever sending the blank-line
-	// separator must hit the frame cap, not grow the reader buffer unbounded.
+	// separator must hit the header-block bound (which never exceeds the
+	// frame cap, so a small-cap reader keeps its tighter meaning), and the
+	// overrun is malformed framing, not an over-long body.
 	junk := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	src := Source{src = transmute([]u8)junk, max_per_call = 1}
 	r: jsonrpc.Reader
 	jsonrpc.reader_init(&r, source_read, &src, 16)
 	defer jsonrpc.reader_destroy(&r)
 	_, err := jsonrpc.read_frame(&r, context.temp_allocator)
-	testing.expect_value(t, err, jsonrpc.Read_Err.Too_Large)
+	testing.expect_value(t, err, jsonrpc.Read_Err.Framing)
+}
+
+@(test)
+frame_header_block_cap_bounded_below_frame_cap :: proc(t: ^testing.T) {
+	// The header wait is bounded by the header-block cap, not the frame
+	// cap: on a full-size reader (64 MiB class) a separator-less stream is
+	// cut after a few KiB — the 16 KiB source ends in .Framing rather than
+	// .Eof, and the buffer never grows toward the frame cap.
+	junk := make([dynamic]u8, 16 * 1024, context.allocator)
+	for i := 0; i < len(junk); i += 1 {
+		junk[i] = 'A'
+	}
+	defer delete(junk)
+	src := Source{src = junk[:], max_per_call = 512}
+	r: jsonrpc.Reader
+	jsonrpc.reader_init(&r, source_read, &src, jsonrpc.DEFAULT_MAX_FRAME)
+	defer jsonrpc.reader_destroy(&r)
+	_, err := jsonrpc.read_frame(&r, context.temp_allocator)
+	testing.expect_value(t, err, jsonrpc.Read_Err.Framing)
+	testing.expect(t, len(r.buf.data) <= 2 * jsonrpc.HEADER_MAX_BYTES, "buffer stays header-sized")
 }
 
 // A read_fn that returns zero bytes with no error is a contract violation
@@ -843,6 +866,151 @@ jsonrpc_request_queue_stop_drains_buffered_entries :: proc(t: ^testing.T) {
 	// entry's arena is freed on its path out — join covers both orders.
 	jsonrpc.queue_stop(c)
 	testing.expect(t, !jsonrpc.queue_try_post(c, &env), "post after stop refuses")
+}
+
+// The full-queue harness: one handler parked on the gate holds the worker
+// mid-dispatch, so the posts behind it exercise the chan's capacity
+// deterministically. `entered` (buffered 1) signals handler entry without
+// blocking; `release` (unbuffered) parks each handler until the test
+// hands it a token.
+Queue_Full_Gate :: struct {
+	entered: chan.Chan(bool),
+	release: chan.Chan(bool),
+}
+
+queue_full_block_handler :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: mem.Allocator) -> (jsonrpc.Reply, jsonrpc.Action) {
+	g := cast(^Queue_Full_Gate)conn.host
+	_ = chan.try_send(g.entered, true)
+	_, _ = chan.recv(g.release)
+	// Defer, not Respond: the test never reads replies, so nothing is
+	// written to the pipe.
+	return {}, .Defer
+}
+
+@(test)
+jsonrpc_request_queue_full_rejects_without_cloning :: proc(t: ^testing.T) {
+	// The full-queue refusal is the flood path, and it must cost O(1): no
+	// arena build, no envelope clone. One parked handler holds the first
+	// entry mid-dispatch; the next posts fill the chan to capacity; the
+	// overflow post must refuse while the queue is provably full.
+	entered_raw, eerr := chan.create_buffered(chan.Chan(bool), 1, context.allocator)
+	release_raw, rerr := chan.create_unbuffered(chan.Chan(bool), context.allocator)
+	if eerr != nil || rerr != nil {
+		return
+	}
+	gate := new(Queue_Full_Gate, context.allocator)
+	gate^ = {entered = entered_raw, release = release_raw}
+	defer free(gate, context.allocator)
+	defer chan.destroy(entered_raw)
+	defer chan.destroy(release_raw)
+
+	p: Pipe
+	pipe_init(&p)
+	defer delete(p.buf)
+
+	c := new(jsonrpc.Conn, context.allocator)
+	defer free(c, context.allocator)
+	r: jsonrpc.Reader
+	jsonrpc.reader_init(&r, pipe_read, &p, 1024)
+	w: jsonrpc.Writer
+	jsonrpc.writer_init(&w, pipe_write, &p)
+	jsonrpc.conn_init(c, r, w, context.allocator)
+	c.host = gate
+	jsonrpc.conn_register(c, "svc.test/block", queue_full_block_handler)
+
+	testing.expect(t, jsonrpc.conn_start_request_queue(c, 2), "queue starts")
+
+	env: jsonrpc.Envelope
+	env.kind = .Request
+	env.method = "svc.test/block"
+	env.id = 1
+	env.id_set = true
+
+	testing.expect(t, jsonrpc.queue_try_post(c, &env), "first post reaches the worker")
+	_, entered := chan.recv(gate.entered)
+	testing.expect(t, entered, "worker took the first entry")
+	// The worker holds one entry mid-dispatch; the chan fits exactly two
+	// more before the overflow post must refuse.
+	testing.expect(t, jsonrpc.queue_try_post(c, &env), "second post fills the chan")
+	testing.expect(t, jsonrpc.queue_try_post(c, &env), "third post fills the chan")
+	testing.expect(t, !jsonrpc.queue_try_post(c, &env), "overflow post refuses without cloning")
+
+	// Release every parked handler (three entries crossed to the worker
+	// side), then join through the normal stop path. conn_destroy releases
+	// the handler-table key clones conn_register made.
+	for _ in 0..<3 {
+		chan.send(gate.release, true)
+	}
+	jsonrpc.queue_stop(c)
+	jsonrpc.conn_destroy(c)
+}
+
+@(test)
+jsonrpc_request_queue_thread_handle_rides_owner_allocator :: proc(t: ^testing.T) {
+	// The worker's ^Thread handle must be allocated from the queue's own
+	// allocator — queue_stop frees it through that side — whatever the
+	// installing thread's ambient allocator happens to be. The tracking
+	// allocator as the owner is the oracle: everything the queue allocated
+	// (chan, struct, entry arenas, thread handle) is gone after the stop,
+	// so the allocation map must be empty; a handle taken from the ambient
+	// would instead be freed cross-allocator.
+	ta: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&ta, context.allocator)
+	track := mem.tracking_allocator(&ta)
+
+	p: Pipe
+	pipe_init(&p)
+	defer delete(p.buf)
+
+	c := new(jsonrpc.Conn, track)
+	r: jsonrpc.Reader
+	jsonrpc.reader_init(&r, pipe_read, &p, 1024, track)
+	w: jsonrpc.Writer
+	jsonrpc.writer_init(&w, pipe_write, &p)
+	jsonrpc.conn_init(c, r, w, track)
+
+	testing.expect(t, jsonrpc.conn_start_request_queue(c, 4, track), "queue starts")
+	env: jsonrpc.Envelope
+	env.kind = .Request
+	env.method = "svc.test/nothing"
+	testing.expect(t, jsonrpc.queue_try_post(c, &env), "post reaches the live queue")
+	jsonrpc.queue_stop(c)
+	jsonrpc.conn_destroy(c)
+	free(c, track)
+
+	testing.expect_value(t, len(ta.allocation_map), 0)
+	mem.tracking_allocator_destroy(&ta)
+}
+
+@(test)
+jsonrpc_outbound_thread_handle_rides_owner_allocator :: proc(t: ^testing.T) {
+	// Same contract as the request queue's worker: the writer's ^Thread
+	// handle must come from the conn's allocator (outbound_join frees it
+	// through that side), whatever the installing ambient is. The tracking
+	// allocator as the owner is the oracle — an empty allocation map after
+	// the destroy.
+	ta: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&ta, context.allocator)
+	track := mem.tracking_allocator(&ta)
+
+	p: Pipe
+	pipe_init(&p)
+	defer delete(p.buf)
+
+	c := new(jsonrpc.Conn, track)
+	r: jsonrpc.Reader
+	jsonrpc.reader_init(&r, pipe_read, &p, 1024, track)
+	w: jsonrpc.Writer
+	jsonrpc.writer_init(&w, pipe_write, &p)
+	jsonrpc.conn_init(c, r, w, track)
+
+	testing.expect(t, jsonrpc.conn_start_outbound(c, 4, 4096), "writer starts")
+	jsonrpc.conn_close(c)
+	jsonrpc.conn_destroy(c) // joins the writer, frees queue+outbound+handle through `track`
+	free(c, track)
+
+	testing.expect_value(t, len(ta.allocation_map), 0)
+	mem.tracking_allocator_destroy(&ta)
 }
 
 @(test)

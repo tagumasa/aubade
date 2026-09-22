@@ -58,9 +58,17 @@ conn_start_outbound :: proc(c: ^Conn, frames_cap: int, bytes_cap: int) -> bool {
 		conn       = c,
 	}
 	out.queue = make([dynamic]string, 0, frames, c.allocator)
+	// The core allocates the ^Thread handle from the installing thread's
+	// ambient context.allocator while outbound_join frees it through
+	// out.allocator: pin the ambient for the spawn so both sides name the
+	// same owner — an installer running on an arena or temp allocator
+	// would otherwise hand teardown an unfreeable handle.
+	thread_alloc := context.allocator
+	context.allocator = out.allocator
 	out.thread = thread.create_and_start_with_data(
 		out, outbound_thread_main, self_cleanup = false, name = "jsonrpc-outbound",
 	)
+	context.allocator = thread_alloc
 	if out.thread == nil {
 		delete(out.queue)
 		free(out, c.allocator)
