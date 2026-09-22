@@ -322,9 +322,17 @@ mcp_initialize_negotiation :: proc(t: ^testing.T) {
 	testing.expect_value(t, cerr, jsonrpc.Call_Err.None)
 	testing.expect_value(t, obj_str(result, "protocolVersion"), "2025-06-18")
 
+	// 2025-03-26 is a recognized revision and is echoed verbatim — those
+	// clients must not be forced onto the latest revision.
 	params2 := jsonutil.json_object(1, context.temp_allocator)
-	jsonutil.obj_set(&params2, "protocolVersion", jsonutil.json_string("1999-01-01"))
+	jsonutil.obj_set(&params2, "protocolVersion", jsonutil.json_string("2025-03-26"))
 	result, _, _, cerr = mcp_do_call(h, "initialize", obj_value(params2))
+	testing.expect_value(t, cerr, jsonrpc.Call_Err.None)
+	testing.expect_value(t, obj_str(result, "protocolVersion"), "2025-03-26")
+
+	params3 := jsonutil.json_object(1, context.temp_allocator)
+	jsonutil.obj_set(&params3, "protocolVersion", jsonutil.json_string("1999-01-01"))
+	result, _, _, cerr = mcp_do_call(h, "initialize", obj_value(params3))
 	testing.expect_value(t, cerr, jsonrpc.Call_Err.None)
 	testing.expect_value(t, obj_str(result, "protocolVersion"), mcp.PROTOCOL_LATEST)
 

@@ -2,10 +2,8 @@
 // incoming requests inline on the reader thread; a connection with a
 // started request queue transfers them instead into a bounded chan drained
 // by ONE worker. A full queue is answered immediately with RequestFailed
-// (-32803): the reader never blocks on handlers and no thread is ever
-// created per request. When the queue fills, the reader stops reading
-// until the worker drains — backpressure propagates through the transport
-// buffer, the bounded-queue rule.
+// (-32803): the reader never blocks on handlers, no thread is ever created
+// per request, and a flooding peer is shed at O(1) per rejected frame.
 package jsonrpc
 
 import "core:fmt"
@@ -51,7 +49,15 @@ conn_start_request_queue :: proc(c: ^Conn, cap: int = REQUEST_QUEUE_CAP, a := co
 		recv  = chan.as_recv(raw),
 		allocator = a,
 	}
+	// The core allocates the ^Thread handle from the installing thread's
+	// ambient context.allocator while queue_stop frees it through
+	// q.allocator: pin the ambient for the spawn so both sides name the
+	// same owner — an installer running on an arena or temp allocator
+	// would otherwise hand teardown an unfreeable handle.
+	thread_alloc := context.allocator
+	context.allocator = a
 	q.worker = thread.create_and_start_with_data(q, queue_worker_entry, self_cleanup = false, name = "aubade-req-queue")
+	context.allocator = thread_alloc
 	if q.worker == nil {
 		chan.destroy(q.recv)
 		free(q, a)
@@ -133,6 +139,15 @@ queue_try_post :: proc(c: ^Conn, env: ^Envelope) -> bool {
 	sync.mutex_lock(&c.queue_mu)
 	q := c.request_queue
 	if q == nil {
+		sync.mutex_unlock(&c.queue_mu)
+		return false
+	}
+	// Fast reject before any allocation: every poster holds this mutex and
+	// the worker only drains, so the checked length can only have shrunk —
+	// len >= cap means try_send would refuse anyway, and a flooding peer
+	// costs O(1) per rejected frame instead of an arena build plus a full
+	// envelope clone.
+	if chan.len(q.ch) >= chan.cap(q.ch) {
 		sync.mutex_unlock(&c.queue_mu)
 		return false
 	}

@@ -21,6 +21,10 @@ Read_Err :: enum {
 
 DEFAULT_MAX_FRAME :: 64 * 1024 * 1024 // child MCP / LSP: 64 MiB; parent RPC uses 32 MiB
 RPC_MAX_FRAME     :: 32 * 1024 * 1024
+// A header block (Content-Length plus at most a Content-Type line) is a
+// few dozen bytes; a stream that never delivers the blank-line separator
+// is cut at this bound, long before the frame cap could grow the buffer.
+HEADER_MAX_BYTES  :: 8 * 1024
 
 // Rx_Buf is an explicit byte accumulator (length <= capacity, data owned
 // by the Reader).
@@ -136,12 +140,18 @@ read_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_Err) 
 			rx_reset(&r.buf)
 			return nil, .Framing
 		}
-		// A peer that never sends the header separator must hit the frame
-		// cap, not grow the buffer unbounded (same gate as the newline
-		// framing below).
-		if r.buf.n > r.max_frame_bytes {
+		// A peer that never sends the header separator must not grow the
+		// buffer toward the frame cap: the header block has its own small
+		// bound (never above the frame cap, so small-cap readers keep their
+		// meaning), and overrunning it is malformed framing, not an
+		// over-long body.
+		header_cap := HEADER_MAX_BYTES
+		if r.max_frame_bytes < header_cap {
+			header_cap = r.max_frame_bytes
+		}
+		if r.buf.n > header_cap {
 			rx_reset(&r.buf)
-			return nil, .Too_Large
+			return nil, .Framing
 		}
 		if ferr := fill(r); ferr != .None {
 			if ferr == .Eof && r.buf.n == 0 {

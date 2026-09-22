@@ -274,9 +274,11 @@ These are settled structural rules. Violations get flagged in review.
   discovery is an index-tool feature, not an edit-resolution one.
 - **Every cache is bounded**: all caches go through `Bounded_Cache` (max
   entries, max bytes). **An unbounded `map` fails review** — and so does an
-  unbounded queue: inbound queues are bounded chans, and when one fills the
-  reader stops reading, so backpressure propagates through the pipe/socket
-  buffer. Data (event history, memories) is not capped — the bound is a
+  unbounded queue: queues are bounded chans, and a full one is refused
+  without waiting (the inbound request queue answers RequestFailed and
+  keeps reading; the outbound writer queue drops posts past their
+  deadline) — load is shed at the source rather than buffered. Data
+  (event history, memories) is not capped — the bound is a
   cache-only rule — with one exception shaped like a cache: the editor's
   open-document buffers carry an LRU cap (`EDITOR_MAX_BUFFERS` /
   `EDITOR_MAX_BYTES`) — a daemon-lifetime buffer per distinct edited file

@@ -103,9 +103,8 @@ err_message :: proc(e: Err, allocator := context.temp_allocator) -> string {
 			return kind_name(v.kind)
 		}
 		// Chain render — head message, then each cause joined with ": ".
-		// Depth-
-		// capped: nothing constructs cycles, but rendering a message must
-		// not be able to run away either.
+		// Depth-capped: nothing constructs cycles, but rendering a message
+		// must not be able to run away either.
 		w := v
 		cur := &w
 		parts := make([dynamic]string, 0, 4, allocator)

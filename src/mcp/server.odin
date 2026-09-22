@@ -19,7 +19,12 @@ import "src:util"
 
 PROTOCOL_LATEST :: "2025-11-25"
 
-PROTOCOL_SUPPORTED :: []string{"2024-11-05", "2025-06-18", "2025-11-25"}
+// A recognized requested version is echoed verbatim; anything else answers
+// PROTOCOL_LATEST. The tool-listing shape is fixed across versions — the
+// title, icons, and _meta members postdate some revisions, but those
+// revisions' schemas admit additional properties, so older clients tolerate
+// them.
+PROTOCOL_SUPPORTED :: []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
 
 // Tool_Entry is the wire-facing projection of a tool. The host (session)
 // builds these from the tools table; mcp never imports the tools package
