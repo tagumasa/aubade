@@ -138,6 +138,21 @@ lsp_uri_roundtrip :: proc(t: ^testing.T) {
 	} else {
 		_, unc_ok := lsp.uri_to_path("file://server/share/a%20b.go", context.temp_allocator)
 		testing.expect_value(t, unc_ok, false)
+
+		// RFC 8089: a "localhost" authority reads exactly as if no
+		// authority were present (hosts compare case-insensitively), so
+		// its path decodes like a plain local one.
+		local, local_ok := lsp.uri_to_path("file://localhost/tmp/a%20b.go", context.temp_allocator)
+		testing.expect_value(t, local_ok, true)
+		testing.expect_value(t, local, "/tmp/a b.go")
+
+		caps, caps_ok := lsp.uri_to_path("file://LocalHost/tmp/x.go", context.temp_allocator)
+		testing.expect_value(t, caps_ok, true)
+		testing.expect_value(t, caps, "/tmp/x.go")
+
+		// Authority-only form (no path) stays unresolvable.
+		_, auth_ok := lsp.uri_to_path("file://localhost", context.temp_allocator)
+		testing.expect_value(t, auth_ok, false)
 	}
 
 	uri := symbol.file_uri("/a b/c.go", context.temp_allocator)
