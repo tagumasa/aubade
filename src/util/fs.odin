@@ -79,3 +79,72 @@ read_gate :: proc(path: string, max_bytes: i64) -> Read_Gate {
 	}
 	return .Ok
 }
+
+// Read_Outcome is the verdict of a size-budgeted whole-file read: Ok comes
+// back with the bytes, and every other member says why no byte array did.
+Read_Outcome :: enum {
+	Ok,
+	Missing,
+	Not_Regular,
+	Too_Large,
+	Unreadable,
+}
+
+// read_bounded_file reads one regular file whole under `max_bytes`, the
+// bytes owned by `a`. The stat up front is only a fast-path rejection and
+// a capacity hint — the chunked loop enforces the byte budget WHILE
+// reading, so a file that grows after the stat still surfaces Too_Large
+// instead of an unbounded read, and files whose stat size under-reports
+// their content (procfs-style) stay bounded too. Non-regular nodes are
+// refused rather than opened: a FIFO or device would block or misbehave
+// on open, not just over-read. Unreadable means the node existed and was
+// regular, but the open or a read still failed (vanished mid-call,
+// permissions, IO error).
+read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) -> (data: []u8, outcome: Read_Outcome) {
+	kind, size, ok := stat_kind_size(path)
+	if !ok {
+		return nil, .Missing
+	}
+	if kind != .Regular {
+		return nil, .Not_Regular
+	}
+	if size > max_bytes {
+		return nil, .Too_Large
+	}
+	f, oerr := os.open(path, {.Read}, os.Permissions{.Read_User})
+	if oerr != nil {
+		return nil, .Unreadable
+	}
+	defer os.close(f)
+
+	limit := int(max_bytes)
+	cap_hint := int(size) + 1
+	if cap_hint > limit {
+		cap_hint = limit
+	}
+	buf := make([dynamic]u8, 0, cap_hint, a)
+	chunk: [64 * 1024]u8
+	for {
+		n, rerr := os.read(f, chunk[:])
+		if rerr != nil {
+			// EOF arrives on the error side of os.read on this runtime; a
+			// genuine IO failure is the error it reports.
+			if rerr == .EOF {
+				break
+			}
+			delete(buf)
+			return nil, .Unreadable
+		}
+		if n == 0 {
+			break
+		}
+		if len(buf) + n > limit {
+			delete(buf)
+			return nil, .Too_Large
+		}
+		old := len(buf)
+		resize(&buf, old + n)
+		copy(buf[old:], chunk[:n])
+	}
+	return buf[:], .Ok
+}

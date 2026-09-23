@@ -18,10 +18,9 @@ import "src:editor"
 // `arena`. The caller frees `contents` through ed.allocator exactly when
 // from_editor is true; the flag IS the ownership.
 read_source_contents :: proc(
-	ed:    ^editor.Editor,
-	rel:   string,
-	abs:   string,
-	size:  i64,
+	ed:   ^editor.Editor,
+	rel:  string,
+	abs:  string,
 	arena: mem.Allocator,
 ) -> (contents: string, from_editor: bool, read_err: string) {
 	if ed != nil {
@@ -30,7 +29,7 @@ read_source_contents :: proc(
 			return read, true, ""
 		}
 	}
-	disk, rerr := read_source_file(abs, size, arena)
+	disk, rerr := read_source_file(abs, arena)
 	if rerr != "" {
 		return "", false, rerr
 	}

@@ -61,10 +61,24 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 	} else {
 		// A non-empty authority is the UNC form; there is no share to
 		// resolve it against here, so report it unresolvable rather than
-		// return a relative-looking path that happens to decode.
+		// return a relative-looking path that happens to decode. The one
+		// sanctioned exception is the local machine: RFC 8089 reads a
+		// "localhost" authority exactly as if no authority were present
+		// (hosts compare case-insensitively), so its path decodes like a
+		// plain local one.
 		if len(out) > 0 && out[0] != '/' {
-			delete(out)
-			return "", false
+			authority_end := 0
+			for authority_end < len(out) && out[authority_end] != '/' {
+				authority_end += 1
+			}
+			if authority_end == len(out) || !strings.equal_fold(string(out[:authority_end]), "localhost") {
+				delete(out)
+				return "", false
+			}
+			for j := authority_end; j < len(out); j += 1 {
+				out[j - authority_end] = out[j]
+			}
+			resize(&out, len(out) - authority_end)
 		}
 	}
 	if len(out) == 0 {

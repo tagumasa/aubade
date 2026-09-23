@@ -346,9 +346,8 @@ file_contents_read :: proc(src: ^LSP_Source, ed: ^editor.Editor, rel: string, a:
 		}
 		return ""
 	}
-	size := info.size
 	os.file_info_delete(info, ta)
-	contents, rerr := read_source_file(abs, size, a)
+	contents, rerr := read_source_file(abs, a)
 	if rerr != "" {
 		return ""
 	}

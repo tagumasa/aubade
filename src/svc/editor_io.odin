@@ -11,64 +11,34 @@ import "core:time"
 
 import "src:editor"
 import "src:platform"
+import "src:util"
 
 editor_file_read :: proc(user: rawptr, abs_path: string, max_bytes: i64, alloc: runtime.Allocator) -> (data: []u8, err: editor.Editor_Err, msg: string) {
-	info, serr := os.stat(abs_path, context.temp_allocator)
-	if serr != nil {
+	// The byte budget is enforced at read time by the shared bounded
+	// reader (stat size is only a fast path and capacity hint there): a
+	// file growing between the stat and the read still surfaces Too_Large
+	// instead of an unbounded read, and a FIFO or device node is refused
+	// rather than opened.
+	read, outcome := util.read_bounded_file(abs_path, max_bytes, alloc)
+	if outcome == .Ok {
+		return read, .None, ""
+	}
+	if outcome == .Missing {
 		return nil, .NotFound, "file not found"
 	}
-	size := info.size
-	os.file_info_delete(info, context.temp_allocator)
-	if size > max_bytes {
-		return nil, .Too_Large, fmt.aprintf("file is too large (%d bytes); maximum is %d bytes", size, max_bytes, allocator = context.temp_allocator)
+	if outcome == .Not_Regular {
+		return nil, .IO, "not a regular file"
 	}
-	// The bound holds at read time, not just at the stat above: a file
-	// growing in between still surfaces Too_Large instead of an unbounded
-	// read (read_entire_file would swallow the growth). The chunked loop
-	// also serves files whose stat size under-reports their content
-	// (procfs-style), which a size-sized buffer would truncate.
-	f, oerr := os.open(abs_path, {.Read}, os.Permissions{.Read_User})
-	if oerr != nil {
-		return nil, .NotFound, "file not found"
-	}
-	defer os.close(f)
-	limit := int(max_bytes)
-	cap_hint := int(size) + 1
-	if cap_hint > limit {
-		cap_hint = limit
-	}
-	buf := make([dynamic]u8, 0, cap_hint, context.temp_allocator)
-	chunk: [64 * 1024]u8
-	for {
-		n, rerr := os.read(f, chunk[:])
-		if rerr != nil {
-			// EOF arrives as the error side on this runtime (the count
-			// loop in the file face breaks on `n == 0 || rerr != nil`
-			// for the same reason); a genuine IO failure is the error it
-			// reports.
-			if rerr == .EOF {
-				break
-			}
-			delete(buf)
-			return nil, .IO, "read failed"
+	if outcome == .Too_Large {
+		// State the actual size so the model can judge a sliced retry: the
+		// refusal is rare, so a fresh stat beats reporting a stale one.
+		_, size_now, sok := util.stat_kind_size(abs_path)
+		if !sok {
+			size_now = max_bytes + 1
 		}
-		if n == 0 {
-			break
-		}
-		if len(buf) + n > limit {
-			delete(buf)
-			return nil, .Too_Large, fmt.aprintf("file is too large (grew while reading); maximum is %d bytes", max_bytes, allocator = context.temp_allocator)
-		}
-		old := len(buf)
-		resize(&buf, old + n)
-		copy(buf[old:], chunk[:n])
+		return nil, .Too_Large, fmt.aprintf("file is too large (%d bytes); maximum is %d bytes", size_now, max_bytes, allocator = context.temp_allocator)
 	}
-	out := make([]u8, len(buf), alloc)
-	if len(buf) > 0 {
-		copy(out, buf[:])
-	}
-	delete(buf)
-	return out, .None, ""
+	return nil, .IO, "read failed"
 }
 
 editor_file_write :: proc(user: rawptr, abs_path: string, data: []u8) -> (err: editor.Editor_Err, msg: string) {

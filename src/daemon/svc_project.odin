@@ -705,7 +705,7 @@ symbol_find_heal_stale :: proc(
 		if store.fingerprint_skip(d.db, path, mtime_ns, size, platform.clock_now(d.cfg.clock)) {
 			continue
 		}
-		contents, from_editor, rerr := svc.read_source_contents(d.ed, path, abs, size, a)
+		contents, from_editor, rerr := svc.read_source_contents(d.ed, path, abs, a)
 		if rerr != "" {
 			continue
 		}

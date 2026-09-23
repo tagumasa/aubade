@@ -182,7 +182,7 @@ lsp_document_symbols :: proc(
 	if perr.reason != "" {
 		return nil, nil, "", "", wrapped_err(.Invalid, strings.concatenate({"lsp source: invalid path: ", perr.reason}, scratch), a)
 	}
-	kind, size, sok := util.stat_kind_size(abs, scratch)
+	kind, _, sok := util.stat_kind_size(abs, scratch)
 	if !sok {
 		return nil, nil, "", "", wrapped_err(.NotFound, strings.concatenate({"lsp source: path not found: ", rel}, scratch), a)
 	}
@@ -194,7 +194,7 @@ lsp_document_symbols :: proc(
 	// (from_editor IS the ownership of `contents` — free through the same
 	// flag, never through "was it empty"). Resolved before the port call
 	// so the L1 probe below can skip the server entirely.
-	contents, from_editor, crerr := read_source_contents(src.ed, rel, abs, size, scratch)
+	contents, from_editor, crerr := read_source_contents(src.ed, rel, abs, scratch)
 	if crerr != "" {
 		return nil, nil, "", "", wrapped_err(
 			.Internal,

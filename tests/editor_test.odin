@@ -1593,7 +1593,7 @@ svc_read_source_contents_ownership :: proc(t: ^testing.T) {
 	abs, _ := filepath.join([]string{f.dir, "src.txt"}, context.temp_allocator)
 
 	// No editor at all: plain disk read on the caller's arena.
-	got, owned, rerr := svc.read_source_contents(nil, "src.txt", abs, 11, a)
+	got, owned, rerr := svc.read_source_contents(nil, "src.txt", abs, a)
 	testing.expectf(t, rerr == "", "read: %s", rerr)
 	testing.expect_value(t, got, "disk bytes\n")
 	testing.expect(t, !owned, "nil editor is not editor-owned")
@@ -1601,7 +1601,7 @@ svc_read_source_contents_ownership :: proc(t: ^testing.T) {
 	// An editor with no buffer open still owns its answer: editor_read_file
 	// takes the disk snapshot itself on the editor's allocator — the caller
 	// frees through ed.allocator exactly when the flag is set (done here).
-	got2, owned2, rerr2 := svc.read_source_contents(f.e, "src.txt", abs, 11, a)
+	got2, owned2, rerr2 := svc.read_source_contents(f.e, "src.txt", abs, a)
 	testing.expectf(t, rerr2 == "", "read 2: %s", rerr2)
 	testing.expect_value(t, got2, "disk bytes\n")
 	testing.expect(t, owned2, "editor read is editor-owned")
@@ -1609,7 +1609,7 @@ svc_read_source_contents_ownership :: proc(t: ^testing.T) {
 
 	// A failing read keeps the ownership false: the caller's defer must
 	// never free error-path bytes through the editor allocator.
-	_, owned3, rerr3 := svc.read_source_contents(nil, "gone.txt", "/nonexistent/gone.txt", 0, a)
+	_, owned3, rerr3 := svc.read_source_contents(nil, "gone.txt", "/nonexistent/gone.txt", a)
 	testing.expect(t, rerr3 != "", "missing file errors")
 	testing.expect(t, !owned3, "failure keeps ownership false")
 }
