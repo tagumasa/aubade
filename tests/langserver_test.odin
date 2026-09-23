@@ -318,7 +318,7 @@ langserver_registry_shape :: proc(t: ^testing.T) {
 	reg := langserver.registry_build(context.allocator)
 	defer langserver.registry_destroy(reg)
 
-	testing.expect(t, langserver.registry_count(reg) == 55)
+	testing.expect(t, langserver.registry_count(reg) == 54)
 
 	go_entry := langserver.registry_detect(reg, "src/main.go")
 	if go_entry == nil {
@@ -368,10 +368,10 @@ langserver_registry_shape :: proc(t: ^testing.T) {
 	testing.expect(t, erl.id == "erlang")
 
 	ids := langserver.registry_all_ids(reg, context.temp_allocator)
-	testing.expect(t, len(ids) == 55)
+	testing.expect(t, len(ids) == 54)
 
 	non_exp := langserver.registry_non_experimental(reg, context.temp_allocator)
-	testing.expect(t, len(non_exp) == 42) // 55 registered, 13 experimental
+	testing.expect(t, len(non_exp) == 41) // 54 registered, 13 experimental
 
 	keep := langserver.registry_filter_registered(reg, {"go", "nope", "odin"}, context.temp_allocator)
 	testing.expect(t, len(keep) == 2)

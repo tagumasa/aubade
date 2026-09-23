@@ -103,7 +103,15 @@ CURATED_ROWS :: []Curated_Row{
 	// generated table — so regenerations preserve the claim.
 	{name = "json5",       tag = "aa630ef48903ab99e406a8acd2e2933077cc34e1", aliases = "", exts = ".json5,.jsonc"},
 	{name = "markdown",   tag = "v0.5.3",  aliases = "md",           exts = ".md,.markdown"},
+	// .m is Objective-C's implementation extension and belongs to the
+	// objc grammar (see its row); the matlab grammar keeps the
+	// MATLAB-unique extensions only.
+	{name = "matlab",     tag = "574dde565caddf8cf44eec7df3cb89eb96053ed7", aliases = "octave", exts = ".mat,.matlab"},
 	{name = "odin",       tag = "v1.3.0",  aliases = "",             exts = ".odin"},
+	// The objc grammar ships no registry extensions upstream; .m/.mm are
+	// its implementation extensions, claimed here so Objective-C sources
+	// index under the right grammar instead of the matlab one.
+	{name = "objc",       tag = "181a81b8f23a2d593e7ab4259981f50122909fda", aliases = "obj-c,objective-c,objectivec", exts = ".m,.mm"},
 	{name = "python",     tag = "v0.25.0", aliases = "py",           exts = ".py"},
 	{name = "rust",       tag = "v0.24.2", aliases = "rs",           exts = ".rs"},
 	{name = "typescript", tag = "v0.23.2", aliases = "ts",           exts = ".ts"},
