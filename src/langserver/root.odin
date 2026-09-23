@@ -132,7 +132,7 @@ roots_visit :: proc(dir: string, ctx: ^Roots_Scan, depth: int) {
 		}
 		#partial switch e.type {
 		case .Directory:
-			if !is_default_ignored_dir(name) {
+			if !config.default_ignored_dir(name) {
 				child, _ := filepath.join({dir, name}, context.temp_allocator)
 				if !platform.path_equal(child, ctx.managed) {
 					roots_visit(child, ctx, depth + 1)

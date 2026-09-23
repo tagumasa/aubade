@@ -16,7 +16,6 @@ import "core:testing"
 import "core:thread"
 import "core:time"
 
-import "src:config"
 import "src:jsonrpc"
 import "src:langserver"
 import "src:lsp"
@@ -1693,36 +1692,4 @@ langserver_manager_restart_after_destroy_refuses_insert :: proc(t: ^testing.T) {
 	// The worker has drained: the token the guard handed to
 	// server_destroy is safe to free only now.
 	platform.token_destroy(root, lt.allocator)
-}
-
-@(test)
-ignored_dirs_tables_agree :: proc(t: ^testing.T) {
-	// The two DEFAULT_IGNORED_DIRS tables are a deliberate copy: the
-	// language scan keeps the walk's ignore set as its own local
-	// declaration, and config's table serves the symbol-crawl walkers.
-	// This test is what keeps the two spellings honest: same length,
-	// same entries, both directions.
-	configured := config.DEFAULT_IGNORED_DIRS
-	scanned := langserver.DEFAULT_IGNORED_DIRS
-	testing.expect_value(t, len(scanned), len(configured))
-	for d in configured {
-		found := false
-		for s in scanned {
-			if s == d {
-				found = true
-				break
-			}
-		}
-		testing.expectf(t, found, "config ignored dir %q missing from the scan table", d)
-	}
-	for s in scanned {
-		found := false
-		for d in configured {
-			if d == s {
-				found = true
-				break
-			}
-		}
-		testing.expectf(t, found, "scan ignored dir %q missing from the config table", s)
-	}
 }
