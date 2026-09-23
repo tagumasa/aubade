@@ -102,7 +102,6 @@ langserver_open_document :: proc(
 	// The stat info's fullpath clone is owned by `arena`; take what is
 	// needed and free it before the op continues.
 	is_dir := info.type == .Directory
-	size := info.size
 	os.file_info_delete(info, arena)
 	if is_dir {
 		return {}, wrapped_err(.Invalid, "path is a directory", arena)
@@ -116,7 +115,7 @@ langserver_open_document :: proc(
 	// The shared editor-or-disk read: from_editor IS the ownership of
 	// `contents` (editor allocator vs the request arena) — free through
 	// the same flag, never through "was it empty".
-	contents, from_editor, crerr := read_source_contents(ed, rel, abs, size, arena)
+	contents, from_editor, crerr := read_source_contents(ed, rel, abs, arena)
 	if crerr != "" {
 		// The port pinned the serving server for this document; the failed
 		// read never returns a Langserver_Doc, so the pin drops here (the

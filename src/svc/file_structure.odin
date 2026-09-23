@@ -217,6 +217,19 @@ file_outline :: proc(
 	}
 	defer delete(contents, ed.allocator)
 
+	// The gate above used the stat size; the read may have seen a file
+	// grown since. Re-check the bytes actually read so the tree budget (a
+	// parse tree costs roughly 25x its source) cannot be ballooned by
+	// growth past the gate.
+	if len(contents) > MAX_SOURCE_FILE_BYTES {
+		msg := strings.concatenate({
+			"file outline: file is too large (", util.int_to_dec(len(contents), context.temp_allocator),
+			" bytes); maximum is ", util.int_to_dec(MAX_SOURCE_FILE_BYTES, context.temp_allocator),
+			" bytes: ", rel,
+		}, context.temp_allocator)
+		return {}, wrapped_err(.Invalid, msg, a)
+	}
+
 	res.read_ask = safety.is_read_ask(rel)
 
 	pr, perr2 := ts.parse(contents, lang)

@@ -666,8 +666,9 @@ dead_scan_uses_body :: proc(w: ^Scan_Worker, i: int) {
 
 // dead_scan_read resolves one file's bytes: the editor's view when it
 // holds one (unsaved-buffer uses stay visible), else the disk read under
-// the crawl's size budget. "" covers empty, oversize, and unreadable
-// alike — none of them can carry definitions or uses.
+// the crawl's size budget — enforced at read time, so a file growing past
+// the cap mid-scan still refuses. "" covers empty, oversize, and
+// unreadable alike — none of them can carry definitions or uses.
 dead_scan_read :: proc(src: ^TS_Source, f: Dead_Scan_File, scratch: mem.Allocator) -> (contents: string, from_editor: bool) {
 	if src.ed != nil {
 		read, rerr, _ := editor.editor_read_file(src.ed, f.rel)
@@ -675,12 +676,8 @@ dead_scan_read :: proc(src: ^TS_Source, f: Dead_Scan_File, scratch: mem.Allocato
 			return read, true
 		}
 	}
-	_, size, sok := util.stat_kind_size(f.abs, scratch)
-	if !sok || size > MAX_SOURCE_FILE_BYTES {
-		return "", false
-	}
-	data, rerr := os.read_entire_file(f.abs, scratch)
-	if rerr != nil {
+	data, outcome := util.read_bounded_file(f.abs, MAX_SOURCE_FILE_BYTES, scratch)
+	if outcome != .Ok {
 		return "", false
 	}
 	// Match the editor's buffer view for UTF-8 files (BOM-stripped,

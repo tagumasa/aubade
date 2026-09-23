@@ -244,7 +244,7 @@ ts_source_file_symbols_detailed :: proc(src: ^TS_Source, rel_path: string, a := 
 	}
 
 	if !from_editor {
-		disk, rerr := read_source_file(abs, size, scratch)
+		disk, rerr := read_source_file(abs, scratch)
 		if rerr != "" {
 			return nil, true, wrapped_err(.Internal, strings.concatenate({"ts source: ", rerr, ": ", rel}, scratch), a)
 		}
@@ -896,7 +896,10 @@ crawl_index_file :: proc(w: ^Crawl_Walk, abs_path, rel_path, filename: string) {
 		w.stats.files_oversize += 1
 		return
 	}
-	contents, rerr := read_source_file(abs_path, size, sa)
+	// The stat gate above only classifies; the read itself re-derives the
+	// bound at read time, so a file growing after the stat surfaces a read
+	// failure here instead of an unbounded read.
+	contents, rerr := read_source_file(abs_path, sa)
 	if rerr != "" {
 		w.stats.files_failed += 1
 		return
@@ -1184,15 +1187,24 @@ append_index_rows :: proc(rows: ^[dynamic]store.Symbol_Name_Row, roots: []^symbo
 	}
 }
 
-read_source_file :: proc(abs_path: string, size: i64, a: runtime.Allocator) -> (contents: string, err: string) {
-	if size > MAX_SOURCE_FILE_BYTES {
+// read_source_file reads one indexed source file under the 1 MiB budget,
+// the bytes owned by `a`. The bound is enforced at read time
+// (util.read_bounded_file) — no caller stat is trusted to bound the read,
+// so a file that grows after a stat still surfaces the refusal.
+read_source_file :: proc(abs_path: string, a: runtime.Allocator) -> (contents: string, err: string) {
+	data, outcome := util.read_bounded_file(abs_path, MAX_SOURCE_FILE_BYTES, a)
+	if outcome == .Too_Large {
+		// The refusal is rare; a fresh stat names the size the model sees.
+		_, size_now, sok := util.stat_kind_size(abs_path)
+		if !sok {
+			size_now = MAX_SOURCE_FILE_BYTES + 1
+		}
 		return "", strings.concatenate({
-			"file is too large (", util.int_to_dec(cast(int)size, a),
-			" bytes); maximum is ", util.int_to_dec(MAX_SOURCE_FILE_BYTES, a), " bytes)",
+			"file is too large (", util.int_to_dec(cast(int)size_now, a),
+			" bytes); maximum is ", util.int_to_dec(MAX_SOURCE_FILE_BYTES, a), " bytes",
 		}, a)
 	}
-	data, rerr := os.read_entire_file(abs_path, a)
-	if rerr != nil {
+	if outcome != .Ok {
 		return "", "read failed"
 	}
 	return string(data), ""
@@ -1296,12 +1308,11 @@ maybe_push_gitignore :: proc(
 	if jerr != nil {
 		return false
 	}
-	kind, size, sok := util.stat_kind_size(git_path, scratch)
-	if !sok || kind != .Regular || size > MAX_SOURCE_FILE_BYTES {
-		return false
-	}
-	data, rerr := os.read_entire_file(git_path, scratch)
-	if rerr != nil {
+	// The budget holds at read time, not just at the stat: a .gitignore
+	// growing past the cap mid-walk still refuses instead of ballooning
+	// the crawl.
+	data, outcome := util.read_bounded_file(git_path, MAX_SOURCE_FILE_BYTES, scratch)
+	if outcome != .Ok {
 		return false
 	}
 	patterns, _ := pathspec.gitignore_patterns_from_content(string(data), rel_dir, scratch)
