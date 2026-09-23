@@ -1,7 +1,7 @@
 // Builtin directory-name exclusions shared by every project file-tree
-// walker (the tree-sitter symbol crawl today, the LSP symbol walk later).
-// Name-based only: any entry — file or directory — carrying one of these
-// names is skipped during traversal.
+// walker — the tree-sitter symbol crawl, the language-detection scan,
+// and the workspace-roots walk. Name-based only: any entry — file or
+// directory — carrying one of these names is skipped during traversal.
 package config
 
 DEFAULT_IGNORED_DIRS :: []string{

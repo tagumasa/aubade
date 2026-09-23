@@ -15,26 +15,7 @@ import "core:strings"
 import "src:config"
 import "src:platform"
 
-// Directories never walked during detection (version control, build
-// outputs, dependency trees, tool caches, editor state).
-DEFAULT_IGNORED_DIRS :: [20]string{
-	".git", ".svn", ".hg", ".bzr",
-	"node_modules", "vendor", "dist", "build",
-	"__pycache__", ".venv", ".env", ".cache",
-	".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox",
-	".idea", ".aubade", ".vscode",
-}
-
 SCAN_MAX_DEPTH :: 32
-
-is_default_ignored_dir :: proc(name: string) -> bool {
-	for d in DEFAULT_IGNORED_DIRS {
-		if d == name {
-			return true
-		}
-	}
-	return false
-}
 
 Scan_Result :: struct {
 	// ids are the detected language ids ordered by descending file count
@@ -96,7 +77,7 @@ scan_walk :: proc(dir: string, reg: ^Registry, counts_in: map[string]int, depth:
 		}
 		#partial switch e.type {
 		case .Directory:
-			if !is_default_ignored_dir(name) {
+			if !config.default_ignored_dir(name) {
 				child, _ := filepath.join({dir, name}, context.temp_allocator)
 				if !platform.path_equal(child, managed) {
 					scan_walk(child, reg, counts, depth + 1, managed)
