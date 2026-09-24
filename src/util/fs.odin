@@ -99,21 +99,25 @@ Read_Outcome :: enum {
 // refused rather than opened: a FIFO or device would block or misbehave
 // on open, not just over-read. Unreadable means the node existed and was
 // regular, but the open or a read still failed (vanished mid-call,
-// permissions, IO error).
-read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) -> (data: []u8, outcome: Read_Outcome) {
+// permissions, IO error). size_at_refusal is the byte count observed when
+// the budget refused the read — the stat size at the entry rejection, or
+// the bytes that had accumulated when growth tripped the loop — and is
+// zero on every other outcome; the refusal message names it, so no
+// caller re-stats.
+read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) -> (data: []u8, outcome: Read_Outcome, size_at_refusal: i64) {
 	kind, size, ok := stat_kind_size(path)
 	if !ok {
-		return nil, .Missing
+		return nil, .Missing, 0
 	}
 	if kind != .Regular {
-		return nil, .Not_Regular
+		return nil, .Not_Regular, 0
 	}
 	if size > max_bytes {
-		return nil, .Too_Large
+		return nil, .Too_Large, size
 	}
 	f, oerr := os.open(path, {.Read}, os.Permissions{.Read_User})
 	if oerr != nil {
-		return nil, .Unreadable
+		return nil, .Unreadable, 0
 	}
 	defer os.close(f)
 
@@ -133,18 +137,19 @@ read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) 
 				break
 			}
 			delete(buf)
-			return nil, .Unreadable
+			return nil, .Unreadable, 0
 		}
 		if n == 0 {
 			break
 		}
 		if len(buf) + n > limit {
+			refused := i64(len(buf) + n)
 			delete(buf)
-			return nil, .Too_Large
+			return nil, .Too_Large, refused
 		}
 		old := len(buf)
 		resize(&buf, old + n)
 		copy(buf[old:], chunk[:n])
 	}
-	return buf[:], .Ok
+	return buf[:], .Ok, 0
 }

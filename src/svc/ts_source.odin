@@ -1192,15 +1192,11 @@ append_index_rows :: proc(rows: ^[dynamic]store.Symbol_Name_Row, roots: []^symbo
 // (util.read_bounded_file) — no caller stat is trusted to bound the read,
 // so a file that grows after a stat still surfaces the refusal.
 read_source_file :: proc(abs_path: string, a: runtime.Allocator) -> (contents: string, err: string) {
-	data, outcome := util.read_bounded_file(abs_path, MAX_SOURCE_FILE_BYTES, a)
+	data, outcome, refused := util.read_bounded_file(abs_path, MAX_SOURCE_FILE_BYTES, a)
 	if outcome == .Too_Large {
-		// The refusal is rare; a fresh stat names the size the model sees.
-		_, size_now, sok := util.stat_kind_size(abs_path)
-		if !sok {
-			size_now = MAX_SOURCE_FILE_BYTES + 1
-		}
+		// The bounded reader names the bytes it saw at the refusal.
 		return "", strings.concatenate({
-			"file is too large (", util.int_to_dec(cast(int)size_now, a),
+			"file is too large (", util.int_to_dec(cast(int)refused, a),
 			" bytes); maximum is ", util.int_to_dec(MAX_SOURCE_FILE_BYTES, a), " bytes",
 		}, a)
 	}
@@ -1311,7 +1307,7 @@ maybe_push_gitignore :: proc(
 	// The budget holds at read time, not just at the stat: a .gitignore
 	// growing past the cap mid-walk still refuses instead of ballooning
 	// the crawl.
-	data, outcome := util.read_bounded_file(git_path, MAX_SOURCE_FILE_BYTES, scratch)
+	data, outcome, _ := util.read_bounded_file(git_path, MAX_SOURCE_FILE_BYTES, scratch)
 	if outcome != .Ok {
 		return false
 	}

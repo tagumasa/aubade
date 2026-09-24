@@ -83,12 +83,12 @@ util_read_bounded_file :: proc(t: ^testing.T) {
 		testing.fail_now(t, "write failed")
 	}
 
-	data, outcome := util.read_bounded_file(file_path, 1024, context.temp_allocator)
+	data, outcome, _ := util.read_bounded_file(file_path, 1024, context.temp_allocator)
 	testing.expect_value(t, outcome, util.Read_Outcome.Ok)
 	testing.expectf(t, string(data) == "hello", "under budget: %q", string(data))
 
 	// The budget is inclusive: a file exactly at the limit reads whole.
-	exact, exact_outcome := util.read_bounded_file(file_path, 5, context.temp_allocator)
+	exact, exact_outcome, _ := util.read_bounded_file(file_path, 5, context.temp_allocator)
 	testing.expect_value(t, exact_outcome, util.Read_Outcome.Ok)
 	testing.expectf(t, string(exact) == "hello", "exact budget: %q", string(exact))
 
@@ -101,20 +101,23 @@ util_read_bounded_file :: proc(t: ^testing.T) {
 		testing.fail_now(t, "write failed")
 	}
 	delete(big)
-	_, over := util.read_bounded_file(big_path, 1024, context.temp_allocator)
+	// The refusal names the bytes it saw: the stat size at the entry
+	// rejection (2048), the number a caller reports without re-statting.
+	_, over, over_size := util.read_bounded_file(big_path, 1024, context.temp_allocator)
 	testing.expect_value(t, over, util.Read_Outcome.Too_Large)
+	testing.expect_value(t, over_size, 2048)
 
-	_, dir_outcome := util.read_bounded_file(tmp, 1024, context.temp_allocator)
+	_, dir_outcome, _ := util.read_bounded_file(tmp, 1024, context.temp_allocator)
 	testing.expect_value(t, dir_outcome, util.Read_Outcome.Not_Regular)
 
 	missing, _ := filepath.join({tmp, "missing"}, context.temp_allocator)
-	_, miss_outcome := util.read_bounded_file(missing, 1024, context.temp_allocator)
+	_, miss_outcome, _ := util.read_bounded_file(missing, 1024, context.temp_allocator)
 	testing.expect_value(t, miss_outcome, util.Read_Outcome.Missing)
 
 	when ODIN_OS == .Linux {
 		// procfs stats report size 0 while the read returns real content:
 		// the read-time bound, not the stat gate, must refuse it here.
-		_, proc_outcome := util.read_bounded_file("/proc/self/status", 64, context.temp_allocator)
+		_, proc_outcome, _ := util.read_bounded_file("/proc/self/status", 64, context.temp_allocator)
 		testing.expect_value(t, proc_outcome, util.Read_Outcome.Too_Large)
 	}
 }

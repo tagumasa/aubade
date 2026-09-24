@@ -676,7 +676,7 @@ dead_scan_read :: proc(src: ^TS_Source, f: Dead_Scan_File, scratch: mem.Allocato
 			return read, true
 		}
 	}
-	data, outcome := util.read_bounded_file(f.abs, MAX_SOURCE_FILE_BYTES, scratch)
+	data, outcome, _ := util.read_bounded_file(f.abs, MAX_SOURCE_FILE_BYTES, scratch)
 	if outcome != .Ok {
 		return "", false
 	}

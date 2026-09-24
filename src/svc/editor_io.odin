@@ -19,7 +19,7 @@ editor_file_read :: proc(user: rawptr, abs_path: string, max_bytes: i64, alloc: 
 	// file growing between the stat and the read still surfaces Too_Large
 	// instead of an unbounded read, and a FIFO or device node is refused
 	// rather than opened.
-	read, outcome := util.read_bounded_file(abs_path, max_bytes, alloc)
+	read, outcome, refused := util.read_bounded_file(abs_path, max_bytes, alloc)
 	if outcome == .Ok {
 		return read, .None, ""
 	}
@@ -30,13 +30,9 @@ editor_file_read :: proc(user: rawptr, abs_path: string, max_bytes: i64, alloc: 
 		return nil, .IO, "not a regular file"
 	}
 	if outcome == .Too_Large {
-		// State the actual size so the model can judge a sliced retry: the
-		// refusal is rare, so a fresh stat beats reporting a stale one.
-		_, size_now, sok := util.stat_kind_size(abs_path)
-		if !sok {
-			size_now = max_bytes + 1
-		}
-		return nil, .Too_Large, fmt.aprintf("file is too large (%d bytes); maximum is %d bytes", size_now, max_bytes, allocator = context.temp_allocator)
+		// The bounded reader names the bytes it saw at the refusal — the
+		// size the model judges a sliced retry against.
+		return nil, .Too_Large, fmt.aprintf("file is too large (%d bytes); maximum is %d bytes", refused, max_bytes, allocator = context.temp_allocator)
 	}
 	return nil, .IO, "read failed"
 }
