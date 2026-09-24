@@ -18,6 +18,13 @@ when ODIN_OS == .Windows {
 	PATH_LIST_SEP :: ":"
 }
 
+// The file extensions CreateProcess can launch — .exe directly,
+// .cmd/.bat through the interpreter CreateProcess starts for them.
+// This is the one home of the rule: PATH probing (probe_in_dir) and
+// the launchability check (has_launchable_extension) both read it, and
+// no consumer re-spells the list.
+LAUNCHABLE_SUFFIXES :: [3]string{".exe", ".cmd", ".bat"}
+
 // find_in_path resolves an executable through PATH (plus the platform's
 // executable suffixes on Windows); "" when absent. The result is owned
 // by `a`.
@@ -51,16 +58,17 @@ probe_in_dir :: proc(dir: string, name: string) -> string {
 	if dir == "" {
 		return ""
 	}
-	when ODIN_OS == .Windows {
-		suffixes := [4]string{"", ".exe", ".cmd", ".bat"}
-	} else {
-		suffixes := [1]string{""}
+	exact, _ := filepath.join({dir, name}, context.temp_allocator)
+	if is_executable_file(exact) {
+		return exact
 	}
-	for suf in suffixes {
-		cand := strings.concatenate({name, suf}, context.temp_allocator)
-		p, _ := filepath.join({dir, cand}, context.temp_allocator)
-		if is_executable_file(p) {
-			return p
+	when ODIN_OS == .Windows {
+		for suf in LAUNCHABLE_SUFFIXES {
+			cand := strings.concatenate({name, suf}, context.temp_allocator)
+			p, _ := filepath.join({dir, cand}, context.temp_allocator)
+			if is_executable_file(p) {
+				return p
+			}
 		}
 	}
 	return ""
@@ -126,8 +134,7 @@ when ODIN_OS == .Windows {
 			return false
 		}
 		ext := path[dot:]
-		launchable := [3]string{".exe", ".cmd", ".bat"}
-		for suffix in launch {
+		for suffix in LAUNCHABLE_SUFFIXES {
 			if strings.equal_fold(ext, suffix) {
 				return true
 			}
