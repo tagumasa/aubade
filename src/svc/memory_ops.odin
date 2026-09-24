@@ -304,11 +304,11 @@ memory_check_containment :: proc(path: string, root: string, name: string, a: me
 	return memory_containment_err(resolved, resolved_root, name, a)
 }
 
-// path_under_root reports byte-prefix containment (separator-anchored,
-// case-insensitive — macOS/Windows filesystems fold case).
+// path_under_root reports prefix containment through the platform's
+// separator-tolerant, filesystem-case-aware prefix strip.
 path_under_root :: proc(path: string, root: string) -> bool {
-	return len(path) > len(root) && path[len(root)] == u8(filepath.SEPARATOR) &&
-		strings.equal_fold(path[:len(root)], root)
+	_, ok := platform.strip_root_prefix(path, root)
+	return ok
 }
 
 // memory_escaped_err is the one refusal for a memory path that ends up

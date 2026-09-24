@@ -77,7 +77,7 @@ go_candidate_dirs :: proc() -> []string {
 	}
 	gopath := clean_env_path(os.get_env("GOPATH", context.temp_allocator))
 	if gopath != "" {
-		parts := strings.split(gopath, PATH_LIST_SEP, context.temp_allocator)
+		parts := strings.split(gopath, platform.PATH_LIST_SEP, context.temp_allocator)
 		if len(parts) > 0 && parts[0] != "" {
 			bin, _ := filepath.join({parts[0], "bin"}, context.temp_allocator)
 			append(&dirs, bin)
@@ -281,12 +281,12 @@ probe_python_pyright :: proc(reg: ^Registry) -> (argv: []string, ok: bool) {
 	// on reg.allocator — the arena is not thread-safe, and this section runs
 	// outside reg.mu precisely so concurrent probes don't serialize behind
 	// subprocess spawns) and cloned into the arena under the lock below.
-	if binary_available("pyright-langserver") {
+	if platform.binary_available("pyright-langserver") {
 		resolved = make_argv({"pyright-langserver", "--stdio"}, context.temp_allocator)
 		found = true
 	} else {
 		for py in python_interpreter_candidates() {
-			if !binary_available(py) {
+			if !platform.binary_available(py) {
 				continue
 			}
 			if python_module_importable(py, "pyright.langserver") {
@@ -490,7 +490,7 @@ odin_candidate_dirs :: proc() -> []string {
 // PATH cannot carry it). The odin compiler keeps its candidate dirs (the
 // official ~/Odin convention).
 resolve_odin_toolchain :: proc() -> (ols_bin, odin_bin: string) {
-	ols_bin = find_in_path("ols", context.temp_allocator)
+	ols_bin = platform.find_in_path("ols", context.temp_allocator)
 	odin_bin = look_path_with_fallbacks("odin", odin_candidate_dirs(), context.temp_allocator)
 	return
 }

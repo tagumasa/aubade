@@ -570,7 +570,7 @@ resolve_start_argv :: proc(
 	arena: mem.Allocator,
 ) -> ([]string, platform.Err) {
 	if override_argv := clone_override_argv(m, e.id, arena); len(override_argv) > 0 {
-		if !binary_available(override_argv[0]) {
+		if !platform.binary_available(override_argv[0]) {
 			return nil, platform.Wrapped{
 				kind = .NotFound,
 				msg = strings.concatenate(
@@ -1340,7 +1340,7 @@ build_server_env :: proc(reg: ^Registry, e: ^Entry, arena: mem.Allocator) -> []s
 				if path_value != "" {
 					append(&parts, path_value)
 				}
-				joined := strings.join(parts[:], PATH_LIST_SEP, arena) or_else ""
+				joined := strings.join(parts[:], platform.PATH_LIST_SEP, arena) or_else ""
 				if joined != "" {
 					combined := strings.concatenate({"PATH=", joined}, arena)
 					if path_idx >= 0 {
@@ -1388,8 +1388,10 @@ env_value_of :: proc(entry_var: string, key: string) -> string {
 	if path_value == "" || dir == "" {
 		return false
 	}
-	for part in strings.split(path_value, PATH_LIST_SEP, context.temp_allocator) {
-		if strings.equal_fold(part, dir) {
+	for part in strings.split(path_value, platform.PATH_LIST_SEP, context.temp_allocator) {
+		// Directory identity carries the filesystem's case sensitivity —
+		// PATH entries fold case on Windows, stay distinct on Linux.
+		if platform.path_equal(part, dir) {
 			return true
 		}
 	}

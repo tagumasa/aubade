@@ -38,6 +38,30 @@ scrub_env_drops_unknown :: proc(t: ^testing.T) {
 }
 
 @(test)
+scrub_env_keeps_windows_system_vars :: proc(t: ^testing.T) {
+	got := scrub_default({
+		"SystemRoot=C:\\Windows",
+		"ComSpec=C:\\Windows\\system32\\cmd.exe",
+		"PATHEXT=.COM;.EXE;.BAT;.CMD",
+		"APPDATA=C:\\Users\\u\\AppData\\Roaming",
+		"PROCESSOR_ARCHITECTURE=AMD64",
+		"NUMBER_OF_PROCESSORS=8",
+	})
+	testing.expect_value(t, len(got), 6)
+	for entry in got {
+		testing.expect(t, !strings.contains(entry, ".."))
+	}
+}
+
+@(test)
+scrub_env_windows_path_vars_reject_traversal :: proc(t: ^testing.T) {
+	// The Windows data roots are path-like keys: a ".." segment in the
+	// value rejects the entry like the unix path set.
+	got := scrub_default({"APPDATA=C:\\Users\\u\\..\\..\\escape"})
+	testing.expect_value(t, len(got), 0)
+}
+
+@(test)
 scrub_env_drops_secret_substrings :: proc(t: ^testing.T) {
 	got := scrub_default({
 		"HOME=/root",

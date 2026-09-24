@@ -1,8 +1,10 @@
-// Runtime prerequisite checks: PATH lookup with fallback directories,
-// the default check over RequiredBinaries/RequiredAnyOf, and the small
-// directory/env helpers the resolver procs share. Paths that make a
-// *decision* (these checks) fail closed; pure construction stays
-// swallow-and-surface per the path-builder contract.
+// Runtime prerequisite checks: PATH lookup with fallback directories
+// (the executable-resolution seam itself lives in platform/exec_path.odin
+// — every consumer of launchability goes through it), the default check
+// over RequiredBinaries/RequiredAnyOf, and the small directory/env
+// helpers those checks share. Paths that make a *decision* (these
+// checks) fail closed; pure construction stays swallow-and-surface per
+// the path-builder contract.
 package langserver
 
 import "core:mem"
@@ -12,138 +14,14 @@ import "core:strings"
 
 import "src:platform"
 
-when ODIN_OS == .Windows {
-	PATH_LIST_SEP :: ";"
-} else {
-	PATH_LIST_SEP :: ":"
-}
-
-// find_in_path resolves an executable through PATH (plus the platform's
-// executable suffixes on Windows); "" when absent. The result is owned
-// by `a`.
-find_in_path :: proc(name: string, a := context.allocator) -> string {
-	if name == "" {
-		return ""
-	}
-	if strings.contains_any(name, "/\\") {
-		if is_executable_file(name) {
-			return strings.clone(name, a)
-		}
-		return ""
-	}
-	path := os.get_env("PATH", context.temp_allocator)
-	if path == "" {
-		return ""
-	}
-	for dir in strings.split(path, PATH_LIST_SEP, context.temp_allocator) {
-		p := probe_in_dir(dir, name)
-		if p != "" {
-			return strings.clone(p, a)
-		}
-	}
-	return ""
-}
-
-// probe_in_dir joins dir/name (plus executable suffixes on Windows) and
-// returns the path on the temp allocator when an executable file sits
-// there; "" otherwise.
-probe_in_dir :: proc(dir: string, name: string) -> string {
-	if dir == "" {
-		return ""
-	}
-	when ODIN_OS == .Windows {
-		suffixes := [4]string{"", ".exe", ".cmd", ".bat"}
-	} else {
-		suffixes := [1]string{""}
-	}
-	for suf in suffixes {
-		cand := strings.concatenate({name, suf}, context.temp_allocator)
-		p, _ := filepath.join({dir, cand}, context.temp_allocator)
-		if is_executable_file(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-// binary_available reports whether the executable resolves on PATH or by
-// direct path (boolean check; no ownership).
-binary_available :: proc(name: string) -> bool {
-	return find_in_path(name, context.temp_allocator) != ""
-}
-
-// find_first_binary returns the first candidate that resolves (temp
-// allocator; "" when none do).
-find_first_binary :: proc(candidates: []string) -> string {
-	for name in candidates {
-		if binary_available(name) {
-			return name
-		}
-	}
-	return ""
-}
-
-// is_executable_file stats the path and reports whether it is a regular
-// file the platform can launch: with an execute bit (any class) on
-// POSIX; on Windows by file-name extension — presence alone is not
-// launchability there (has_launchable_extension, below).
-is_executable_file :: proc(path: string) -> bool {
-	info, err := os.stat(path, context.temp_allocator)
-	if err != nil {
-		return false
-	}
-	is_dir := info.type == .Directory
-	when ODIN_OS != .Windows {
-		executable := .Execute_User in info.mode || .Execute_Group in info.mode || .Execute_Other in info.mode
-		os.file_info_delete(info, context.temp_allocator)
-		if is_dir {
-			return false
-		}
-		return executable
-	} else {
-		os.file_info_delete(info, context.temp_allocator)
-		if is_dir {
-			return false
-		}
-		return has_launchable_extension(path)
-	}
-}
-
-when ODIN_OS == .Windows {
-	// has_launchable_extension reports whether the file name ends in an
-	// extension CreateProcess can launch — .exe directly, .cmd/.bat
-	// through the interpreter CreateProcess starts for them — compared
-	// case-insensitively (Windows file names carry no case). An
-	// extensionless regular file is never launchable: npm's global
-	// installs drop an extensionless sh shim beside the real .cmd
-	// launcher, and that shim is a shell script no Windows spawn can
-	// run. Counting it as the executable makes the availability check
-	// pass and moves the failure to spawn time, past the check that
-	// exists to catch it.
-	has_launchable_extension :: proc(path: string) -> bool {
-		dot := strings.last_index_byte(path, '.')
-		if dot < 0 {
-			return false
-		}
-		ext := path[dot:]
-		launchable := [3]string{".exe", ".cmd", ".bat"}
-		for suffix in launchable {
-			if strings.equal_fold(ext, suffix) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
 // look_path_with_fallbacks resolves name via PATH first, then by probing
 // the given directories. The result is owned by `a`; "" when absent.
 look_path_with_fallbacks :: proc(name: string, dirs: []string, a := context.allocator) -> string {
-	if p := find_in_path(name, context.temp_allocator); p != "" {
+	if p := platform.find_in_path(name, context.temp_allocator); p != "" {
 		return strings.clone(p, a)
 	}
 	for dir in dirs {
-		p := probe_in_dir(dir, name)
+		p := platform.probe_in_dir(dir, name)
 		if p != "" {
 			return strings.clone(p, a)
 		}
@@ -200,17 +78,24 @@ clean_env_path :: proc(val: string) -> string {
 	return val
 }
 
-// dedupe_dirs removes duplicate entries while preserving order. The
-// result (and its strings) is owned by `a`.
+// dedupe_dirs removes duplicate entries while preserving order, keying
+// on the filesystem's canonical case (platform.path_fold) so case
+// spellings of one directory dedup where the filesystem folds case. The
+// fold key is intra-procedure scratch — the map dies at return and `d`
+// outlives it — and the result (and its strings) is owned by `a`.
 dedupe_dirs :: proc(dirs: []string, a := context.allocator) -> []string {
 	out := make([dynamic]string, 0, len(dirs), a)
 	seen := make(map[string]bool, len(dirs), a)
 	defer delete(seen)
 	for d in dirs {
-		if d == "" || seen[d] {
+		if d == "" {
 			continue
 		}
-		seen[d] = true
+		key := platform.path_fold(d, context.temp_allocator)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		append(&out, strings.clone(d, a))
 	}
 	return out[:]
@@ -234,7 +119,7 @@ home_dir :: proc(a := context.allocator) -> string {
 // node_available reports whether a Node.js runtime is on PATH (several
 // npm-installed servers delegate to it).
 node_available :: proc() -> bool {
-	return binary_available("node")
+	return platform.binary_available("node")
 }
 
 // default_check_runtime verifies every RequiredBinaries entry and every
@@ -242,12 +127,12 @@ node_available :: proc() -> bool {
 // on the caller's arena.
 default_check_runtime :: proc(e: ^Entry, arena: mem.Allocator) -> platform.Err {
 	for req in e.required_binaries {
-		if !binary_available(req.name) {
+		if !platform.binary_available(req.name) {
 			return not_installed_err(req.display_name, e.install_hint, arena)
 		}
 	}
 	for req in e.required_any_of {
-		if find_first_binary(req.names) == "" {
+		if platform.find_first_binary(req.names) == "" {
 			return not_installed_err(req.display_name, e.install_hint, arena)
 		}
 	}

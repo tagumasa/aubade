@@ -56,17 +56,15 @@ forward_slash_view :: proc(path: string) -> string {
 // strip_root_prefix reports whether `abs_path` sits under `root` and
 // returns the part after the root separator (original spelling, caller
 // copies what it keeps). Lexical — no symlink resolution; callers needing
-// the canonical spelling resolve first. The root compare folds case and
-// tolerates either separator on both spellings: macOS and Windows
-// filesystems fold case, and Windows absolute paths arrive backslashed
-// (a hand-built "root + \"/\"" prefix matches neither).
+// the canonical spelling resolve first. The root compare carries the
+// filesystem's case sensitivity (path_prefix_equal) and tolerates either
+// separator on both spellings (Windows absolute paths arrive backslashed;
+// a hand-built "root + \"/\"" prefix matches neither).
 strip_root_prefix :: proc(abs_path: string, root: string) -> (rel: string, ok: bool) {
 	if len(abs_path) <= len(root) {
 		return "", false
 	}
-	root_slash := forward_slash_view(root)
-	path_slash := forward_slash_view(abs_path)
-	if !strings.equal_fold(path_slash[:len(root_slash)], root_slash) {
+	if !path_prefix_equal(abs_path, root) {
 		return "", false
 	}
 	sep := abs_path[len(root)]
@@ -88,6 +86,21 @@ case_insensitive_fs :: proc() -> bool {
 	} else {
 		return false
 	}
+}
+
+// path_prefix_equal reports whether `path` begins with the `prefix`
+// spelling, ignoring separator differences (both sides compared as
+// forward-slash views) and carrying the filesystem's case sensitivity —
+// the prefix sibling of path_equal, for callers that verify the boundary
+// character themselves. The fold basis matches path_fold's, so the three
+// can never disagree about whether one spelling prefixes another.
+path_prefix_equal :: proc(path, prefix: string) -> bool {
+	if len(prefix) > len(path) {
+		return false
+	}
+	p_slash := forward_slash_view(path)
+	f_slash := forward_slash_view(prefix)
+	return path_equal(p_slash[:len(f_slash)], f_slash)
 }
 
 // path_equal compares two path spellings with the filesystem's case

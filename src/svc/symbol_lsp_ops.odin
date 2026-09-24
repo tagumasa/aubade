@@ -451,10 +451,11 @@ symbol_lsp_find_references :: proc(
 
 		if container != nil &&
 			container.selection_range != nil &&
-			// Case-insensitive: the filesystems that matter are, and the
-			// server's relativized spelling may differ in case from the
-			// caller's argument.
-			strings.equal_fold(ref_rel, target_rel) &&
+			// Same-file detection carries the filesystem's case
+			// sensitivity (the server's relativized spelling may differ
+			// in case from the caller's argument where the filesystem
+			// folds case).
+			platform.path_equal(ref_rel, target_rel) &&
 			pos_at_start(container.selection_range, ref_line, ref_col) {
 			// The symbol's own declaration site.
 			if !include_self {

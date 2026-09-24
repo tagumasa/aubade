@@ -407,7 +407,7 @@ move_duplicate_check :: proc(
 		}, a), a)
 	case .None:
 	}
-	if mode != .Copy && strings.equal_fold(src_rel, dst_rel) &&
+	if mode != .Copy && platform.path_equal(src_rel, dst_rel) &&
 		dup.range != nil && sym.range != nil &&
 		dup.range.start.line == sym.range.start.line &&
 		dup.range.start.character == sym.range.start.character {

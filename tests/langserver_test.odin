@@ -449,8 +449,8 @@ langserver_multi_root_entries :: proc(t: ^testing.T) {
 
 @(test)
 langserver_runtime_checks :: proc(t: ^testing.T) {
-	testing.expect(t, langserver.binary_available(SH_NAME))
-	testing.expect(t, !langserver.binary_available("aubade-definitely-missing-xyz"))
+	testing.expect(t, platform.binary_available(SH_NAME))
+	testing.expect(t, !platform.binary_available("aubade-definitely-missing-xyz"))
 
 	good := langserver.Entry{
 		required_binaries = {{name = SH_NAME, display_name = "shell"}},
@@ -995,7 +995,7 @@ langserver_factory_stdio_smoke :: proc(t: ^testing.T) {
 		_ = t
 		return
 	} else {
-		if !langserver.binary_available("python3") {
+		if !platform.binary_available("python3") {
 			return
 		}
 
