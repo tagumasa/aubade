@@ -348,7 +348,7 @@ deny_match_target :: proc(d: ^Deny_List, target: string) -> bool {
 // An entry readdir reported as a real directory or regular file under a
 // .Resolved directory resolves to resolved/name by construction: the entry
 // itself is not a symlink, and the chain above it is already canonical —
-	// byte-identical to what is_denied's anchorless resolution would return.
+// byte-identical to what is_denied's anchorless resolution would return.
 // The state is resolved once per walk root; an unresolvable root (looping
 // chains) leaves resolved_ok false and every check falls back to the full
 // is_denied — the deny decision never weakens. Two accepted divergences,

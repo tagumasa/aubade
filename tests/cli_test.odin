@@ -1203,6 +1203,72 @@ cli_project_registry_family :: proc(t: ^testing.T) {
 }
 
 @(test)
+cli_project_registry_case_spellings :: proc(t: ^testing.T) {
+	home, herr := os.make_directory_temp("", "aubade-cli-case-", context.allocator)
+	if herr != nil {
+		testing.fail_now(t, "home temp failed")
+	}
+	defer {
+		_ = os.remove_all(home)
+		delete(home)
+	}
+	old, had := os.lookup_env_alloc("AUBADE_HOME", context.temp_allocator)
+	os.set_env("AUBADE_HOME", home)
+	defer if had {
+		os.set_env("AUBADE_HOME", old)
+	} else {
+		os.unset_env("AUBADE_HOME")
+	}
+
+	lower, _ := filepath.join({home, "src"}, context.temp_allocator)
+	upper, _ := filepath.join({home, "SRC"}, context.temp_allocator)
+
+	// Registration keys on path identity: case-divergent spellings are
+	// two distinct projects where the filesystem distinguishes them, and
+	// fold into one entry where it does not.
+	testing.expect_value(t, cli.project_register(home, lower), false)
+	testing.expect_value(t, cli.project_register(home, upper), false)
+	folded := platform.case_insensitive_fs()
+	seeded, serr := config.registry_load(home, context.temp_allocator)
+	testing.expectf(t, serr == nil, "registry_load failed")
+	if serr != nil {
+		return
+	}
+	defer config.registry_destroy(seeded, context.temp_allocator)
+	testing.expect_value(t, len(seeded.projects), folded ? 1 : 2)
+
+	// The name lookup carries the same switch: a case-divergent base
+	// name resolves the entry only where spellings fold.
+	_, name_hit := cli.registry_name_lookup("Src")
+	testing.expect_value(t, name_hit, folded)
+
+	// Removal by that divergent spelling: not registered where spellings
+	// are distinct, removes the entry where they fold.
+	testing.expect_value(t, cli.run({"project", "delete", "Src"}, "test"), folded ? 0 : 1)
+	after, aerr := config.registry_load(home, context.temp_allocator)
+	testing.expectf(t, aerr == nil, "registry_load after delete failed")
+	if aerr != nil {
+		return
+	}
+	defer config.registry_destroy(after, context.temp_allocator)
+	testing.expect_value(t, len(after.projects), folded ? 0 : 2)
+
+	if !folded {
+		// Removal by the exact path spelling takes exactly that entry;
+		// the case-divergent survivor stays.
+		testing.expect_value(t, cli.run({"project", "delete", upper}, "test"), 0)
+		final, ferr := config.registry_load(home, context.temp_allocator)
+		testing.expectf(t, ferr == nil, "registry_load final failed")
+		if ferr != nil {
+			return
+		}
+		defer config.registry_destroy(final, context.temp_allocator)
+		testing.expect_value(t, len(final.projects), 1)
+		testing.expect_value(t, final.projects[0], lower)
+	}
+}
+
+@(test)
 cli_project_index_and_doctor_cores :: proc(t: ^testing.T) {
 	pair := test_daemon(t, false)
 	if pair == nil {

@@ -306,7 +306,7 @@ project_register :: proc(home: string, root: string) -> bool {
 		return true
 	}
 	for p in entries {
-		if strings.equal_fold(p, root) {
+		if platform.path_equal(p, root) {
 			return false
 		}
 	}
@@ -373,11 +373,12 @@ project_remove_cmd :: proc(args: []string, g: ^Globals) -> int {
 	}
 
 	// Match by registry path or by its base name (the name `project
-	// list` shows), case-insensitively like the rest of the path
-	// handling.
+	// list` shows), carrying the filesystem's case sensitivity — the
+	// spellings fold where the filesystem does and stay distinct on
+	// case-sensitive ones.
 	hit := -1
 	for p, i in entries {
-		if strings.equal_fold(p, args[0]) || strings.equal_fold(filepath.base(p), args[0]) {
+		if platform.path_equal(p, args[0]) || platform.path_equal(filepath.base(p), args[0]) {
 			hit = i
 			break
 		}

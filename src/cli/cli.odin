@@ -286,7 +286,8 @@ resolve_project_root :: proc(cmd: string, g: ^Globals) -> (string, int) {
 }
 
 // registry_name_lookup resolves a registered project's base name to its
-// path (case-insensitive, like the rest of the path handling).
+// path, carrying the filesystem's case sensitivity: base names fold
+// case where the filesystem does and stay distinct spellings elsewhere.
 registry_name_lookup :: proc(name: string) -> (string, bool) {
 	home := platform.aubade_home(context.temp_allocator)
 	reg, err := config.registry_load(home, context.temp_allocator)
@@ -295,7 +296,7 @@ registry_name_lookup :: proc(name: string) -> (string, bool) {
 	}
 	defer config.registry_destroy(reg, context.temp_allocator)
 	for p in reg.projects {
-		if strings.equal_fold(filepath.base(p), name) {
+		if platform.path_equal(filepath.base(p), name) {
 			// Clone out: the deferred registry_destroy frees the element.
 			return strings.clone(p, context.temp_allocator), true
 		}
