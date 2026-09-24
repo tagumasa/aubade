@@ -5,7 +5,7 @@
 // src/util — they are generic string utilities.)
 package version
 
-AUBADE_VERSION :: "1.0.2"
+AUBADE_VERSION :: "1.0.3"
 
 // The project's repository — the contact URL the honest user agent
 // cites, so site operators can identify the bot. Kept beside the version
