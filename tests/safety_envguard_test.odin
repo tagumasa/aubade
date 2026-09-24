@@ -62,6 +62,28 @@ scrub_env_windows_path_vars_reject_traversal :: proc(t: ^testing.T) {
 }
 
 @(test)
+scrub_env_bare_names_match_exactly :: proc(t: ^testing.T) {
+	// A bare allow entry is an exact name: it never admits keys it
+	// merely prefixes — the entries that carry no secret substring are
+	// the proof, not the backstop. Trailing-underscore entries stay
+	// prefixes.
+	got := scrub_default({
+		"OS=Windows_NT",
+		"OSBUILD_META=1",
+		"HOME=/root",
+		"HOMESTEAD=x",
+		"LANGUAGE=en",
+		"LC_ALL=C",
+		"GIT_TRACE=1",
+	})
+	testing.expect_value(t, len(got), 5)
+	for entry in got {
+		testing.expect(t, !strings.has_prefix(entry, "OSBUILD"))
+		testing.expect(t, !strings.has_prefix(entry, "HOMESTEAD"))
+	}
+}
+
+@(test)
 scrub_env_drops_secret_substrings :: proc(t: ^testing.T) {
 	got := scrub_default({
 		"HOME=/root",
