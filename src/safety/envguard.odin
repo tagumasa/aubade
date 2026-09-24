@@ -41,6 +41,23 @@ DEFAULT_ALLOWED_ENV_PREFIXES :: []string{
 	"CONDA_",
 	"AUBADE_",
 	"GIT_",
+	// Windows system variables: children spawned through the scrubbed
+	// environment (the shell tool's cmd.exe and the tools it launches)
+	// need SystemRoot and ComSpec to run at all, and the per-user data
+	// roots are where Windows CLI tools keep their state. Inert on unix —
+	// those names do not exist there.
+	"SystemRoot",
+	"WINDIR",
+	"ComSpec",
+	"OS",
+	"PATHEXT",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"PROGRAMDATA",
+	"ALLUSERSPROFILE",
+	"PUBLIC",
+	"PROCESSOR_",
+	"NUMBER_OF_PROCESSORS",
 }
 
 SECRET_SUBSTRINGS :: []string{
@@ -71,6 +88,16 @@ PATH_LIKE_KEYS :: []string{
 	"JAVA_HOME",
 	"HOME",
 	"XDG_CONFIG_HOME",
+	// Windows single-path variables: they take the same ".."-segment
+	// rejection as the unix path set above.
+	"SystemRoot",
+	"WINDIR",
+	"ComSpec",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"PROGRAMDATA",
+	"ALLUSERSPROFILE",
+	"PUBLIC",
 }
 
 MAX_ENV_VALUE_LEN :: 8192

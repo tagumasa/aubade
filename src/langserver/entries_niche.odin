@@ -108,7 +108,7 @@ register_niche_entries :: proc(reg: ^Registry) {
 }
 
 check_haxe_runtime :: proc(reg: ^Registry, root_dir: string, arena: mem.Allocator) -> platform.Err {
-	if !binary_available("haxe-language-server") {
+	if !platform.binary_available("haxe-language-server") {
 		return not_installed_err("haxe-language-server", "npm install -g haxe-language-server (requires Node.js)", arena)
 	}
 	return nil

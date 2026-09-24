@@ -93,26 +93,18 @@ is_ascii_letter :: proc(c: u8) -> bool {
 }
 
 // rel_path_for_root strips the workspace-root prefix from an absolute path
-// (allocated views; the caller clones). The prefix compare is
-// case-insensitive — macOS and Windows filesystems are — and both '/'
-// and '\' count as the separator (decoded URIs use '/', platform roots may
-// use '\'). Empty when the path is outside the root.
+// (allocated views; the caller clones). The prefix compare carries the
+// filesystem's case sensitivity and both '/' and '\' count as the
+// separator (decoded URIs use '/', platform roots may use '\'). Empty
+// when the path is outside the root.
 rel_path_for_root :: proc(root, abs_path: string) -> string {
-	if root == "" || len(abs_path) <= len(root) {
+	if root == "" {
 		return ""
 	}
-	// Normalise both sides to forward slashes so backslash roots on
-	// Windows do not miss a prefix match against decoded URI paths.
-	root_slash := platform.forward_slash_view(root)
-	path_slash := platform.forward_slash_view(abs_path)
-	if !strings.equal_fold(path_slash[:len(root_slash)], root_slash) {
-		return ""
+	if rel, ok := platform.strip_root_prefix(abs_path, root); ok {
+		return rel
 	}
-	sep := abs_path[len(root)]
-	if sep != '/' && sep != '\\' {
-		return ""
-	}
-	return abs_path[len(root) + 1:]
+	return ""
 }
 
 // location_enrich fills a location's abs_path/rel_path from its file URI

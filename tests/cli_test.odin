@@ -445,6 +445,26 @@ cli_uninstall_refuses_pathological_comma :: proc(t: ^testing.T) {
 	testing.expect(t, perr == nil && value != nil, "the refused write must leave a parseable file")
 }
 
+// run_capture resolves a bare command head through PATH before spawning
+// (the platform's executable-suffix rules — npm's .cmd launchers on
+// Windows resolve here, not at the spawn) and reports not-ok for a name
+// absent from PATH without attempting a spawn.
+@(test)
+cli_run_capture_resolves_bare_name :: proc(t: ^testing.T) {
+	shell := "sh"
+	flag := "-c"
+	when ODIN_OS == .Windows {
+		shell, flag = "cmd", "/C"
+	}
+	res, ok := cli.run_capture({shell, flag, "echo hi"})
+	testing.expect(t, ok)
+	testing.expect_value(t, res.code, 0)
+	testing.expect(t, strings.contains(res.stdout, "hi"))
+
+	_, missing := cli.run_capture({"aubade-definitely-missing-xyz", "--version"})
+	testing.expect(t, !missing)
+}
+
 // The delegated removals must target the same server name and scope setup
 // registered: claude's add used `--scope user`, so the remove names it too.
 @(test)

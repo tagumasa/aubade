@@ -296,14 +296,19 @@ denylist_add_pattern :: proc(d: ^Deny_List, pattern: string) -> platform.Err {
 }
 
 // is_denied reports whether the path matches any deny pattern, after
-// percent-decoding, cleaning, and symlink resolution.
+// percent-decoding, cleaning, and symlink resolution. The resolution
+// carries no anchor prefix: deny matching canonicalizes, it does not
+// contain — an anchored resolver would treat every Windows hop as an
+// escape (a drive-letter target is never under "/") and hand matching
+// back the un-resolved spelling, where a junction that spells around a
+// denied location slips through.
 is_denied :: proc(d: ^Deny_List, path: string) -> bool {
 	normalised := normalise_for_matching(path, context.temp_allocator)
 	cleaned, clean_err := filepath.clean(normalised, context.temp_allocator)
 	if clean_err != nil {
 		return true // fail closed: the deny decision must not guess
 	}
-	resolved, status := pathguard_resolve_symlinks(cleaned, "/", context.temp_allocator)
+	resolved, status := pathguard_resolve_symlinks(cleaned, "", context.temp_allocator)
 	target := cleaned
 	if status == .Resolved || status == .Missing {
 		target = resolved
@@ -343,7 +348,7 @@ deny_match_target :: proc(d: ^Deny_List, target: string) -> bool {
 // An entry readdir reported as a real directory or regular file under a
 // .Resolved directory resolves to resolved/name by construction: the entry
 // itself is not a symlink, and the chain above it is already canonical —
-// byte-identical to what is_denied's "/"-anchored resolution would return.
+	// byte-identical to what is_denied's anchorless resolution would return.
 // The state is resolved once per walk root; an unresolvable root (looping
 // chains) leaves resolved_ok false and every check falls back to the full
 // is_denied — the deny decision never weakens. Two accepted divergences,
@@ -673,7 +678,8 @@ append_env_value :: proc(buf: ^[dynamic]u8, name: string, a := context.allocator
 
 // is_write_denied reports whether writing the path is denied. Advisory:
 // resolution happens at check time (TOCTOU); callers still validate
-// containment.
+// containment. Resolution is anchorless like is_denied's — matching
+// canonicalizes and must not fall back to a junction spelling.
 is_write_denied :: proc(t: ^Write_Denied_Tables, path: string) -> bool {
 	expanded, ok := expand_env_safe(path, context.temp_allocator)
 	if !ok {
@@ -683,7 +689,7 @@ is_write_denied :: proc(t: ^Write_Denied_Tables, path: string) -> bool {
 	if clean_err != nil {
 		return true // fail closed: the deny decision must not guess
 	}
-	resolved, status := pathguard_resolve_symlinks(cleaned, "/", context.temp_allocator)
+	resolved, status := pathguard_resolve_symlinks(cleaned, "", context.temp_allocator)
 	if status != .Resolved && status != .Missing {
 		resolved = cleaned
 	}
@@ -697,7 +703,7 @@ is_write_denied :: proc(t: ^Write_Denied_Tables, path: string) -> bool {
 		if d_clean_err != nil {
 			return true // fail closed: a rule we cannot interpret denies
 		}
-		d_resolved, d_status := pathguard_resolve_symlinks(d_clean, "/", context.temp_allocator)
+		d_resolved, d_status := pathguard_resolve_symlinks(d_clean, "", context.temp_allocator)
 		if d_status != .Resolved && d_status != .Missing {
 			d_resolved = d_clean
 		}
@@ -715,7 +721,7 @@ is_write_denied :: proc(t: ^Write_Denied_Tables, path: string) -> bool {
 		if p_clean_err != nil {
 			return true // fail closed: a rule we cannot interpret denies
 		}
-		p_resolved, p_status := pathguard_resolve_symlinks(p_clean, "/", context.temp_allocator)
+		p_resolved, p_status := pathguard_resolve_symlinks(p_clean, "", context.temp_allocator)
 		if p_status != .Resolved && p_status != .Missing {
 			p_resolved = p_clean
 		}
@@ -806,14 +812,16 @@ path_contains_segment :: proc(path, segment: string) -> bool {
 }
 
 // is_sensitive_system_path reports whether the path points at sensitive
-// system locations (/etc, /boot, systemd, the docker socket).
+// system locations (/etc, /boot, systemd, the docker socket). Resolution
+// is anchorless like is_denied's, so a junction spelling that hides the
+// real system location still resolves before the compare.
 is_sensitive_system_path :: proc(path: string) -> bool {
 	normalised := normalise_for_matching(path, context.temp_allocator)
 	cleaned, clean_err := filepath.clean(normalised, context.temp_allocator)
 	if clean_err != nil {
 		return true // fail closed: the deny decision must not guess
 	}
-	resolved, status := pathguard_resolve_symlinks(cleaned, "/", context.temp_allocator)
+	resolved, status := pathguard_resolve_symlinks(cleaned, "", context.temp_allocator)
 	if status != .Resolved && status != .Missing {
 		resolved = cleaned
 	}

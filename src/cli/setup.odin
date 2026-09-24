@@ -94,14 +94,45 @@ run_setup :: proc(args: []string, g: ^Globals, version: string) -> int {
 // --- shared helpers ----------------------------------------------------------
 
 // run_capture executes `command` and waits for it, capturing both streams.
+// The head resolves through PATH with the platform's executable suffixes:
+// a bare name reaching a Windows spawn resolves .exe only, so npm's .cmd
+// launchers — what claude/codex/qwen/opencode install as — must be
+// resolved before the spawn, for the applicability probes and the
+// `mcp add` registrations alike. The spawn rides the bounded runner
+// (stream caps, timeout, tree kill) so a wedged or noisy client cannot
+// hang setup or flood the capture.
+RUN_CAPTURE_TIMEOUT_MS :: i64(15_000)
+RUN_CAPTURE_MAX_STREAM_BYTES :: 256 * 1024
+
 run_capture :: proc(command: []string) -> (Capture_Result, bool) {
-	desc: os.Process_Desc
-	desc.command = command
-	state, stdout, stderr, err := os.process_exec(desc, context.temp_allocator)
+	if len(command) == 0 || command[0] == "" {
+		return {}, false
+	}
+	head := command[0]
+	if !strings.contains_any(head, "/\\") {
+		head = platform.find_in_path(head, context.temp_allocator)
+		if head == "" {
+			return {}, false
+		}
+	}
+	argv := make([dynamic]string, 0, len(command), context.temp_allocator)
+	append(&argv, head)
+	for arg in command[1:] {
+		append(&argv, arg)
+	}
+	res, err := platform.procrun(platform.Procrun_Opts {
+		command = argv[:],
+		capture_stderr = true,
+		max_stream_bytes = RUN_CAPTURE_MAX_STREAM_BYTES,
+		timeout_ms = RUN_CAPTURE_TIMEOUT_MS,
+		// A client CLI hung mid-run (network probe, stale lock) must die
+		// with the call, subtree included — the CLI's spawned helpers too.
+		process_group = true,
+	}, context.temp_allocator)
 	if err != nil {
 		return {}, false
 	}
-	return {string(stdout), string(stderr), state.exit_code}, true
+	return {res.stdout, res.stderr, res.exit_code}, true
 }
 
 // resolve_aubade_binary prefers the running executable over a PATH lookup:

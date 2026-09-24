@@ -123,7 +123,7 @@ probe_msl_server :: proc(reg: ^Registry) -> (argv: []string, ok: bool) {
 	// reg.mu, and this section deliberately runs unlocked); the winning
 	// result is cloned into the arena under the lock below.
 	for py in python_interpreter_candidates() {
-		if !binary_available(py) {
+		if !platform.binary_available(py) {
 			continue
 		}
 		if python_module_importable(py, "msl.langserver") {

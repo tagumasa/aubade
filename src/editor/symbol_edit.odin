@@ -13,6 +13,7 @@ package editor
 
 import "core:strings"
 import "core:sync"
+import "src:platform"
 import "src:symbol"
 import "src:util"
 
@@ -595,9 +596,11 @@ editor_symbol_move :: proc(
 		extracted = strings.concatenate({extracted, "\n"}, context.temp_allocator)
 	}
 
-	// Case-insensitive: the filesystems that matter are; a case-divergent
-	// spelling of one file must still take the intra-file path.
-	if strings.equal_fold(source_rel, target_rel) {
+	// Same-file detection carries the filesystem's case sensitivity: a
+	// case-divergent spelling of one file must still take the intra-file
+	// path on macOS/Windows, while distinct spellings stay distinct files
+	// on Linux.
+	if platform.path_equal(source_rel, target_rel) {
 		if insert_line >= comment_start && insert_line <= body_end {
 			return "", .Invalid, strings.concatenate({
 				"cannot move symbol \"", name_path, "\" into its own body range",
