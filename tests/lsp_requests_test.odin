@@ -135,6 +135,21 @@ lsp_uri_roundtrip :: proc(t: ^testing.T) {
 		if unc_ok {
 			testing.expect_value(t, unc, "//server/share/a b.go")
 		}
+
+		// RFC 8089: a "localhost" authority reads as if no authority
+		// were present, so the drive form decodes like a plain local
+		// one (this arm compiles only on the Windows CI matrix).
+		local, local_ok := lsp.uri_to_path("file://localhost/C:/tmp/a%20b.go", context.temp_allocator)
+		testing.expect_value(t, local_ok, true)
+		if local_ok {
+			testing.expect_value(t, local, "C:/tmp/a b.go")
+		}
+
+		caps, caps_ok := lsp.uri_to_path("file://LocalHost/C:/tmp/x.go", context.temp_allocator)
+		testing.expect_value(t, caps_ok, true)
+		if caps_ok {
+			testing.expect_value(t, caps, "C:/tmp/x.go")
+		}
 	} else {
 		_, unc_ok := lsp.uri_to_path("file://server/share/a%20b.go", context.temp_allocator)
 		testing.expect_value(t, unc_ok, false)

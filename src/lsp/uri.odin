@@ -38,6 +38,14 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 		i += 1
 	}
 	when ODIN_OS == .Windows {
+		// A "localhost" authority reads exactly as if no authority were
+		// present (RFC 8089, hosts compare case-insensitively): strip it
+		// before the drive-letter and UNC handling below, so the local
+		// spellings decode like plain local paths.
+		n, localhost := authority_span(out[:])
+		if n > 0 && localhost && n < len(out) {
+			drop_leading(&out, n)
+		}
 		// "file:///C:/x" carries a slash before the drive letter; the
 		// platform path form has none.
 		if len(out) >= 3 && out[0] == '/' && is_ascii_letter(out[1]) && out[2] == ':' {
@@ -66,19 +74,13 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 		// "localhost" authority exactly as if no authority were present
 		// (hosts compare case-insensitively), so its path decodes like a
 		// plain local one.
-		if len(out) > 0 && out[0] != '/' {
-			authority_end := 0
-			for authority_end < len(out) && out[authority_end] != '/' {
-				authority_end += 1
-			}
-			if authority_end == len(out) || !strings.equal_fold(string(out[:authority_end]), "localhost") {
+		n, localhost := authority_span(out[:])
+		if n > 0 {
+			if n == len(out) || !localhost {
 				delete(out)
 				return "", false
 			}
-			for j := authority_end; j < len(out); j += 1 {
-				out[j - authority_end] = out[j]
-			}
-			resize(&out, len(out) - authority_end)
+			drop_leading(&out, n)
 		}
 	}
 	if len(out) == 0 {
@@ -90,6 +92,31 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 
 is_ascii_letter :: proc(c: u8) -> bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// authority_span reports the length of the leading authority — the
+// bytes before the first '/', zero when the decoded path starts with
+// '/' (no authority) — and whether that authority spells "localhost"
+// case-insensitively: RFC 8089 reads such an authority exactly as if
+// no authority were present.
+authority_span :: proc(out: []u8) -> (n: int, localhost: bool) {
+	if len(out) > 0 && out[0] == '/' {
+		return 0, false
+	}
+	end := 0
+	for end < len(out) && out[end] != '/' {
+		end += 1
+	}
+	return end, strings.equal_fold(string(out[:end]), "localhost")
+}
+
+// drop_leading removes the first `n` bytes of `out` in place — the
+// authority strip, shifting the path that follows to the front.
+drop_leading :: proc(out: ^[dynamic]u8, n: int) {
+	for j := n; j < len(out^); j += 1 {
+		out^[j - n] = out^[j]
+	}
+	resize(out, len(out^) - n)
 }
 
 // rel_path_for_root strips the workspace-root prefix from an absolute path

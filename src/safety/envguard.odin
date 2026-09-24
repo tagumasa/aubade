@@ -1,7 +1,8 @@
 // Env scrubbing: keep only environment variables whose names match an
-// allowed prefix and whose values pass per-variable validation
-// (null-byte rejection, path traversal rejection for path-like keys,
-// URL-scheme enforcement, length capping).
+// allowed entry — a trailing-underscore entry is a prefix, any other
+// entry is an exact name — and whose values pass per-variable
+// validation (null-byte rejection, path traversal rejection for
+// path-like keys, URL-scheme enforcement, length capping).
 package safety
 
 import "core:mem"
@@ -9,11 +10,12 @@ import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 
-DEFAULT_ALLOWED_ENV_PREFIXES :: []string{
+DEFAULT_ALLOWED_ENV_KEYS :: []string{
 	"HOME",
 	"PATH",
 	"USER",
 	"LANG",
+	"LANGUAGE",
 	"LC_",
 	"TERM",
 	"SHELL",
@@ -44,8 +46,11 @@ DEFAULT_ALLOWED_ENV_PREFIXES :: []string{
 	// Windows system variables: children spawned through the scrubbed
 	// environment (the shell tool's cmd.exe and the tools it launches)
 	// need SystemRoot and ComSpec to run at all, and the per-user data
-	// roots are where Windows CLI tools keep their state. Inert on unix —
-	// those names do not exist there.
+	// roots are where Windows CLI tools keep their state. The account
+	// identity and home spellings were previously admitted only through
+	// the USER/HOME prefix over-match; they are named now that bare
+	// entries match exactly. Inert on unix — those names do not exist
+	// there.
 	"SystemRoot",
 	"WINDIR",
 	"ComSpec",
@@ -56,6 +61,10 @@ DEFAULT_ALLOWED_ENV_PREFIXES :: []string{
 	"PROGRAMDATA",
 	"ALLUSERSPROFILE",
 	"PUBLIC",
+	"USERNAME",
+	"USERPROFILE",
+	"HOMEDRIVE",
+	"HOMEPATH",
 	"PROCESSOR_",
 	"NUMBER_OF_PROCESSORS",
 }
@@ -111,7 +120,7 @@ Env_Guard :: struct {
 	allowed: [dynamic]string,
 }
 
-envguard_init :: proc(g: ^Env_Guard, allowed: []string = DEFAULT_ALLOWED_ENV_PREFIXES, a := context.allocator) {
+envguard_init :: proc(g: ^Env_Guard, allowed: []string = DEFAULT_ALLOWED_ENV_KEYS, a := context.allocator) {
 	g^ = {}
 	g.allowed = make([dynamic]string, 0, len(allowed), a)
 	for p in allowed {
@@ -124,17 +133,19 @@ envguard_destroy :: proc(g: ^Env_Guard) {
 	g^ = {}
 }
 
-// envguard_add_allowed borrows `prefix`: the guard stores the string
+// envguard_add_allowed borrows `entry`: the guard stores the string
 // without cloning, and envguard_destroy frees only the list — the caller
-// owns the lifetimes of every entry it adds.
-envguard_add_allowed :: proc(g: ^Env_Guard, prefix: string) {
+// owns the lifetimes of every entry it adds. The entry follows the
+// allow-list rule: ending in "_" makes it a prefix, anything else is an
+// exact name.
+envguard_add_allowed :: proc(g: ^Env_Guard, entry: string) {
 	sync.lock(&g.mu)
 	defer sync.unlock(&g.mu)
-	append(&g.allowed, prefix)
+	append(&g.allowed, entry)
 }
 
-// envguard_scrub keeps only entries whose keys match the guard's allowed
-// prefixes (envguard_add_allowed takes effect) and whose values pass
+// envguard_scrub keeps only entries whose keys match the guard's allow
+// entries (envguard_add_allowed takes effect) and whose values pass
 // validation. The guard lock spans the loop — nothing in it re-enters the
 // guard, and a snapshot-then-unlock would leave the slice view dangling
 // across a concurrent append.
@@ -166,11 +177,20 @@ envguard_scrub :: proc(g: ^Env_Guard, env: []string, a: mem.Allocator) -> []stri
 }
 
 // key_allowed and key_contains_secret compare case-insensitively against
-// the prefix/substring tables so we don't need to allocate an upper-cased
-// copy of the key on every entry.
-key_allowed :: proc(key: string, prefixes: []string) -> bool {
-	for prefix in prefixes {
-		if ci_has_prefix(key, prefix) {
+// the entry/substring tables so we don't need to allocate an upper-cased
+// copy of the key on every entry. An allow entry ending in "_" is a
+// prefix (LC_, GIT_, PROCESSOR_); every other entry is an exact name
+// (HOME, SystemRoot) — the trailing underscore is the declared intent,
+// so a bare name never admits names it merely prefixes. The
+// secret-substring screen is a second gate, not the thing that keeps an
+// over-broad entry safe.
+key_allowed :: proc(key: string, entries: []string) -> bool {
+	for entry in entries {
+		if ci_has_suffix(entry, "_") {
+			if ci_has_prefix(key, entry) {
+				return true
+			}
+		} else if ci_equal(key, entry) {
 			return true
 		}
 	}
