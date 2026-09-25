@@ -114,18 +114,26 @@ shell_run_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	}
 
 	// The answer object renders {stdout, stderr (omitempty), return_code,
-	// cwd} in that declaration order — clients pin the byte shape.
+	// cwd} in that declaration order — clients pin the byte shape. The
+	// captured streams decode through the platform console seam first:
+	// UTF-8 by contract on POSIX, OEM-code-page re-encoding on Windows so
+	// non-ASCII cmd.exe output survives the quoting instead of collapsing
+	// to U+FFFD.
+	stdout_text := platform.console_output_to_utf8(run_res.stdout, ctx.allocator)
 	parts: [4]string
 	parts[0] = strings.concatenate({
-		"{\"stdout\": ", jsonutil.json_quote(run_res.stdout, ctx.allocator),
+		"{\"stdout\": ", jsonutil.json_quote(stdout_text, ctx.allocator),
 		", ",
 	}, ctx.allocator)
+	delete(stdout_text, ctx.allocator)
 	parts[1] = ""
 	if capture_stderr && run_res.stderr != "" {
+		stderr_text := platform.console_output_to_utf8(run_res.stderr, ctx.allocator)
 		parts[1] = strings.concatenate({
-			"\"stderr\": ", jsonutil.json_quote(run_res.stderr, ctx.allocator),
+			"\"stderr\": ", jsonutil.json_quote(stderr_text, ctx.allocator),
 			", ",
 		}, ctx.allocator)
+		delete(stderr_text, ctx.allocator)
 	}
 	parts[2] = strings.concatenate({
 		"\"return_code\": ", util.int_to_dec(run_res.exit_code, ctx.allocator),
