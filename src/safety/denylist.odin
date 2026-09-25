@@ -168,45 +168,6 @@ WIN_SENSITIVE_SYSTEM_RELPATHS :: []string{
 	"System32\\drivers\\etc",
 }
 
-// deny_pattern_to_regex translates a deny glob (*, **, ?, metachar escapes)
-// into an anchored regex; case-insensitive wrapping is the caller's.
-deny_pattern_to_regex :: proc(pattern: string, a := context.allocator) -> string {
-	slash, _ := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
-	buf := make([dynamic]u8, 0, len(slash) + 8, a)
-	append(&buf, '^')
-	i := 0
-	for i < len(slash) {
-		c := slash[i]
-		switch c {
-		case '*':
-			if i + 1 < len(slash) && slash[i + 1] == '*' {
-				if i + 2 < len(slash) && slash[i + 2] == '/' {
-					append(&buf, "(.*/)?")
-					i += 3
-				} else {
-					append(&buf, ".*")
-					i += 2
-				}
-			} else {
-				append(&buf, "[^/]*")
-				i += 1
-			}
-		case '?':
-			append(&buf, "[^/]")
-			i += 1
-		case '.', '(', ')', '+', '|', '^', '$', '[', ']', '{', '}', '\\':
-			append(&buf, '\\')
-			append(&buf, c)
-			i += 1
-		case:
-			append(&buf, c)
-			i += 1
-		}
-	}
-	append(&buf, '$')
-	return string(buf[:])
-}
-
 // Deny_List holds compiled deny patterns. Safe for concurrent reads; adds
 // take the lock.
 Deny_List :: struct {
@@ -245,7 +206,17 @@ denylist_add_pattern :: proc(d: ^Deny_List, pattern: string) -> platform.Err {
 			return nil
 		}
 	}
-	regex_str := deny_pattern_to_regex(pattern, context.temp_allocator)
+	// The deny grammar is the shared glob translator's (*, **, ?, [seq],
+	// {braces}); anchoring both ends and case folding are this gate's
+	// concern. Backslash separators normalize to '/' first — glob_to_regex
+	// reads '\' as an escape, the deny gate reads it as a separator.
+	slash, slash_fresh := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
+	unanchored := regex.glob_to_regex(slash, context.temp_allocator)
+	regex_str := strings.concatenate({"^", unanchored, "$"}, context.temp_allocator)
+	delete(unanchored, context.temp_allocator)
+	if slash_fresh {
+		delete(slash, context.temp_allocator)
+	}
 	// Case-insensitive filesystems match deny globs across case variants:
 	// **/.env must also catch .ENV.
 	if platform.case_insensitive_fs() {
