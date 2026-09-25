@@ -354,32 +354,6 @@ query_escape :: proc(s: string, a := context.allocator) -> string {
 	return strings.clone(transmute(string)(buf[:]), a)
 }
 
-query_unescape :: proc(s: string, a := context.allocator) -> string {
-	buf := make([dynamic]u8, 0, len(s), a)
-	defer delete(buf)
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		if c == '%' && i + 2 < len(s) {
-			hi := util.hex_digit_value(s[i + 1])
-			lo := util.hex_digit_value(s[i + 2])
-			if hi >= 0 && lo >= 0 {
-				append(&buf, u8(hi * 16 + lo))
-				i += 3
-				continue
-			}
-		}
-		if c == '+' {
-			append(&buf, ' ')
-			i += 1
-			continue
-		}
-		append(&buf, c)
-		i += 1
-	}
-	return strings.clone(transmute(string)(buf[:]), a)
-}
-
 // retryable_status reports whether the next key should be tried for this
 // HTTP status (rate limit, auth, forbidden, server errors).
 retryable_status :: proc(status: int) -> bool {
@@ -854,7 +828,7 @@ extract_ddg_results :: proc(body: string, count: int, query: string, a := contex
 			if amp := strings.index_byte(target, '&'); amp >= 0 {
 				target = target[:amp]
 			}
-			url_str = query_unescape(target, context.temp_allocator)
+			url_str = util.percent_decode(target, context.temp_allocator, plus_to_space = true)
 		}
 		append(&out, strings.concatenate({
 			util.int_to_dec(i + 1, a), ". ", links[i].title, "\n   ", url_str,

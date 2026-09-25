@@ -22,21 +22,9 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 	}
 	rest := uri[len(prefix):]
 	out := make([dynamic]u8, 0, len(rest), a)
-	i := 0
-	for i < len(rest) {
-		c := rest[i]
-		if c == '%' && i + 2 < len(rest) {
-			hi := util.hex_digit_value(rest[i + 1])
-			lo := util.hex_digit_value(rest[i + 2])
-			if hi >= 0 && lo >= 0 {
-				append(&out, u8(hi * 16 + lo))
-				i += 3
-				continue
-			}
-		}
-		append(&out, c)
-		i += 1
-	}
+	// Malformed escapes keep their bytes — the shared decode loop's
+	// default policy for path decoders.
+	_ = util.percent_decode_into(rest, &out)
 	when ODIN_OS == .Windows {
 		// A "localhost" authority reads exactly as if no authority were
 		// present (RFC 8089, hosts compare case-insensitively): strip it

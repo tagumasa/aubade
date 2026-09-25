@@ -56,32 +56,7 @@ deny_path_contains :: proc(s, sub: string) -> bool {
 // before matching would be a no-op here — the deny patterns are ASCII —
 // so the decode is the only normalisation applied.
 normalise_for_matching :: proc(path: string, a := context.allocator) -> string {
-	decoded := percent_decode(path, a)
-	return decoded
-}
-
-// percent_decode decodes %XX sequences; malformed escapes keep their
-// bytes.
-percent_decode :: proc(s: string, a := context.allocator) -> string {
-	if !strings.contains(s, "%") {
-		return s
-	}
-	buf := make([dynamic]u8, 0, len(s), a)
-	i := 0
-	for i < len(s) {
-		if s[i] == '%' && i + 2 < len(s) {
-			hi := util.hex_digit_value(s[i + 1])
-			lo := util.hex_digit_value(s[i + 2])
-			if hi >= 0 && lo >= 0 {
-				append(&buf, u8(hi * 16 + lo))
-				i += 3
-				continue
-			}
-		}
-		append(&buf, s[i])
-		i += 1
-	}
-	return string(buf[:])
+	return util.percent_decode(path, a)
 }
 
 DEFAULT_DENY_PATTERNS :: []string{

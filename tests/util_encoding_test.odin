@@ -238,3 +238,31 @@ utf8_rune_count :: proc(s: string) -> int {
 	}
 	return n
 }
+
+@(test)
+percent_decode_policies :: proc(t: ^testing.T) {
+	// Keep_Bytes (the path-decoder stance): valid escapes decode, malformed
+	// and truncated escapes pass their bytes through literally.
+	keep := util.percent_decode("a%20b%2", context.allocator)
+	defer delete(keep, context.allocator)
+	testing.expect_value(t, keep, "a b%2")
+	malformed := util.percent_decode("x%zz", context.allocator)
+	defer delete(malformed, context.allocator)
+	testing.expect_value(t, malformed, "x%zz")
+
+	// plus_to_space (the form/query stance): '+' maps to a space alongside
+	// the escapes.
+	plus := util.percent_decode("a+b%21", context.allocator, plus_to_space = true)
+	defer delete(plus, context.allocator)
+	testing.expect_value(t, plus, "a b!")
+
+	// Return_Input (the guard stance): one malformed escape anywhere returns
+	// the whole input unchanged — a partial decode must never reach a
+	// security matcher.
+	bail := util.percent_decode("a%20b%zz", context.allocator, malformed = .Return_Input)
+	defer delete(bail, context.allocator)
+	testing.expect_value(t, bail, "a%20b%zz")
+	truncated := util.percent_decode("a%2", context.allocator, malformed = .Return_Input)
+	defer delete(truncated, context.allocator)
+	testing.expect_value(t, truncated, "a%2")
+}

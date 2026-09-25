@@ -270,7 +270,7 @@ redact_query_string :: proc(query: string, a: mem.Allocator) -> string {
 			continue
 		}
 		key := p[:idx]
-		decoded := percent_decode(key, context.temp_allocator)
+		decoded := util.percent_decode(key, context.temp_allocator)
 		lower := strings.to_lower(decoded, context.temp_allocator)
 		for sensitive in SENSITIVE_QUERY_PARAMS {
 			if lower == sensitive {
