@@ -48,6 +48,10 @@ DB :: struct {
 
 DEFAULT_TTL_MS :: i64(24 * 60 * 60 * 1000) // 24 h, the single symbol TTL
 
+// How long a store connection waits for a rival transaction's lock before
+// failing the call (WAL keeps readers off that path; this bounds writers).
+SQLITE_BUSY_TIMEOUT_MS :: i32(5000)
+
 // db_open opens (creating if needed) the project database and applies the
 // pragmas and schema.
 db_open :: proc(path: string, a := context.allocator) -> (db: ^DB, err: platform.Err) {
@@ -82,17 +86,22 @@ db_open :: proc(path: string, a := context.allocator) -> (db: ^DB, err: platform
 	fingerprint_map_init(&db.fp, a)
 
 	// Pragmas: incremental auto-vacuum (dead pages returnable by the daily
-	// sweep), WAL journal, relaxed sync, bounded lock waits, a bounded page
-	// cache, and WAL high-water truncation after checkpoints.
-	// auto_vacuum must run FIRST and before the schema DDL below: it only
-	// takes effect on a store with no tables, and setting journal_mode
-	// first materializes the header page, which already counts as
-	// non-empty for this pragma.
+	// sweep), WAL journal, relaxed sync, a bounded page cache, and WAL
+	// high-water truncation after checkpoints. The busy timeout rides the
+	// C API (named below) rather than a string pragma, and is armed before
+	// the loop so journal_mode — which can itself meet a rival lock —
+	// already waits. auto_vacuum must run FIRST and before the schema DDL
+	// below: it only takes effect on a store with no tables, and setting
+	// journal_mode first materializes the header page, which already
+	// counts as non-empty for this pragma.
+	if sqlite3_busy_timeout(handle, SQLITE_BUSY_TIMEOUT_MS) != SQLITE_OK {
+		db_close(db)
+		return nil, platform.Wrapped{kind = .Internal, msg = "store: busy_timeout failed"}
+	}
 	pragmas := []string{
 		"PRAGMA auto_vacuum = INCREMENTAL;",
 		"PRAGMA journal_mode = WAL;",
 		"PRAGMA synchronous = NORMAL;",
-		"PRAGMA busy_timeout = 5000;",
 		"PRAGMA cache_size = -65536;", // 64 MiB page cache (the store budget)
 		"PRAGMA journal_size_limit = 8388608;", // 8 MiB: the WAL shrinks back after a spike
 	}

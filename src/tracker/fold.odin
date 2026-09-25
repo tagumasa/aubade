@@ -715,7 +715,7 @@ apply_sprint_started :: proc(s: ^Fold_State, ev: ^Decoded_Event, scratch: mem.Al
 		state_anomaly(s, ev, cat(buf[:], scratch))
 	}
 	s.spr_count += 1
-	id := fmt.aprintf("SPR-%03d", s.spr_count, allocator = s.allocator)
+	id := fmt.aprintf("%v%03d", SPRINT_ID_PREFIX, s.spr_count, allocator = s.allocator)
 	h := new(Sprint_Header, s.allocator)
 	h^ = {
 		id         = id,

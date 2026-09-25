@@ -167,15 +167,12 @@ is_root_marker :: proc(name: string, markers: []string) -> bool {
 	return false
 }
 
-// fold_dir_key builds the dedup key for a directory path: exact on
-// case-sensitive filesystems, ASCII-folded on macOS/Windows — the same
-// spelling rule the daemon project id uses. The key is a view on Linux
-// and a temp-owned lowercase clone elsewhere; either way its lifetime
-// only needs to outlive the map it keys.
+// fold_dir_key builds the dedup key for a directory path through
+// platform.path_fold — exact on case-sensitive filesystems, ASCII-folded
+// on macOS/Windows, the same spelling rule the daemon project id uses and
+// the one basis platform.path_equal compares under, so the dedup and every
+// path compare agree. The key is a view on Linux and a temp-owned clone
+// elsewhere; either way its lifetime only needs to outlive the map it keys.
 fold_dir_key :: proc(p: string) -> string {
-	when ODIN_OS == .Darwin || ODIN_OS == .Windows {
-		return strings.to_lower(p, context.temp_allocator)
-	} else {
-		return p
-	}
+	return platform.path_fold(p, context.temp_allocator)
 }

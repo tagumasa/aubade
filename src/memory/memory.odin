@@ -101,24 +101,6 @@ is_global_name :: proc(name: string) -> bool {
 	return name == GLOBAL_TOPIC || strings.has_prefix(name, GLOBAL_PREFIX)
 }
 
-// name_has_dot_dot reports whether any '/'- or '\'-separated segment is
-// ".." (both separators, so a windows-style traversal cannot slip past a
-// '/'-only split).
-name_has_dot_dot :: proc(name: string) -> bool {
-	i := 0
-	for i < len(name) {
-		j := i
-		for j < len(name) && name[j] != '/' && name[j] != '\\' {
-			j += 1
-		}
-		if j - i == 2 && name[i] == '.' && name[i + 1] == '.' {
-			return true
-		}
-		i = j + 1
-	}
-	return false
-}
-
 // validate_name rejects empty names and traversal segments. Error
 // messages are allocated on `a`.
 validate_name :: proc(name: string, a: mem.Allocator) -> platform.Err {
@@ -128,7 +110,7 @@ validate_name :: proc(name: string, a: mem.Allocator) -> platform.Err {
 			msg  = strings.clone("memory_name must not be empty", a),
 		}
 	}
-	if name_has_dot_dot(name) {
+	if platform.has_dot_dot(name) {
 		return platform.Wrapped{
 			kind = .Invalid,
 			msg = strings.concatenate(

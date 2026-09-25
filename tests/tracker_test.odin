@@ -10,6 +10,7 @@ import "core:mem"
 import "core:strings"
 import "core:testing"
 import "src:store"
+import "src:jsonutil"
 import "src:tracker"
 
 @(private)
@@ -1254,25 +1255,26 @@ tracker_resume_summary :: proc(t: ^testing.T) {
 }
 
 @(test)
-tracker_json_escape_encodes_control_bytes :: proc(t: ^testing.T) {
+tracker_report_json_quote_encodes_control_bytes :: proc(t: ^testing.T) {
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
 	defer mem.dynamic_arena_destroy(&arena)
 	a := mem.dynamic_arena_allocator(&arena)
 
-	// Plain text rides the fast path unchanged.
-	testing.expect_value(t, tracker.json_escape("plain title", a), "plain title")
+	// The export renders string fields through jsonutil.json_quote — the
+	// one JSON string escaper — which also carries the quotes.
+	testing.expect_value(t, jsonutil.json_quote("plain title", a), "\"plain title\"")
 
 	// Mandatory escapes survive.
-	testing.expect_value(t, tracker.json_escape("a\"b\\c", a), "a\\\"b\\\\c")
+	testing.expect_value(t, jsonutil.json_quote("a\"b\\c", a), "\"a\\\"b\\\\c\"")
 
 	// C0 controls (which validate_title admits — it rejects only \n\r)
 	// must not pass through raw: a raw control byte makes the exported
 	// report invalid JSON. Named controls keep their short forms.
-	testing.expect_value(t, tracker.json_escape("fix\x1b[0m", a), "fix\\u001b[0m")
-	testing.expect_value(t, tracker.json_escape("nl\nnl", a), "nl\\nnl")
-	testing.expect_value(t, tracker.json_escape("x\x00y", a), "x\\u0000y")
+	testing.expect_value(t, jsonutil.json_quote("fix\x1b[0m", a), "\"fix\\u001b[0m\"")
+	testing.expect_value(t, jsonutil.json_quote("nl\nnl", a), "\"nl\\nnl\"")
+	testing.expect_value(t, jsonutil.json_quote("x\x00y", a), "\"x\\u0000y\"")
 
 	// DEL (0x7f) is outside JSON's mandatory escape set and passes raw.
-	testing.expect_value(t, tracker.json_escape("del\x7f", a), "del\x7f")
+	testing.expect_value(t, jsonutil.json_quote("del\x7f", a), "\"del\x7f\"")
 }

@@ -632,7 +632,7 @@ matched_incidents :: proc(
 		delete(deps, context.temp_allocator)
 	}
 	ctx.sprint = f.sprint
-	if ctx.sprint == "current" {
+	if ctx.sprint == SPRINT_CURRENT_ALIAS {
 		active := active_sprint(s)
 		if active == nil {
 			return nil, inv(a, "no active sprint (sprint=current)")

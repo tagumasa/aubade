@@ -165,6 +165,72 @@ hex_digit_value :: proc(c: u8) -> int {
 	return -1
 }
 
+// Malformed_Escape is what percent_decode does with a %xx sequence whose
+// two following bytes are not hex digits: pass the bytes through
+// literally, or bail out and return the input unchanged. One decoder
+// serves every percent consumer (URI paths, deny-list matching, URL
+// guards, search queries); the policy is the caller's security stance,
+// stated at the call site.
+Malformed_Escape :: enum {
+	Keep_Bytes,
+	Return_Input,
+}
+
+// percent_decode_into appends the decoded bytes of `s` to `out` and
+// reports whether the decode ran to the end: the .Return_Input policy
+// stops at the first malformed escape (truncated or non-hex) and leaves
+// a partial decode the caller discards. One loop serves every percent
+// consumer (URI paths, deny-list matching, URL guards, search queries);
+// the ownership facade below and the dynamic-buffer callers share it.
+percent_decode_into :: proc(s: string, out: ^[dynamic]u8, plus_to_space := false, malformed := Malformed_Escape.Keep_Bytes) -> bool {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '%' {
+			if i + 2 < len(s) {
+				hi := hex_digit_value(s[i + 1])
+				lo := hex_digit_value(s[i + 2])
+				if hi >= 0 && lo >= 0 {
+					append(out, u8(hi * 16 + lo))
+					i += 3
+					continue
+				}
+			}
+			// Truncated or non-hex: the two policies part ways.
+			if malformed == .Return_Input {
+				return false
+			}
+		}
+		if c == '+' && plus_to_space {
+			append(out, ' ')
+		} else {
+			append(out, c)
+		}
+		i += 1
+	}
+	return true
+}
+
+// percent_decode is the string-shaped facade over percent_decode_into:
+// the result is a fresh string owned by `a` (also when nothing decodes —
+// the one ownership shape for every caller; .Return_Input returns the
+// input re-cloned, never a view). plus_to_space additionally maps '+' to
+// a space (the application/x-www-form-urlencoded reading; URI paths
+// never want it).
+percent_decode :: proc(s: string, a := context.allocator, plus_to_space := false, malformed := Malformed_Escape.Keep_Bytes) -> string {
+	if !plus_to_space && !strings.contains(s, "%") {
+		return strings.clone(s, a)
+	}
+	buf := make([dynamic]u8, 0, len(s), a)
+	if !percent_decode_into(s, &buf, plus_to_space, malformed) {
+		delete(buf)
+		return strings.clone(s, a)
+	}
+	out := string(buf[:])
+	buf = nil // the bytes are now owned by the returned string on `a`
+	return out
+}
+
 // ensure_trailing_newline returns s with a single '\n' appended if it did
 // not already end with one. The empty string is left empty. The returned
 // string is allocated from `a` when an append is needed.

@@ -22,21 +22,9 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 	}
 	rest := uri[len(prefix):]
 	out := make([dynamic]u8, 0, len(rest), a)
-	i := 0
-	for i < len(rest) {
-		c := rest[i]
-		if c == '%' && i + 2 < len(rest) {
-			hi := util.hex_digit_value(rest[i + 1])
-			lo := util.hex_digit_value(rest[i + 2])
-			if hi >= 0 && lo >= 0 {
-				append(&out, u8(hi * 16 + lo))
-				i += 3
-				continue
-			}
-		}
-		append(&out, c)
-		i += 1
-	}
+	// Malformed escapes keep their bytes — the shared decode loop's
+	// default policy for path decoders.
+	_ = util.percent_decode_into(rest, &out)
 	when ODIN_OS == .Windows {
 		// A "localhost" authority reads exactly as if no authority were
 		// present (RFC 8089, hosts compare case-insensitively): strip it
@@ -46,6 +34,11 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 		if n > 0 && localhost && n < len(out) {
 			drop_leading(&out, n)
 		}
+		// A two-character "C:" authority is the two-slash drive spelling
+		// (file://C:/x): the authority IS the drive pair, and the decoded
+		// path already reads in platform form — it must not take the UNC
+		// authority branch below, which would fabricate //C:/x.
+		drive_authority := n == 2 && is_ascii_letter(out[0]) && out[1] == ':'
 		// "file:///C:/x" carries a slash before the drive letter; the
 		// platform path form has none.
 		if len(out) >= 3 && out[0] == '/' && is_ascii_letter(out[1]) && out[2] == ':' {
@@ -53,7 +46,7 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 				out[j] = out[j + 1]
 			}
 			resize(&out, len(out) - 1)
-		} else if len(out) > 0 && out[0] != '/' {
+		} else if !drive_authority && len(out) > 0 && out[0] != '/' {
 			// The authority form (file://server/share/x): the host sits
 			// before the first path slash — a UNC share, which only this
 			// platform grounds. The path keeps forward slashes, mirroring

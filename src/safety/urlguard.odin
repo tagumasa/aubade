@@ -161,7 +161,7 @@ urlguard_check_for_secrets :: proc(ug: ^URL_Guard, raw_url: string) -> (bool, st
 	if regex.regex_match(&ug.vendor_re, raw_url) {
 		return true, "blocked: URL contains what appears to be an API key or token"
 	}
-	decoded := query_unescape_all(raw_url, context.temp_allocator)
+	decoded := util.percent_decode(raw_url, context.temp_allocator, plus_to_space = true, malformed = .Return_Input)
 	if regex.regex_match(&ug.vendor_re, decoded) {
 		return true, "blocked: URL contains what appears to be an API key or token"
 	}
@@ -625,42 +625,6 @@ u8_dec :: proc(v: u8, a := context.allocator) -> string {
 // ---------------------------------------------------------------------------
 // Percent decoding
 // ---------------------------------------------------------------------------
-
-// query_unescape_all decodes %xx escapes and turns '+' into space across
-// the whole string; invalid escapes return the input unchanged.
-query_unescape_all :: proc(s: string, a := context.allocator) -> string {
-	needed := false
-	for c in s {
-		if c == '+' || c == '%' {
-			needed = true
-			break
-		}
-	}
-	if !needed {
-		return s
-	}
-	buf := make([dynamic]u8, 0, len(s), a)
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		if c == '+' {
-			append(&buf, ' ')
-			i += 1
-		} else if c == '%' {
-			if i+2 >= len(s) {
-				return s
-			}
-			hi := util.hex_digit_value(s[i+1])
-			lo := util.hex_digit_value(s[i+2])
-			if hi < 0 || lo < 0 {
-				return s
-			}
-			append(&buf, u8((hi << 4) | lo))
-			i += 3
-		} else {
-			append(&buf, c)
-			i += 1
-		}
-	}
-	return strings.clone(string(buf[:]), a)
-}
+// The decoder itself lives in util (percent_decode): this package reads
+// URLs with the query policy — '+' becomes a space, and one malformed
+// escape returns the whole input unchanged rather than a partial decode.

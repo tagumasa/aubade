@@ -344,7 +344,7 @@ tracker_show_cmd :: proc(args: []string, g: ^Globals) -> int {
 
 	text: string
 	err: platform.Err
-	if id == "current" || strings.has_prefix(id, "SPR-") {
+	if id == tracker.SPRINT_CURRENT_ALIAS || strings.has_prefix(id, tracker.SPRINT_ID_PREFIX) {
 		text, err = tracker.manager_get_sprint(ct.m, id, 0, context.temp_allocator)
 	} else {
 		text, err = tracker.manager_get_incident(ct.m, id, 0, context.temp_allocator)

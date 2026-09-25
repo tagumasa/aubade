@@ -306,7 +306,7 @@ shadow_restore :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_Tok
 	// resolved spelling, computed once here.
 	root_resolved := safety.pathguard_resolve_root(s.workspace_dir, context.temp_allocator)
 	for p in paths {
-		abs, ok := contained_rel(s.workspace_dir, p, context.temp_allocator)
+		abs, _, ok := contained_rel(s.workspace_dir, p, context.temp_allocator)
 		is_symlink := false
 		if ok {
 			if kind, kok := util.lstat_kind(abs); kok && kind == .Symlink {
@@ -363,7 +363,7 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 	if file_path == "" || file_path == "." || file_path == "/" || file_path == "\\" {
 		return err_new(.Invalid, "shadowgit revert-file: empty or root filePath not allowed")
 	}
-	rel, ok := contained_rel(s.workspace_dir, file_path, context.temp_allocator)
+	abs, git_rel, ok := contained_rel(s.workspace_dir, file_path, context.temp_allocator)
 	if !ok {
 		return err_new(.Invalid, strings.concatenate(
 			{"shadowgit revert-file: path escapes workspace: ", file_path}, a,
@@ -372,7 +372,7 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 	sync.mutex_lock(&s.mu)
 	defer sync.mutex_unlock(&s.mu)
 
-	if kind, kok := util.lstat_kind(rel); kok && kind == .Symlink {
+	if kind, kok := util.lstat_kind(abs); kok && kind == .Symlink {
 		return err_new(.Denied, strings.concatenate(
 			{"refusing to operate on symlink: ", file_path}, a,
 		))
@@ -387,24 +387,52 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 		))
 	}
 
-	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", file_path)
+	// git matches pathspecs case-sensitively on every filesystem, and
+	// ls-tree accepts only literal paths (every other pathspec magic —
+	// :(icase) included — is rejected there). So the existence check runs
+	// on the canonical relative spelling, and on a case-insensitive
+	// filesystem a miss resolves the tracked spelling against the snapshot
+	// listing: without that resolution, a case-variant spelling of a
+	// tracked file takes the not-in-snapshot removal below and DELETEs the
+	// very file the revert was asked to restore.
+	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", git_rel)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return git_fail(gerr, "shadowgit revert-file ls-tree failed")
 	}
 	defer delete(out, a)
-	if strings.trim_space(out) == "" {
-		if rerr := os.remove(rel); rerr != nil {
+	// The listing rides the temp allocator (scratch for the checkout
+	// below); the first lexically-ordered entry wins if a tree ever carries
+	// two fold-equal spellings. A failed listing is an error, never a
+	// miss — routing it into the removal branch would delete on an
+	// unanswered question.
+	spec := git_rel
+	tracked := strings.trim_space(out) != ""
+	if !tracked && platform.case_insensitive_fs() {
+		paths, ferr := files_at_unlocked(s, hash, token, context.temp_allocator)
+		if ferr != nil {
+			return ferr
+		}
+		for p in paths {
+			if platform.path_equal(p, git_rel) {
+				spec = p
+				tracked = true
+				break
+			}
+		}
+	}
+	if !tracked {
+		if rerr := os.remove(abs); rerr != nil {
 			// A file that vanished between the lstat and the remove is
 			// success (it is gone, which is the goal); anything else
 			// still present is a real failure.
-			if _, still := util.lstat_kind(rel); still {
+			if _, still := util.lstat_kind(abs); still {
 				return err_new(.Internal, "shadowgit revert-file remove failed")
 			}
 		}
 		return nil
 	}
-	if cout, cerr := git_work_tree(s, token, "checkout", hash, "--", file_path); cerr != nil {
+	if cout, cerr := git_work_tree(s, token, "checkout", hash, "--", spec); cerr != nil {
 		// Discriminate on cerr — gerr is the ls-tree error consumed above
 		// and is always the zero union here, whose err_kind reads .Internal
 		// (flattening every cancellation/deadline into Internal and
@@ -598,38 +626,48 @@ split_nul :: proc(out: string, a := context.allocator) -> []string {
 }
 
 // contained_rel resolves file_path inside the workspace and returns the
-// absolute path when it stays there. The result is scratch memory.
-contained_rel :: proc(workspace, file_path: string, a := context.allocator) -> (string, bool) {
+// absolute path when it stays there, plus the same path as a canonical
+// forward-slash relative spelling for git pathspecs (a traversal input
+// like ../BASE/a.txt is the workspace's own case-variant spelling on a
+// case-insensitive filesystem — the raw spelling never matches a tracked
+// path, the canonical one always does). The lexical gate is the
+// platform's single containment compare (case sensitivity and both
+// separator spellings carried); the symlink gate on top is
+// resolves_inside_workspace. The results are scratch memory.
+contained_rel :: proc(workspace, file_path: string, a := context.allocator) -> (abs: string, git_rel: string, ok: bool) {
 	parts := []string{workspace, file_path}
-	abs, jerr := filepath.join(parts, a)
-	if jerr != nil || abs == "" {
-		return "", false
+	joined, jerr := filepath.join(parts, a)
+	if jerr != nil || joined == "" {
+		return "", "", false
 	}
-	clean, cerr := filepath.clean(abs, a)
-	delete(abs, a)
+	clean, cerr := filepath.clean(joined, a)
+	delete(joined, a)
 	if cerr != nil || !filepath.is_abs(clean) {
 		delete(clean, a)
-		return "", false
+		return "", "", false
 	}
-	contained := false
-	if len(clean) > len(workspace) {
-		// Normalise both sides to forward slashes so the containment
-		// check works on Windows where filepath.clean uses backslashes.
-		clean_slash, _ := strings.replace_all(clean, "\\", "/", context.temp_allocator)
-		ws_slash, _ := strings.replace_all(workspace, "\\", "/", context.temp_allocator)
-		if len(ws_slash) > 0 && ws_slash[len(ws_slash) - 1] == '/' {
-			contained = clean_slash[:len(ws_slash)] == ws_slash
-		} else {
-			contained = clean_slash[:len(ws_slash) + 1] == strings.concatenate(
-				{ws_slash, "/"}, context.temp_allocator,
-			)
+	// strip_root_prefix wants the root itself: trim a trailing separator
+	// off the workspace spelling first. A workspace spelled as a bare root
+	// ("/" or "C:\") admits every absolute path lexically.
+	root := workspace
+	for len(root) > 1 && (root[len(root) - 1] == '/' || root[len(root) - 1] == '\\') {
+		root = root[:len(root) - 1]
+	}
+	if len(root) <= 1 {
+		slash_view := platform.forward_slash_view(clean)
+		if len(slash_view) == 0 || slash_view[0] != '/' {
+			delete(clean, a)
+			return "", "", false
 		}
+		return clean, slash_view[1:], true
 	}
+	rel, contained := platform.strip_root_prefix(clean, root)
 	if !contained {
 		delete(clean, a)
-		return "", false
+		return "", "", false
 	}
-	return clean, true
+	canonical, _ := strings.replace_all(rel, "\\", "/", context.temp_allocator)
+	return clean, canonical, true
 }
 
 // resolves_inside_workspace reports whether the path's existing components

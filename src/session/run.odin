@@ -621,7 +621,7 @@ send_hello :: proc(a: ^App, conn: ^jsonrpc.Conn) -> bool {
 		svc.METHOD_HELLO,
 		json.Value(json.Object(params)),
 		alloc,
-		platform.clock_now(a.clock) + 5000,
+		platform.clock_now(a.clock) + svc.CONTROL_CALL_DEADLINE_MS,
 	)
 	if cerr != .None {
 		// Log-only scratch: format on the temp allocator and free it —

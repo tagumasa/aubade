@@ -13,6 +13,8 @@ package tracker
 import "core:mem"
 import "core:strings"
 
+import "src:jsonutil"
+
 Report_Format :: enum {
 	TSV,
 	JSON,
@@ -490,9 +492,8 @@ write_json_raw_field :: proc(b: ^strings.Builder, key: string, value: string, co
 write_json_date_field :: proc(b: ^strings.Builder, key: string, value: string, comma: bool) {
 	strings.write_string(b, "\n    \"")
 	strings.write_string(b, key)
-	strings.write_string(b, "\": \"")
-	strings.write_string(b, json_escape(value, context.temp_allocator))
-	strings.write_string(b, "\"")
+	strings.write_string(b, "\": ")
+	strings.write_string(b, jsonutil.json_quote(value, context.temp_allocator))
 	if comma {
 		strings.write_string(b, ",")
 	}
@@ -506,9 +507,7 @@ write_json_field :: proc(b: ^strings.Builder, key: string, value: string, comma:
 	if value == "" {
 		strings.write_string(b, "null")
 	} else {
-		strings.write_string(b, "\"")
-		strings.write_string(b, json_escape(value, context.temp_allocator))
-		strings.write_string(b, "\"")
+		strings.write_string(b, jsonutil.json_quote(value, context.temp_allocator))
 	}
 	if comma {
 		strings.write_string(b, ",")
@@ -524,9 +523,7 @@ write_json_array_field :: proc(b: ^strings.Builder, key: string, values: []strin
 		if i > 0 {
 			strings.write_string(b, ", ")
 		}
-		strings.write_string(b, "\"")
-		strings.write_string(b, json_escape(v, context.temp_allocator))
-		strings.write_string(b, "\"")
+		strings.write_string(b, jsonutil.json_quote(v, context.temp_allocator))
 	}
 	strings.write_string(b, "]")
 	if comma {
@@ -534,49 +531,3 @@ write_json_array_field :: proc(b: ^strings.Builder, key: string, values: []strin
 	}
 }
 
-// json_escape quotes the mandatory JSON escapes (quote, backslash, the
-// named control newlines) and \u00-encodes the remaining C0 control
-// bytes: a raw control byte makes the exported report invalid JSON, and
-// titles/bodies can carry them (validation rejects only \n and \r).
-json_escape :: proc(s: string, a: mem.Allocator) -> string {
-	needs := false
-	for i in 0..<len(s) {
-		c := s[i]
-		if c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t' || c < 0x20 {
-			needs = true
-			break
-		}
-	}
-	if !needs {
-		return s
-	}
-	b, berr := strings.builder_make_len_cap(0, len(s) + 8, a)
-	if berr != nil {
-		return s
-	}
-	defer strings.builder_destroy(&b)
-	hex := "0123456789abcdef"
-	for i in 0..<len(s) {
-		switch s[i] {
-		case '"':
-			strings.write_string(&b, "\\\"")
-		case '\\':
-			strings.write_string(&b, "\\\\")
-		case '\n':
-			strings.write_string(&b, "\\n")
-		case '\r':
-			strings.write_string(&b, "\\r")
-		case '\t':
-			strings.write_string(&b, "\\t")
-		case:
-			if s[i] < 0x20 {
-				strings.write_string(&b, "\\u00")
-				strings.write_byte(&b, hex[s[i] >> 4])
-				strings.write_byte(&b, hex[s[i] & 0xf])
-			} else {
-				strings.write_byte(&b, s[i])
-			}
-		}
-	}
-	return strings.clone(strings.to_string(b), a)
-}

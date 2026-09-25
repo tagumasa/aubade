@@ -122,7 +122,7 @@ connect_control :: proc(info: daemon.Endpoint_Info) -> (^Control_Link, bool) {
 	jsonutil.obj_set(&params, "token", jsonutil.json_string(info.token))
 	_, code, msg, cerr := jsonrpc.conn_call(
 		c, svc.METHOD_HELLO, json.Value(json.Object(params)), context.temp_allocator,
-		platform.mono_ms() + 5000,
+		platform.mono_ms() + svc.CONTROL_CALL_DEADLINE_MS,
 	)
 	if cerr != .None {
 		fmt.eprintf(
@@ -177,7 +177,7 @@ daemon_status :: proc(g: ^Globals) -> int {
 	}
 
 	result, err_code, msg, cerr := jsonrpc.conn_call(
-		link.conn, svc.METHOD_STATUS, nil, context.temp_allocator, platform.mono_ms() + 5000,
+		link.conn, svc.METHOD_STATUS, nil, context.temp_allocator, platform.mono_ms() + svc.CONTROL_CALL_DEADLINE_MS,
 	)
 	close_control(link)
 	if cerr != .None || result == nil {
@@ -237,7 +237,7 @@ daemon_stop :: proc(g: ^Globals) -> int {
 	jsonutil.obj_set(&params, "token", jsonutil.json_string(info.token))
 	_, _, msg, cerr := jsonrpc.conn_call(
 		link.conn, svc.METHOD_SHUTDOWN, json.Value(json.Object(params)), context.temp_allocator,
-		platform.mono_ms() + 5000,
+		platform.mono_ms() + svc.CONTROL_CALL_DEADLINE_MS,
 	)
 	if cerr == .Error_Response {
 		// The daemon answered with a refusal (other children connected).
@@ -254,7 +254,7 @@ daemon_stop :: proc(g: ^Globals) -> int {
 	// time discipline for every wait).
 	clock: platform.Clock
 	platform.clock_init(&clock, false)
-	deadline := platform.clock_now(&clock) + 5000
+	deadline := platform.clock_now(&clock) + svc.CONTROL_CALL_DEADLINE_MS
 	for platform.clock_now(&clock) < deadline {
 		if !os.exists(path) {
 			fmt.println("aubade daemon stop: daemon stopped.")

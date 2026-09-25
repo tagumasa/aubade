@@ -342,6 +342,63 @@ test_shadow_refusals :: proc(t: ^testing.T) {
 		return
 	}
 
+	// The workspace gate carries the filesystem's case sensitivity: a path
+	// that walks above the root and re-enters with a case-variant spelling
+	// of the workspace directory is inside on macOS/Windows (one directory,
+	// two spellings) and genuinely outside on Linux. The contained arm must
+	// restore through the canonical relative spelling — a tracked file
+	// must never fall into the not-in-snapshot removal branch.
+	// The workspace base segment: Windows temp paths are backslash-
+	// separated, so the bound is the last separator of either kind.
+	slash := strings.last_index_byte(env.workspace, '/')
+	if bs := strings.last_index_byte(env.workspace, '\\'); bs > slash {
+		slash = bs
+	}
+	base := env.workspace[slash + 1:]
+	case_variant := strings.concatenate(
+		{"../", strings.to_upper(base, context.temp_allocator), "/a.txt"},
+		context.temp_allocator,
+	)
+	if platform.case_insensitive_fs() {
+		if rerr := shadow.shadow_revert_file(env.sg, h1, case_variant, nil, a); rerr != nil {
+			testing.expectf(t, false, "case-variant spelling must stay contained: %s", shadow_err_text(rerr))
+			return
+		}
+		// The likelier input: a case-variant spelling of the tracked file
+		// itself. git matches pathspecs case-sensitively, so the revert
+		// must resolve the tracked spelling against the snapshot listing —
+		// a plain miss would route the tracked file into the removal
+		// branch and DELETE it.
+		if rerr := shadow.shadow_revert_file(env.sg, h1, "A.TXT", nil, a); rerr != nil {
+			testing.expectf(t, false, "case-variant file spelling must revert: %s", shadow_err_text(rerr))
+			return
+		}
+		a_path := strings.concatenate({env.workspace, "/a.txt"}, context.temp_allocator)
+		content, cerr := os.read_entire_file_from_path(a_path, a)
+		testing.expectf(t, cerr == nil, "a.txt still present after case-variant revert")
+		testing.expect(t, string(content) == "one\n", "case-variant revert restored the tracked content")
+		// The fold must not over-match: a spelling with no fold-variant in
+		// the snapshot is genuinely absent and takes the removal branch.
+		d_path := strings.concatenate({env.workspace, "/D.TXT"}, context.temp_allocator)
+		if werr := os.write_entire_file_from_string(d_path, "gone\n"); werr != nil {
+			testing.expectf(t, false, "seed D.TXT failed")
+			return
+		}
+		if rerr := shadow.shadow_revert_file(env.sg, h1, "D.TXT", nil, a); rerr != nil {
+			testing.expectf(t, false, "untracked case-variant spelling must remove: %s", shadow_err_text(rerr))
+			return
+		}
+		if _, derr := os.read_entire_file_from_path(d_path, context.temp_allocator); derr == nil {
+			testing.expectf(t, false, "D.TXT should be gone after revert to a snapshot without it")
+			return
+		}
+	} else {
+		if rerr := shadow.shadow_revert_file(env.sg, h1, case_variant, nil, a); rerr == nil {
+			testing.expectf(t, false, "case-variant spelling is a different directory here")
+			return
+		}
+	}
+
 	// A symlink target is refused even when the path itself is contained
 	// (Windows symlink creation needs privileges; the check is skipped
 	// there rather than failing the suite).

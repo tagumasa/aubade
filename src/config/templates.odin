@@ -91,8 +91,8 @@ GLOBAL_TEMPLATE :: `
 		"fetch_proxy": "",
 		// cap for fetched bytes, 0..{{MAX_FETCH_LIMIT_B}}.
 		"fetch_limit_bytes": 0,
-		// search provider: "auto" | "brave" | "tavily" | "perplexity" |
-		// "duckduckgo" | "searxng".
+		// search provider: {{SEARCH_PROVIDERS}} ("auto" picks by key
+		// availability).
 		"search_provider": "{{SEARCH_PROVIDER}}",
 		// whether fetching private-network hosts is allowed (rarely wise).
 		"allow_private_hosts": false,
@@ -266,8 +266,28 @@ template_global :: proc(a := context.allocator) -> string {
 	body = subst_placeholder(body, "{{SYMBOL_INFO_BUDGET}}", fmt.aprintf("%v", DEFAULT_SYMBOL_INFO_BUDGET_S, allocator = context.temp_allocator), context.temp_allocator)
 	body = subst_placeholder(body, "{{MANAGED_DIR_TEMPLATE}}", DEFAULT_MANAGED_DIR_TEMPLATE, context.temp_allocator)
 	body = subst_placeholder(body, "{{SEARCH_PROVIDER}}", DEFAULT_SEARCH_PROVIDER, context.temp_allocator)
+	body = subst_placeholder(body, "{{SEARCH_PROVIDERS}}", render_provider_list(context.temp_allocator), context.temp_allocator)
 	body = subst_placeholder(body, "{{MAX_FETCH_LIMIT_B}}", fmt.aprintf("%v", MAX_FETCH_LIMIT_B, allocator = context.temp_allocator), context.temp_allocator)
 	return strings.clone(body, a)
+}
+
+// render_provider_list spells the accepted search-provider names as a
+// quoted, barred list ("auto" | "brave" | ...) derived from the one
+// validator table — the template never carries a hand-copy that can go
+// stale when a provider is added.
+render_provider_list :: proc(a := context.allocator) -> string {
+	names := make([dynamic]string, 0, len(VALID_SEARCH_PROVIDERS), a)
+	for p in VALID_SEARCH_PROVIDERS {
+		if p != "" {
+			append(&names, fmt.aprintf("\"%v\"", p, allocator = a))
+		}
+	}
+	joined, _ := strings.join(names[:], " | ", a)
+	for n in names {
+		delete(n, a)
+	}
+	delete(names)
+	return joined
 }
 
 template_context :: proc(a := context.allocator) -> string {

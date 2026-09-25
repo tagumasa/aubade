@@ -5,6 +5,7 @@
 package tools
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:sort"
 import "core:strings"
 import "src:editor"
@@ -349,7 +350,10 @@ symbol_find_dead_code_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result 
 	if arg_has(args, "limit") {
 		limit = arg_int(args, "limit")
 		if limit <= 0 || limit > svc.DEAD_SCAN_MAX_LIMIT {
-			return err_result(ctx, "limit must be between 1 and 1000")
+			return err_result(ctx, fmt.aprintf(
+				"limit must be between 1 and %v", svc.DEAD_SCAN_MAX_LIMIT,
+				allocator = ctx.allocator,
+			))
 		}
 	}
 	call := svc.client_symbol_find_dead_code(ctx.svc_conn, arg_str(args, "path_prefix"), tracker_arg_str_array(args, "entry_prefixes", ctx.allocator), limit, ctx.allocator, svc_deadline(ctx), ctx.cancel)

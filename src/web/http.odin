@@ -18,6 +18,9 @@ import "src:util"
 HTTP_FETCH_TIMEOUT_MS :: 60_000
 HTTP_CONNECT_TIMEOUT_MS :: 15_000
 MAX_REDIRECTS :: 5
+// The response-sink floor for requests that carry no explicit byte cap
+// (fetch and search each own their own named limit; this bounds the rest).
+HTTP_SINK_DEFAULT_CAP_BYTES :: 10 * 1024 * 1024
 
 // Address-family numbers as each platform's C library spells them: the
 // socket-open callback and the resolver paths compare them as raw ints,
@@ -181,7 +184,10 @@ http_do :: proc(
 
 	sink := HTTP_Sink{cap_bytes = req.max_bytes}
 	if sink.cap_bytes <= 0 {
-		sink.cap_bytes = 10 * 1024 * 1024
+		// The unnamed default callers ride when the request carries no
+		// explicit cap — fetch and search each own a named limit constant
+		// for their own paths; this one is the transport floor.
+		sink.cap_bytes = HTTP_SINK_DEFAULT_CAP_BYTES
 	}
 	// Pre-made on `a`: a zero-value dynamic would grow through the C
 	// callback's default context instead of the request allocator.

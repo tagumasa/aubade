@@ -56,32 +56,7 @@ deny_path_contains :: proc(s, sub: string) -> bool {
 // before matching would be a no-op here — the deny patterns are ASCII —
 // so the decode is the only normalisation applied.
 normalise_for_matching :: proc(path: string, a := context.allocator) -> string {
-	decoded := percent_decode(path, a)
-	return decoded
-}
-
-// percent_decode decodes %XX sequences; malformed escapes keep their
-// bytes.
-percent_decode :: proc(s: string, a := context.allocator) -> string {
-	if !strings.contains(s, "%") {
-		return s
-	}
-	buf := make([dynamic]u8, 0, len(s), a)
-	i := 0
-	for i < len(s) {
-		if s[i] == '%' && i + 2 < len(s) {
-			hi := util.hex_digit_value(s[i + 1])
-			lo := util.hex_digit_value(s[i + 2])
-			if hi >= 0 && lo >= 0 {
-				append(&buf, u8(hi * 16 + lo))
-				i += 3
-				continue
-			}
-		}
-		append(&buf, s[i])
-		i += 1
-	}
-	return string(buf[:])
+	return util.percent_decode(path, a)
 }
 
 DEFAULT_DENY_PATTERNS :: []string{
@@ -193,45 +168,6 @@ WIN_SENSITIVE_SYSTEM_RELPATHS :: []string{
 	"System32\\drivers\\etc",
 }
 
-// deny_pattern_to_regex translates a deny glob (*, **, ?, metachar escapes)
-// into an anchored regex; case-insensitive wrapping is the caller's.
-deny_pattern_to_regex :: proc(pattern: string, a := context.allocator) -> string {
-	slash, _ := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
-	buf := make([dynamic]u8, 0, len(slash) + 8, a)
-	append(&buf, '^')
-	i := 0
-	for i < len(slash) {
-		c := slash[i]
-		switch c {
-		case '*':
-			if i + 1 < len(slash) && slash[i + 1] == '*' {
-				if i + 2 < len(slash) && slash[i + 2] == '/' {
-					append(&buf, "(.*/)?")
-					i += 3
-				} else {
-					append(&buf, ".*")
-					i += 2
-				}
-			} else {
-				append(&buf, "[^/]*")
-				i += 1
-			}
-		case '?':
-			append(&buf, "[^/]")
-			i += 1
-		case '.', '(', ')', '+', '|', '^', '$', '[', ']', '{', '}', '\\':
-			append(&buf, '\\')
-			append(&buf, c)
-			i += 1
-		case:
-			append(&buf, c)
-			i += 1
-		}
-	}
-	append(&buf, '$')
-	return string(buf[:])
-}
-
 // Deny_List holds compiled deny patterns. Safe for concurrent reads; adds
 // take the lock.
 Deny_List :: struct {
@@ -270,7 +206,17 @@ denylist_add_pattern :: proc(d: ^Deny_List, pattern: string) -> platform.Err {
 			return nil
 		}
 	}
-	regex_str := deny_pattern_to_regex(pattern, context.temp_allocator)
+	// The deny grammar is the shared glob translator's (*, **, ?, [seq],
+	// {braces}); anchoring both ends and case folding are this gate's
+	// concern. Backslash separators normalize to '/' first — glob_to_regex
+	// reads '\' as an escape, the deny gate reads it as a separator. The
+	// intermediates ride the temp allocator, same as every glob_to_regex
+	// caller; only the compiled regex crosses into the list's lifetime.
+	slash, _ := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
+	regex_str := strings.concatenate(
+		{"^", regex.glob_to_regex(slash, context.temp_allocator), "$"},
+		context.temp_allocator,
+	)
 	// Case-insensitive filesystems match deny globs across case variants:
 	// **/.env must also catch .ENV.
 	if platform.case_insensitive_fs() {
