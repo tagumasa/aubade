@@ -43,26 +43,38 @@ svc_table_init :: proc(t: ^svc.Table, d: ^Daemon) {
 	register_config_methods(t)
 }
 
-// handle_hello authenticates the child and registers the session. The token
-// is the one published in endpoint.json (0600, inside the 0700 daemon dir):
-// loopback TCP accepts connections from any local process, so possession of
-// the token is what proves the child read our publication. The in-process
-// channel daemon never generates one and skips the check.
+// require_rpc_token enforces the loopback endpoint's possession proof on
+// the token-bearing methods (hello, shutdown). The token is the one
+// published in endpoint.json (0600, inside the 0700 daemon dir): loopback
+// TCP accepts connections from any local process, so possession of the
+// token is what proves the caller read our publication. The in-process
+// channel daemon never generates one and its empty token skips the check.
+// `kind` is the rejection class the endpoint's contract assigns — hello
+// reports .Invalid, shutdown .Denied.
+require_rpc_token :: proc(d: ^Daemon, params: json.Value, kind: platform.Err_Kind) -> platform.Err {
+	if d.auth_token == "" {
+		return nil
+	}
+	token := ""
+	if v, ok := jsonutil.obj_get(params, "token"); ok {
+		#partial switch x in v {
+		case json.String:
+			token = string(x)
+		case:
+		}
+	}
+	if token != d.auth_token {
+		return platform.Wrapped{kind = kind, msg = "bad or missing rpc token"}
+	}
+	return nil
+}
+
+// handle_hello authenticates the child and registers the session.
 handle_hello :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	if d.auth_token != "" {
-		token := ""
-		if v, ok := jsonutil.obj_get(params, "token"); ok {
-			#partial switch x in v {
-			case json.String:
-				token = string(x)
-			case:
-			}
-		}
-		if token != d.auth_token {
-			return nil, platform.Wrapped{kind = .Invalid, msg = "bad or missing rpc token"}
-		}
+	if terr := require_rpc_token(d, params, .Invalid); terr != nil {
+		return nil, terr
 	}
 
 	client_pid := 0
@@ -159,18 +171,8 @@ handle_bye :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) {
 handle_shutdown :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	if d.auth_token != "" {
-		token := ""
-		if v, ok := jsonutil.obj_get(params, "token"); ok {
-			#partial switch x in v {
-			case json.String:
-				token = string(x)
-			case:
-			}
-		}
-		if token != d.auth_token {
-			return nil, platform.Wrapped{kind = .Denied, msg = "bad or missing rpc token"}
-		}
+	if terr := require_rpc_token(d, params, .Denied); terr != nil {
+		return nil, terr
 	}
 
 	others := 0
