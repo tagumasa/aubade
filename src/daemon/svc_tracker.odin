@@ -60,7 +60,7 @@ tracker_opt_str_array :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string
 // tracker_expand_sprint resolves the "current" reference into the active
 // sprint's concrete id; the empty string and concrete ids pass through.
 tracker_expand_sprint :: proc(d: ^Daemon, sprint: string, a: mem.Allocator) -> (string, platform.Err) {
-	if sprint != "current" {
+	if sprint != tracker.SPRINT_CURRENT_ALIAS {
 		return sprint, nil
 	}
 	active, ok := tracker.manager_active_sprint_id(d.tracker, a)

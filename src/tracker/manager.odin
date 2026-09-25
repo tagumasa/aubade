@@ -21,6 +21,13 @@ import "src:platform"
 import "src:util"
 import "src:store"
 
+// The sprint id vocabulary: generated ids are SPRINT_ID_PREFIX + a
+// zero-padded counter; SPRINT_CURRENT_ALIAS is the reserved spelling every
+// surface (CLI, svc, renderer, manager) accepts for the active sprint —
+// compare through these, never a bare literal.
+SPRINT_ID_PREFIX :: "SPR-"
+SPRINT_CURRENT_ALIAS :: "current"
+
 Now_Ns_Proc :: proc() -> i64
 
 Manager :: struct {
@@ -995,7 +1002,7 @@ manager_counts :: proc(m: ^Manager) -> Counts {
 // resolve_sprint maps an ID (or "current") to its header; borrowed,
 // valid while the manager lock is held.
 resolve_sprint :: proc(s: ^Fold_State, id: string, a: mem.Allocator) -> (^Sprint_Header, platform.Err) {
-	if id == "current" {
+	if id == SPRINT_CURRENT_ALIAS {
 		active := active_sprint(s)
 		if active == nil {
 			return nil, inv(a, "no active sprint")
