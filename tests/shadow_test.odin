@@ -342,6 +342,34 @@ test_shadow_refusals :: proc(t: ^testing.T) {
 		return
 	}
 
+	// The workspace gate carries the filesystem's case sensitivity: a path
+	// that walks above the root and re-enters with a case-variant spelling
+	// of the workspace directory is inside on macOS/Windows (one directory,
+	// two spellings) and genuinely outside on Linux. The contained arm must
+	// restore through the canonical relative spelling — a tracked file
+	// must never fall into the not-in-snapshot removal branch.
+	slash := strings.last_index_byte(env.workspace, '/')
+	base := env.workspace[slash + 1:]
+	case_variant := strings.concatenate(
+		{"../", strings.to_upper(base, context.temp_allocator), "/a.txt"},
+		context.temp_allocator,
+	)
+	if platform.case_insensitive_fs() {
+		if rerr := shadow.shadow_revert_file(env.sg, h1, case_variant, nil, a); rerr != nil {
+			testing.expectf(t, false, "case-variant spelling must stay contained: %s", shadow_err_text(rerr))
+			return
+		}
+		a_path := strings.concatenate({env.workspace, "/a.txt"}, context.temp_allocator)
+		content, cerr := os.read_entire_file_from_path(a_path, a)
+		testing.expectf(t, cerr == nil, "a.txt still present after case-variant revert")
+		testing.expect(t, string(content) == "one\n", "case-variant revert restored the tracked content")
+	} else {
+		if rerr := shadow.shadow_revert_file(env.sg, h1, case_variant, nil, a); rerr == nil {
+			testing.expectf(t, false, "case-variant spelling is a different directory here")
+			return
+		}
+	}
+
 	// A symlink target is refused even when the path itself is contained
 	// (Windows symlink creation needs privileges; the check is skipped
 	// there rather than failing the suite).
