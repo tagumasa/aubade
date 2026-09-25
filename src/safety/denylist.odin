@@ -209,14 +209,14 @@ denylist_add_pattern :: proc(d: ^Deny_List, pattern: string) -> platform.Err {
 	// The deny grammar is the shared glob translator's (*, **, ?, [seq],
 	// {braces}); anchoring both ends and case folding are this gate's
 	// concern. Backslash separators normalize to '/' first — glob_to_regex
-	// reads '\' as an escape, the deny gate reads it as a separator.
-	slash, slash_fresh := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
-	unanchored := regex.glob_to_regex(slash, context.temp_allocator)
-	regex_str := strings.concatenate({"^", unanchored, "$"}, context.temp_allocator)
-	delete(unanchored, context.temp_allocator)
-	if slash_fresh {
-		delete(slash, context.temp_allocator)
-	}
+	// reads '\' as an escape, the deny gate reads it as a separator. The
+	// intermediates ride the temp allocator, same as every glob_to_regex
+	// caller; only the compiled regex crosses into the list's lifetime.
+	slash, _ := strings.replace_all(pattern, "\\", "/", context.temp_allocator)
+	regex_str := strings.concatenate(
+		{"^", regex.glob_to_regex(slash, context.temp_allocator), "$"},
+		context.temp_allocator,
+	)
 	// Case-insensitive filesystems match deny globs across case variants:
 	// **/.env must also catch .ENV.
 	if platform.case_insensitive_fs() {

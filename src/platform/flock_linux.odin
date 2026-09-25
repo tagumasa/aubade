@@ -49,7 +49,13 @@ file_lock_try_acquire :: proc(path: string) -> (lock: File_Lock, ok: bool) {
 	return {file = f}, true
 }
 
+// file_lock_release drops the lock and closes the descriptor — a nil-guarded
+// no-op on an already-released lock, the same shape as the darwin and
+// windows twins (the fcntl variant must not read os.fd through a nil file).
 file_lock_release :: proc(lock: ^File_Lock) {
+	if lock.file == nil {
+		return
+	}
 	fl := Lock_Range{l_type = F_UNLCK_VAL, l_whence = 0, l_start = 0, l_len = 0}
 	unix.sys_fcntl(int(os.fd(lock.file)), F_SETLK_CMD, cast(int)(uintptr(&fl)))
 	os.close(lock.file)
