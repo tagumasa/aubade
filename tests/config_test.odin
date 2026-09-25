@@ -15,6 +15,7 @@ import "src:config"
 import "src:jsonutil"
 import "src:platform"
 import "src:ts"
+import "src:web"
 
 temp_home :: proc(t: ^testing.T) -> string {
 	dir, err := os.make_directory_temp("", "aubade-cfg-", context.allocator)
@@ -1443,4 +1444,57 @@ default_context_names_a_builtin :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, found, "DEFAULT_CONTEXT must name a built-in context")
+}
+
+@(test)
+search_provider_vocabulary_pinned :: proc(t: ^testing.T) {
+	// config's validator list and web's Provider_Kind enum are two
+	// declarations of one vocabulary (config cannot import web to derive
+	// its side, so a cross-pin test holds them together): every web name
+	// must clear the validator, every validator entry must be a web name
+	// or one of the two sentinels ("auto" = pick by key availability, ""
+	// = unset), and the default must be an accepted value.
+	for k in web.Provider_Kind {
+		name := web.provider_name(k)
+		found := false
+		for v in config.VALID_SEARCH_PROVIDERS {
+			if v == name {
+				found = true
+				break
+			}
+		}
+		testing.expectf(t, found, "web provider %q is not in config.VALID_SEARCH_PROVIDERS", name)
+	}
+	for v in config.VALID_SEARCH_PROVIDERS {
+		if v == "auto" || v == "" {
+			continue
+		}
+		found := false
+		for k in web.Provider_Kind {
+			if web.provider_name(k) == v {
+				found = true
+				break
+			}
+		}
+		testing.expectf(t, found, "config validator entry %q names no web provider", v)
+	}
+	default_ok := false
+	for v in config.VALID_SEARCH_PROVIDERS {
+		if v == config.DEFAULT_SEARCH_PROVIDER {
+			default_ok = true
+		}
+	}
+	testing.expect(t, default_ok, "DEFAULT_SEARCH_PROVIDER must be an accepted provider value")
+
+	// The rendered template spells the same vocabulary — the placeholder
+	// is derived from the validator table, so the generated comment must
+	// name every non-sentinel entry.
+	rendered := config.template_global(context.temp_allocator)
+	for v in config.VALID_SEARCH_PROVIDERS {
+		if v == "" {
+			continue
+		}
+		quoted := strings.concatenate({"\"", v, "\""}, context.temp_allocator)
+		testing.expectf(t, strings.contains(rendered, quoted), "template names provider %q", v)
+	}
 }
