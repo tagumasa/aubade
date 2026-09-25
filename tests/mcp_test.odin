@@ -339,6 +339,14 @@ mcp_initialize_negotiation :: proc(t: ^testing.T) {
 	testing.expect(t, obj_has(result, "instructions"))
 	testing.expect(t, obj_has(result, "capabilities"))
 	testing.expect(t, obj_has(result, "serverInfo"))
+
+	// PROTOCOL_LATEST must be the supported table's LAST entry: the
+	// unknown-version fallback answers with it, so a table append that
+	// forgets the constant silently negotiates every new client down to
+	// the old revision. The compiler rejects indexing constant data, so
+	// the identity is pinned here instead of derived.
+	supported := mcp.PROTOCOL_SUPPORTED
+	testing.expect_value(t, supported[len(supported) - 1], mcp.PROTOCOL_LATEST)
 }
 
 // Emptiness predicates for the shape-fixed tools/list fields (icons [],

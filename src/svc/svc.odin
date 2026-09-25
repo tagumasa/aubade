@@ -34,6 +34,12 @@ Svc_Ctx :: struct {
 Handler  :: proc(ctx: ^Svc_Ctx, params: json.Value) -> (json.Value, platform.Err)
 Notifier :: proc(ctx: ^Svc_Ctx, params: json.Value)
 
+// The control-plane call budget every client shares — the session's
+// svc.hello and the CLI's control commands (status, shutdown, exit waits):
+// one deadline so retuning it cannot leave one client giving up before
+// its peer.
+CONTROL_CALL_DEADLINE_MS :: 5000
+
 Table :: struct {
 	handlers:  map[string]Handler,
 	notifiers: map[string]Notifier,

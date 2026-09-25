@@ -17,6 +17,9 @@ import "src:jsonutil"
 import "src:platform"
 import "src:util"
 
+// The latest supported revision — must stay the LAST entry of
+// PROTOCOL_SUPPORTED below (the compiler rejects indexing constant data,
+// so a test pins the identity instead of a derivation).
 PROTOCOL_LATEST :: "2025-11-25"
 
 // A recognized requested version is echoed verbatim; anything else answers
