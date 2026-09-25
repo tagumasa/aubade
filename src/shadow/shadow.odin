@@ -387,25 +387,41 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 		))
 	}
 
-	// git matches the canonical relative spelling; the raw input spelling
-	// (traversal forms, backslashes) would not match a tracked path and
-	// would misroute a tracked file into the not-in-snapshot removal below.
-	// git's own pathspec match is case-SENSITIVE regardless of the
-	// filesystem, so on a case-insensitive one the pathspec carries the
-	// :(icase) magic — without it, a case-variant spelling of a tracked
-	// file misses ls-tree and the removal branch below would DELETE the
+	// git matches pathspecs case-sensitively on every filesystem, and
+	// ls-tree accepts only literal paths (every other pathspec magic —
+	// :(icase) included — is rejected there). So the existence check runs
+	// on the canonical relative spelling, and on a case-insensitive
+	// filesystem a miss resolves the tracked spelling against the snapshot
+	// listing: without that resolution, a case-variant spelling of a
+	// tracked file takes the not-in-snapshot removal below and DELETEs the
 	// very file the revert was asked to restore.
-	spec := git_rel
-	if platform.case_insensitive_fs() {
-		spec = strings.concatenate({":(icase)", git_rel}, context.temp_allocator)
-	}
-	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", spec)
+	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", git_rel)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return git_fail(gerr, "shadowgit revert-file ls-tree failed")
 	}
 	defer delete(out, a)
-	if strings.trim_space(out) == "" {
+	// The listing rides the temp allocator (scratch for the checkout
+	// below); the first lexically-ordered entry wins if a tree ever carries
+	// two fold-equal spellings. A failed listing is an error, never a
+	// miss — routing it into the removal branch would delete on an
+	// unanswered question.
+	spec := git_rel
+	tracked := strings.trim_space(out) != ""
+	if !tracked && platform.case_insensitive_fs() {
+		paths, ferr := files_at_unlocked(s, hash, token, context.temp_allocator)
+		if ferr != nil {
+			return ferr
+		}
+		for p in paths {
+			if platform.path_equal(p, git_rel) {
+				spec = p
+				tracked = true
+				break
+			}
+		}
+	}
+	if !tracked {
 		if rerr := os.remove(abs); rerr != nil {
 			// A file that vanished between the lstat and the remove is
 			// success (it is gone, which is the goal); anything else
