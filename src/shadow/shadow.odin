@@ -390,7 +390,16 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 	// git matches the canonical relative spelling; the raw input spelling
 	// (traversal forms, backslashes) would not match a tracked path and
 	// would misroute a tracked file into the not-in-snapshot removal below.
-	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", git_rel)
+	// git's own pathspec match is case-SENSITIVE regardless of the
+	// filesystem, so on a case-insensitive one the pathspec carries the
+	// :(icase) magic — without it, a case-variant spelling of a tracked
+	// file misses ls-tree and the removal branch below would DELETE the
+	// very file the revert was asked to restore.
+	spec := git_rel
+	if platform.case_insensitive_fs() {
+		spec = strings.concatenate({":(icase)", git_rel}, context.temp_allocator)
+	}
+	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", spec)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return git_fail(gerr, "shadowgit revert-file ls-tree failed")
@@ -407,7 +416,7 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 		}
 		return nil
 	}
-	if cout, cerr := git_work_tree(s, token, "checkout", hash, "--", git_rel); cerr != nil {
+	if cout, cerr := git_work_tree(s, token, "checkout", hash, "--", spec); cerr != nil {
 		// Discriminate on cerr — gerr is the ls-tree error consumed above
 		// and is always the zero union here, whose err_kind reads .Internal
 		// (flattening every cancellation/deadline into Internal and

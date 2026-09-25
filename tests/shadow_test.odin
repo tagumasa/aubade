@@ -359,6 +359,14 @@ test_shadow_refusals :: proc(t: ^testing.T) {
 			testing.expectf(t, false, "case-variant spelling must stay contained: %s", shadow_err_text(rerr))
 			return
 		}
+		// The likelier input: a case-variant spelling of the tracked file
+		// itself. git's pathspec match is case-sensitive, so the revert
+		// must hand git the :(icase) pathspec — a plain miss would route
+		// the tracked file into the removal branch and DELETE it.
+		if rerr := shadow.shadow_revert_file(env.sg, h1, "A.TXT", nil, a); rerr != nil {
+			testing.expectf(t, false, "case-variant file spelling must revert: %s", shadow_err_text(rerr))
+			return
+		}
 		a_path := strings.concatenate({env.workspace, "/a.txt"}, context.temp_allocator)
 		content, cerr := os.read_entire_file_from_path(a_path, a)
 		testing.expectf(t, cerr == nil, "a.txt still present after case-variant revert")
