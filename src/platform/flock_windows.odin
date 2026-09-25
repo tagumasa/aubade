@@ -1,41 +1,16 @@
 #+build windows
 
 // Singleton spawn lock (Windows): an exclusive LockFileEx byte-range lock
-// over the whole file — the same never-renamed, no-payload discipline as
-// the POSIX fcntl variant, acquired through bounded immediate-fail retries
-// (a blocking LockFileEx would let a wedged-but-alive holder block every
-// future spawn forever). The handle comes from os.fd(), which extracts the
-// raw HANDLE from the os.File; os.File.impl is a pointer to the internal
-// File_Impl struct on Windows, not the handle itself.
+// over the whole file, acquired through the shared bounded poll
+// (flock.odin) around one immediate-fail attempt — the same never-renamed,
+// no-payload discipline as the POSIX fcntl variant. The handle comes from
+// os.fd(), which extracts the raw HANDLE from the os.File; os.File.impl is
+// a pointer to the internal File_Impl struct on Windows, not the handle
+// itself.
 package platform
 
 import "core:os"
 import "core:sys/windows"
-import "core:time"
-
-LOCK_ACQUIRE_BUDGET_MS :: 30_000
-LOCK_ACQUIRE_SLICE_MS  :: 50
-
-File_Lock :: struct {
-	file: ^os.File,
-}
-
-file_lock_acquire :: proc(path: string, timeout_ms: i64 = LOCK_ACQUIRE_BUDGET_MS) -> (lock: File_Lock, ok: bool) {
-	if timeout_ms <= 0 {
-		return file_lock_try_acquire(path)
-	}
-	deadline := mono_ms() + timeout_ms
-	for {
-		got, got_ok := file_lock_try_acquire(path)
-		if got_ok {
-			return got, true
-		}
-		if mono_ms() >= deadline {
-			return {}, false
-		}
-		time.sleep(time.Duration(LOCK_ACQUIRE_SLICE_MS) * time.Millisecond)
-	}
-}
 
 file_lock_try_acquire :: proc(path: string) -> (lock: File_Lock, ok: bool) {
 	f, err := os.open(path, {.Write, .Read, .Create}, os.Permissions{.Read_User, .Write_User})
