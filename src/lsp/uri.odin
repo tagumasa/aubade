@@ -46,6 +46,11 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 		if n > 0 && localhost && n < len(out) {
 			drop_leading(&out, n)
 		}
+		// A two-character "C:" authority is the two-slash drive spelling
+		// (file://C:/x): the authority IS the drive pair, and the decoded
+		// path already reads in platform form — it must not take the UNC
+		// authority branch below, which would fabricate //C:/x.
+		drive_authority := n == 2 && is_ascii_letter(out[0]) && out[1] == ':'
 		// "file:///C:/x" carries a slash before the drive letter; the
 		// platform path form has none.
 		if len(out) >= 3 && out[0] == '/' && is_ascii_letter(out[1]) && out[2] == ':' {
@@ -53,7 +58,7 @@ uri_to_path :: proc(uri: string, a := context.allocator) -> (path: string, ok: b
 				out[j] = out[j + 1]
 			}
 			resize(&out, len(out) - 1)
-		} else if len(out) > 0 && out[0] != '/' {
+		} else if !drive_authority && len(out) > 0 && out[0] != '/' {
 			// The authority form (file://server/share/x): the host sits
 			// before the first path slash — a UNC share, which only this
 			// platform grounds. The path keeps forward slashes, mirroring

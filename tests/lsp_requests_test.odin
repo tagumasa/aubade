@@ -150,9 +150,24 @@ lsp_uri_roundtrip :: proc(t: ^testing.T) {
 		if caps_ok {
 			testing.expect_value(t, caps, "C:/tmp/x.go")
 		}
+
+		// The two-slash drive spelling (some tools emit it): the "C:"
+		// authority is the drive pair itself, not a UNC host — the decode
+		// must read the drive path, never the fabricated //C:/x form.
+		two_slash, two_slash_ok := lsp.uri_to_path("file://C:/tmp/a%20b.go", context.temp_allocator)
+		testing.expect_value(t, two_slash_ok, true)
+		if two_slash_ok {
+			testing.expect_value(t, two_slash, "C:/tmp/a b.go")
+		}
 	} else {
 		_, unc_ok := lsp.uri_to_path("file://server/share/a%20b.go", context.temp_allocator)
 		testing.expect_value(t, unc_ok, false)
+
+		// The two-slash drive spelling carries a non-localhost authority,
+		// which only a UNC-capable decoder could ground — unresolvable
+		// here like any other authority form.
+		_, drive_ok := lsp.uri_to_path("file://C:/tmp/a%20b.go", context.temp_allocator)
+		testing.expect_value(t, drive_ok, false)
 
 		// RFC 8089: a "localhost" authority reads exactly as if no
 		// authority were present (hosts compare case-insensitively), so
