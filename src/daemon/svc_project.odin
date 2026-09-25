@@ -6,6 +6,7 @@
 package daemon
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -981,7 +982,10 @@ handle_symbol_find_dead_code :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (
 			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be an integer"}
 		}
 		if limit <= 0 || limit > svc.DEAD_SCAN_MAX_LIMIT {
-			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be between 1 and 1000"}
+			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
+				"limit must be between 1 and %v", svc.DEAD_SCAN_MAX_LIMIT,
+				allocator = ctx.allocator,
+			)}
 		}
 	}
 
@@ -1043,7 +1047,11 @@ handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (js
 			return nil, platform.Wrapped{kind = .Invalid, msg = "min_nodes must be an integer"}
 		}
 		if min_nodes < svc.CLONE_SCAN_MIN_NODES_FLOOR || min_nodes > svc.CLONE_SCAN_MAX_MIN_NODES {
-			return nil, platform.Wrapped{kind = .Invalid, msg = "min_nodes must be between 10 and 100000"}
+			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
+				"min_nodes must be between %v and %v",
+				svc.CLONE_SCAN_MIN_NODES_FLOOR, svc.CLONE_SCAN_MAX_MIN_NODES,
+				allocator = ctx.allocator,
+			)}
 		}
 	}
 
@@ -1056,7 +1064,10 @@ handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (js
 			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be an integer"}
 		}
 		if limit <= 0 || limit > svc.CLONE_SCAN_MAX_LIMIT {
-			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be between 1 and 500"}
+			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
+				"limit must be between 1 and %v", svc.CLONE_SCAN_MAX_LIMIT,
+				allocator = ctx.allocator,
+			)}
 		}
 	}
 

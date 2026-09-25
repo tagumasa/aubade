@@ -170,14 +170,21 @@ ast_find_duplicates_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	if arg_has(args, "min_nodes") {
 		min_nodes = arg_int(args, "min_nodes")
 		if min_nodes < svc.CLONE_SCAN_MIN_NODES_FLOOR || min_nodes > svc.CLONE_SCAN_MAX_MIN_NODES {
-			return err_result(ctx, "min_nodes must be between 10 and 100000")
+			return err_result(ctx, fmt.aprintf(
+				"min_nodes must be between %v and %v",
+				svc.CLONE_SCAN_MIN_NODES_FLOOR, svc.CLONE_SCAN_MAX_MIN_NODES,
+				allocator = ctx.allocator,
+			))
 		}
 	}
 	limit := 0
 	if arg_has(args, "limit") {
 		limit = arg_int(args, "limit")
 		if limit <= 0 || limit > svc.CLONE_SCAN_MAX_LIMIT {
-			return err_result(ctx, "limit must be between 1 and 500")
+			return err_result(ctx, fmt.aprintf(
+				"limit must be between 1 and %v", svc.CLONE_SCAN_MAX_LIMIT,
+				allocator = ctx.allocator,
+			))
 		}
 	}
 	call := svc.client_ast_find_duplicates(ctx.svc_conn, arg_str(args, "path_prefix"), min_nodes, limit, ctx.allocator, svc_deadline(ctx), ctx.cancel)
