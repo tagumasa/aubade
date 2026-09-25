@@ -62,3 +62,25 @@ path_fold_is_canonical_key :: proc(t: ^testing.T) {
 		testing.expect_value(t, key2, "/a/B")
 	}
 }
+
+@(test)
+path_fold_basis_is_ascii :: proc(t: ^testing.T) {
+	// The fold basis is ASCII-only by design — one basis shared with
+	// path_equal and every path-identity consumer (the daemon project id,
+	// editor buffer keys, root dedup). A non-ASCII case pair is therefore
+	// NOT one path on any platform: folding such a pair would split the
+	// key regime from path_equal and over-dedup distinct directories.
+	// The é bytes below are the two UTF-8 spellings é (U+00E9) and É
+	// (U+00C9).
+	cafe_lower := "/proj/caf\xc3\xa9"
+	cafe_upper := "/proj/caf\xc3\x89"
+	key_lower := platform.path_fold(cafe_lower, context.temp_allocator)
+	key_upper := platform.path_fold(cafe_upper, context.temp_allocator)
+	testing.expect(t, key_lower != key_upper)
+	testing.expect(t, !platform.path_equal(cafe_lower, cafe_upper))
+	// The ASCII pairs still fold when the filesystem does.
+	if platform.case_insensitive_fs() {
+		testing.expect(t, platform.path_fold("/Caf\xc3\xa9/A", context.temp_allocator) ==
+			platform.path_fold("/caf\xc3\xa9/a", context.temp_allocator))
+	}
+}
