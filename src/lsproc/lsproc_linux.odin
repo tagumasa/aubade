@@ -271,7 +271,13 @@ platform_child_pids :: proc(pid: int, a := context.allocator) -> []int {
 	return platform.proctree_collect_child_pids(pid, a)
 }
 
-// platform stream accessors (called with p.mu held by the callers).
+// platform stream accessors. The _locked suffix means the caller holds
+// p.mu — true only for close_stdin (lsproc_stop calls it between its wait
+// stages). The stream I/O accessors are deliberately lock-free: each end
+// has one owning thread (stdin writes go through the jsonrpc writer,
+// stdout belongs to the reader thread, stderr to the pump), and a stop or
+// death racing the I/O surfaces as EBADF/EPIPE or EOF at the fd level,
+// never as a mutex ordering.
 
 platform_close_stdin_locked :: proc(p: ^Proc) {
 	if p.state.stdin_w >= 0 {
@@ -280,7 +286,7 @@ platform_close_stdin_locked :: proc(p: ^Proc) {
 	}
 }
 
-platform_write_stdin_locked :: proc(p: ^Proc, buf: []u8) -> int {
+platform_write_stdin :: proc(p: ^Proc, buf: []u8) -> int {
 	if p.state.stdin_w < 0 {
 		return -1
 	}
@@ -291,9 +297,9 @@ platform_write_stdin_locked :: proc(p: ^Proc, buf: []u8) -> int {
 	return n
 }
 
-// read_pipe_locked drains one pipe end; EOF (read 0) or error closes the
-// fd and reports the pipe done.
-read_pipe_locked :: proc(fd: ^linux.Fd, buf: []u8) -> (int, bool) {
+// read_pipe drains one pipe end; EOF (read 0) or error closes the fd and
+// reports the pipe done.
+read_pipe :: proc(fd: ^linux.Fd, buf: []u8) -> (int, bool) {
 	if fd^ < 0 {
 		return 0, true
 	}
@@ -314,8 +320,8 @@ read_pipe_locked :: proc(fd: ^linux.Fd, buf: []u8) -> (int, bool) {
 	return 0, true
 }
 
-platform_read_stdout_locked :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
-	return read_pipe_locked(&p.state.stdout_r, buf)
+platform_read_stdout :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
+	return read_pipe(&p.state.stdout_r, buf)
 }
 
 // --- cgroup v2 memory containment ------------------------------------------
@@ -464,6 +470,6 @@ own_cgroup_path :: proc() -> (string, bool) {
 	return "", false
 }
 
-platform_read_stderr_locked :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
-	return read_pipe_locked(&p.state.stderr_r, buf)
+platform_read_stderr :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
+	return read_pipe(&p.state.stderr_r, buf)
 }
