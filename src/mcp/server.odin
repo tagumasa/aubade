@@ -4,8 +4,10 @@
 // notifications/tools/list_changed, notifications/cancelled. No
 // elicitation, structured output values, resource links, icons values, or
 // tasks. Input-validation violations return isError tool results, never
-// JSON-RPC -32602; -32602 stays for unknown tools and framing
-// level violations.
+// JSON-RPC -32602; -32602 stays for unknown tools, malformed tools/call
+// request params, and framing-level violations (the split the 2025-11-25
+// revision's error-handling section draws between tool execution errors
+// and CallToolRequest schema failures).
 package mcp
 
 import "base:intrinsics"
