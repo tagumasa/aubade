@@ -34,28 +34,8 @@ register_tracker_methods :: proc(t: ^svc.Table) {
 }
 
 // --- param helpers ----------------------------------------------------------
-
-// tracker_opt_str_array extracts an optional array-of-strings parameter
-// onto the request arena (the caller never frees it piecemeal).
-tracker_opt_str_array :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string) -> (vals: []string, present: bool, err: platform.Err) {
-	if v, ok := jsonutil.obj_get(params, key); ok {
-		arr, aok := jsonutil.as_array(v)
-		if !aok {
-			return nil, false, param_type_err(ctx, key, "an array of strings")
-		}
-		out := make([dynamic]string, 0, len(arr), ctx.allocator)
-		for it in arr {
-			#partial switch x in it {
-			case json.String:
-				append(&out, string(x))
-			case:
-				return nil, false, param_type_err(ctx, key, "an array of strings")
-			}
-		}
-		return out[:], true, nil
-	}
-	return nil, false, nil
-}
+// (the optional string-array reader is file_opt_str_array in svc_file.odin,
+// the one param family for the daemon's svc handlers)
 
 // tracker_expand_sprint resolves the "current" reference into the active
 // sprint's concrete id; the empty string and concrete ids pass through.
@@ -75,12 +55,12 @@ tracker_expand_sprint :: proc(d: ^Daemon, sprint: string, a: mem.Allocator) -> (
 handle_tracker_list_incidents :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 	f: tracker.Incident_Filter
-	status, _, err := tracker_opt_str_array(ctx, params, "status")
+	status, _, err := file_opt_str_array(ctx, params, "status")
 	if err != nil {
 		return nil, err
 	}
 	f.status = status
-	priority, _, perr := tracker_opt_str_array(ctx, params, "priority")
+	priority, _, perr := file_opt_str_array(ctx, params, "priority")
 	if perr != nil {
 		return nil, perr
 	}
@@ -247,17 +227,17 @@ handle_tracker_create :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Va
 		}
 		input.sprint = expanded
 	}
-	labels, _, lerr := tracker_opt_str_array(ctx, params, "labels")
+	labels, _, lerr := file_opt_str_array(ctx, params, "labels")
 	if lerr != nil {
 		return nil, lerr
 	}
 	input.labels = labels
-	aliases, _, aerr := tracker_opt_str_array(ctx, params, "aliases")
+	aliases, _, aerr := file_opt_str_array(ctx, params, "aliases")
 	if aerr != nil {
 		return nil, aerr
 	}
 	input.aliases = aliases
-	blocked, _, blerr := tracker_opt_str_array(ctx, params, "blocked_by")
+	blocked, _, blerr := file_opt_str_array(ctx, params, "blocked_by")
 	if blerr != nil {
 		return nil, blerr
 	}
@@ -385,21 +365,21 @@ handle_tracker_update :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Va
 		fields.assignee_set = true
 		any_field = true
 	}
-	if vals, present, verr := tracker_opt_str_array(ctx, params, "labels"); verr != nil {
+	if vals, present, verr := file_opt_str_array(ctx, params, "labels"); verr != nil {
 		return nil, verr
 	} else if present {
 		fields.labels = vals
 		fields.labels_set = true
 		any_field = true
 	}
-	if vals, present, verr := tracker_opt_str_array(ctx, params, "aliases"); verr != nil {
+	if vals, present, verr := file_opt_str_array(ctx, params, "aliases"); verr != nil {
 		return nil, verr
 	} else if present {
 		fields.aliases = vals
 		fields.aliases_set = true
 		any_field = true
 	}
-	if vals, present, verr := tracker_opt_str_array(ctx, params, "blocked_by"); verr != nil {
+	if vals, present, verr := file_opt_str_array(ctx, params, "blocked_by"); verr != nil {
 		return nil, verr
 	} else if present {
 		fields.blocked_by = vals
@@ -508,7 +488,7 @@ handle_tracker_start_sprint :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (j
 	if !fpresent {
 		follows = ""
 	}
-	must, _, merr := tracker_opt_str_array(ctx, params, "must")
+	must, _, merr := file_opt_str_array(ctx, params, "must")
 	if merr != nil {
 		return nil, merr
 	}
@@ -595,7 +575,7 @@ handle_tracker_update_sprint :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (
 	} else if present {
 		su.resolves = val
 	}
-	if vals, present, verr := tracker_opt_str_array(ctx, params, "must"); verr != nil {
+	if vals, present, verr := file_opt_str_array(ctx, params, "must"); verr != nil {
 		return nil, verr
 	} else if present {
 		su.must = vals

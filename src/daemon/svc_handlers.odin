@@ -77,14 +77,7 @@ handle_hello :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, plat
 		return nil, terr
 	}
 
-	client_pid := 0
-	if v, ok := jsonutil.obj_get(params, "client_pid"); ok {
-		#partial switch x in v {
-		case json.Integer:
-			client_pid = int(x)
-		case:
-		}
-	}
+	client_pid := int(jsonutil.obj_get_int(params, "client_pid"))
 
 	// client_pid is shared Child state; write it under the owning mutex so
 	// the heartbeat thread's iteration never races the store. is_hello_seen
@@ -103,14 +96,7 @@ handle_hello :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, plat
 	// Frame tracing is daemon-wide: any session asking for it turns the
 	// flag on for servers started from here on (running servers pick it
 	// up on their next restart).
-	trace_lsp := false
-	if v, ok := jsonutil.obj_get(params, "trace_lsp"); ok {
-		#partial switch x in v {
-		case json.Boolean:
-			trace_lsp = bool(x)
-		case:
-		}
-	}
+	trace_lsp := jsonutil.obj_get_bool(params, "trace_lsp")
 	if trace_lsp && d.ls != nil {
 		langserver.manager_set_trace(d.ls, true)
 	}

@@ -64,6 +64,28 @@ file_opt_bool :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string) -> (va
 	return false, false, nil
 }
 
+// file_opt_str_array extracts an optional array-of-strings parameter onto
+// the request arena (the caller never frees it piecemeal).
+file_opt_str_array :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string) -> (vals: []string, present: bool, err: platform.Err) {
+	if v, ok := jsonutil.obj_get(params, key); ok {
+		arr, aok := jsonutil.as_array(v)
+		if !aok {
+			return nil, false, param_type_err(ctx, key, "an array of strings")
+		}
+		out := make([dynamic]string, 0, len(arr), ctx.allocator)
+		for it in arr {
+			#partial switch x in it {
+			case json.String:
+				append(&out, string(x))
+			case:
+				return nil, false, param_type_err(ctx, key, "an array of strings")
+			}
+		}
+		return out[:], true, nil
+	}
+	return nil, false, nil
+}
+
 param_type_err :: proc(ctx: ^svc.Svc_Ctx, key: string, expected: string) -> platform.Err {
 	return svc.wrapped_err(
 		.Invalid,

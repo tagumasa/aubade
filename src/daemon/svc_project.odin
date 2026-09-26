@@ -448,16 +448,9 @@ project_state_destroy :: proc(d: ^Daemon, token: ^platform.Cancel_Token = nil) {
 handle_symbol_list :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	path := ""
-	if v, ok := jsonutil.obj_get(params, "path"); ok {
-		#partial switch x in v {
-		case json.String:
-			path = string(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "path must be a string"}
-		}
-	} else {
-		return nil, platform.Wrapped{kind = .Invalid, msg = "path is required"}
+	path, perr := file_present_str(ctx, params, "path")
+	if perr != nil {
+		return nil, perr
 	}
 
 	roots, err := svc.ts_source_file_symbols(d.ts, path, ctx.allocator)
@@ -487,16 +480,9 @@ handle_symbol_list :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value
 handle_symbol_find :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	name := ""
-	if v, ok := jsonutil.obj_get(params, "name"); ok {
-		#partial switch x in v {
-		case json.String:
-			name = string(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "name must be a string"}
-		}
-	} else {
-		return nil, platform.Wrapped{kind = .Invalid, msg = "name is required"}
+	name, nerr := file_present_str(ctx, params, "name")
+	if nerr != nil {
+		return nil, nerr
 	}
 	if name == "" {
 		return nil, platform.Wrapped{kind = .Invalid, msg = "name must not be empty"}
@@ -926,14 +912,9 @@ symbol_find_chain_walk :: proc(
 handle_symbol_find_dead_code :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	path_prefix := ""
-	if v, ok := jsonutil.obj_get(params, "path_prefix"); ok {
-		#partial switch x in v {
-		case json.String:
-			path_prefix = string(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "path_prefix must be a string"}
-		}
+	path_prefix, _, pperr := file_opt_str(ctx, params, "path_prefix")
+	if pperr != nil {
+		return nil, pperr
 	}
 	if path_prefix != "" {
 		if path_prefix[0] == '/' {
@@ -953,20 +934,11 @@ handle_symbol_find_dead_code :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (
 	}
 
 	entry_prefixes := svc.DEAD_SCAN_DEFAULT_ENTRY_PREFIXES
-	if v, ok := jsonutil.obj_get(params, "entry_prefixes"); ok {
-		arr, aok := jsonutil.as_array(v)
-		if !aok {
-			return nil, platform.Wrapped{kind = .Invalid, msg = "entry_prefixes must be an array of strings"}
-		}
-		prefixes := make([]string, len(arr), ctx.allocator)
-		for i in 0..<len(arr) {
-			#partial switch x in arr[i] {
-			case json.String:
-				prefixes[i] = string(x)
-			case:
-				return nil, platform.Wrapped{kind = .Invalid, msg = "entry_prefixes must be an array of strings"}
-			}
-			if prefixes[i] == "" {
+	if prefixes, present, perr := file_opt_str_array(ctx, params, "entry_prefixes"); perr != nil {
+		return nil, perr
+	} else if present {
+		for p in prefixes {
+			if p == "" {
 				return nil, platform.Wrapped{kind = .Invalid, msg = "entry_prefixes must not contain empty strings"}
 			}
 		}
@@ -974,13 +946,10 @@ handle_symbol_find_dead_code :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (
 	}
 
 	limit := svc.DEAD_SCAN_DEFAULT_LIMIT
-	if v, ok := jsonutil.obj_get(params, "limit"); ok {
-		#partial switch x in v {
-		case json.Integer:
-			limit = int(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be an integer"}
-		}
+	if limit_v, present, lerr := file_opt_int(ctx, params, "limit"); lerr != nil {
+		return nil, lerr
+	} else if present {
+		limit = limit_v
 		if limit <= 0 || limit > svc.DEAD_SCAN_MAX_LIMIT {
 			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
 				"limit must be between 1 and %v", svc.DEAD_SCAN_MAX_LIMIT,
@@ -1012,14 +981,9 @@ handle_symbol_find_dead_code :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (
 handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	path_prefix := ""
-	if v, ok := jsonutil.obj_get(params, "path_prefix"); ok {
-		#partial switch x in v {
-		case json.String:
-			path_prefix = string(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "path_prefix must be a string"}
-		}
+	path_prefix, _, pperr := file_opt_str(ctx, params, "path_prefix")
+	if pperr != nil {
+		return nil, pperr
 	}
 	if path_prefix != "" {
 		if path_prefix[0] == '/' {
@@ -1039,13 +1003,10 @@ handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (js
 	}
 
 	min_nodes := svc.CLONE_SCAN_DEFAULT_MIN_NODES
-	if v, ok := jsonutil.obj_get(params, "min_nodes"); ok {
-		#partial switch x in v {
-		case json.Integer:
-			min_nodes = int(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "min_nodes must be an integer"}
-		}
+	if min_v, present, merr := file_opt_int(ctx, params, "min_nodes"); merr != nil {
+		return nil, merr
+	} else if present {
+		min_nodes = min_v
 		if min_nodes < svc.CLONE_SCAN_MIN_NODES_FLOOR || min_nodes > svc.CLONE_SCAN_MAX_MIN_NODES {
 			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
 				"min_nodes must be between %v and %v",
@@ -1056,13 +1017,10 @@ handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (js
 	}
 
 	limit := svc.CLONE_SCAN_DEFAULT_LIMIT
-	if v, ok := jsonutil.obj_get(params, "limit"); ok {
-		#partial switch x in v {
-		case json.Integer:
-			limit = int(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "limit must be an integer"}
-		}
+	if limit_v, present, lerr := file_opt_int(ctx, params, "limit"); lerr != nil {
+		return nil, lerr
+	} else if present {
+		limit = limit_v
 		if limit <= 0 || limit > svc.CLONE_SCAN_MAX_LIMIT {
 			return nil, platform.Wrapped{kind = .Invalid, msg = fmt.aprintf(
 				"limit must be between 1 and %v", svc.CLONE_SCAN_MAX_LIMIT,
@@ -1089,14 +1047,9 @@ handle_ast_find_duplicates :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (js
 handle_index_crawl :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
-	within := ""
-	if v, ok := jsonutil.obj_get(params, "within"); ok {
-		#partial switch x in v {
-		case json.String:
-			within = string(x)
-		case:
-			return nil, platform.Wrapped{kind = .Invalid, msg = "within must be a string"}
-		}
+	within, _, within_err := file_opt_str(ctx, params, "within")
+	if within_err != nil {
+		return nil, within_err
 	}
 
 	ignore := svc.ignore_config_load(d.cfg.project_root, d.cfg.home, ctx.allocator)
