@@ -129,9 +129,15 @@ index_refresh_walk :: proc(d: ^Daemon, token: ^platform.Cancel_Token) {
 	svc.spec_release_c_side(ignore.extra)
 	if err != nil {
 		if !stats.cancelled {
+			// The message rides temp like every log scratch on the
+			// monitor threads: the loop's free_all below owns its
+			// reset, while the allocator default (context.allocator)
+			// is this thread's heap and would leak one string per
+			// failed tick.
 			util.log_warning(
 				strings.concatenate(
 					{"index refresh: crawl failed; retrying on the next tick or miss: ", platform.err_message(err)},
+					context.temp_allocator,
 				),
 			)
 		}
