@@ -179,7 +179,7 @@ dec_f64_set :: proc(l: ^Loader, obj: json.Value, key: string, out: ^f64, set: ^b
 dec_int :: proc(l: ^Loader, obj: json.Value, key: string, out: ^int) { dec_scalar(l, obj, key, out) }
 dec_i64 :: proc(l: ^Loader, obj: json.Value, key: string, out: ^i64) { dec_scalar(l, obj, key, out) }
 
-dec_strings :: proc(l: ^Loader, obj: json.Value, key: string, out: ^[]string) {
+dec_strings :: proc(l: ^Loader, obj: json.Value, key: string, out: ^[]string, set: ^bool = nil) {
 	v, found := jsonutil.obj_get(obj, key)
 	if !found || v == nil || json_is_null(v) {
 		return
@@ -200,6 +200,9 @@ dec_strings :: proc(l: ^Loader, obj: json.Value, key: string, out: ^[]string) {
 		}
 	}
 	out^ = list
+	if set != nil {
+		set^ = true
+	}
 }
 
 // dec_language_servers decodes the language_servers allowlist. Every
@@ -469,10 +472,10 @@ convert_shared :: proc(l: ^Loader, obj: json.Value, s: ^Shared_Config) {
 	dec_strings(l, obj, "blocked_shell_commands", &s.blocked_shell_commands)
 	dec_strings(l, obj, "allowed_shell_commands", &s.allowed_shell_commands)
 	dec_strings(l, obj, "blocked_url_patterns", &s.blocked_url_patterns)
-	dec_strings(l, obj, "default_modes", &s.default_modes)
-	if len(s.default_modes) > 0 {
-		s.default_modes_set = true
-	}
+	// The set flag marks the assignment itself, so a project's explicit
+	// empty list replaces the global selection (null or absence stays
+	// unset and falls through).
+	dec_strings(l, obj, "default_modes", &s.default_modes, &s.default_modes_set)
 }
 
 // obj_member returns the nested object stored at `key`; a present,
