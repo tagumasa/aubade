@@ -545,17 +545,14 @@ memories_autoprefix_cmd :: proc(args: []string, g: ^Globals) -> int {
 	}
 	defer memories_close(mf)
 
-	refs := memories_check_refs(mf, context.temp_allocator)
+	// One pass, writes withheld or not: the count the dry run prints is
+	// the count the real run would report. (The unresolved-reference view
+	// is `memory check` — a different question.)
+	n := memories_autoprefix(mf, dry_run, context.temp_allocator)
 	if dry_run {
-		if len(refs) == 0 {
-			fmt.println("Dry run: no references to consider.")
-		}
-		for r in refs {
-			fmt.printf("would review %s:%d (%q)\n", r.from, r.line, r.to)
-		}
-		return 0
+		fmt.printf("Would add mem: prefixes in %d memories.\n", n)
+	} else {
+		fmt.printf("Added mem: prefixes in %d memories.\n", n)
 	}
-	n := memories_autoprefix(mf, false, context.temp_allocator)
-	fmt.printf("Added mem: prefixes in %d memories.\n", n)
 	return 0
 }

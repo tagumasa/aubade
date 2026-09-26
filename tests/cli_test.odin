@@ -839,8 +839,13 @@ cli_memories_family :: proc(t: ^testing.T) {
 
 	// Write a memory with a bare name occurrence, then auto-prefix it.
 	testing.expect_value(t, cli.run({"memory", "write", "bare", "--content", "points at auth/login plainly", "--project", proj}, "test"), 0)
-	testing.expect_value(t, cli.run({"memory", "fix-references", "--project", proj}, "test"), 0)
 	mem_dir, _ := filepath.join([]string{proj, ".aubade", "memories", "bare.md"}, context.temp_allocator)
+	// The dry run previews the real pass and writes nothing.
+	testing.expect_value(t, cli.run({"memory", "fix-references", "--dry-run", "--project", proj}, "test"), 0)
+	data_dry, dry_err := os.read_entire_file_from_path(mem_dir, context.temp_allocator)
+	testing.expectf(t, dry_err == nil, "bare memory missing after the dry run")
+	testing.expect_value(t, string(data_dry), "points at auth/login plainly")
+	testing.expect_value(t, cli.run({"memory", "fix-references", "--project", proj}, "test"), 0)
 	data, rerr := os.read_entire_file_from_path(mem_dir, context.temp_allocator)
 	testing.expect(t, rerr == nil, "bare memory missing")
 	testing.expect_value(t, string(data), "points at mem:auth/login plainly")
@@ -1459,6 +1464,14 @@ cli_memory_check_and_autoprefix_cores :: proc(t: ^testing.T) {
 		testing.expect_value(t, refs[0].to, "missing")
 		testing.expect_value(t, refs[0].line, 1)
 	}
+
+	// The dry run reports the same count the real pass will, without
+	// writing.
+	dry := cli.memories_autoprefix(&mf, true, context.temp_allocator)
+	testing.expect_value(t, dry, 1)
+	body_dry, found_dry, dry_err := svc.memory_load(&mf, "beta", context.temp_allocator)
+	testing.expectf(t, dry_err == nil && found_dry, "beta must reload untouched after the dry run")
+	testing.expect_value(t, body_dry, "see mem:missing and bare alpha\n")
 
 	modified := cli.memories_autoprefix(&mf, false, context.temp_allocator)
 	testing.expect_value(t, modified, 1)
