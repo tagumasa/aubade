@@ -38,6 +38,11 @@ Language_Props_Row :: struct {
 // C-family pattern below deliberately (C-family plus a few grammars that
 // parse // comments, e.g. css's js_comment and the tolerant json
 // grammar).
+
+// The C-family comment pattern: the brace-language rows and the unlisted
+// fallback share one spelling.
+C_FAMILY_COMMENT :: Comment_Pattern{line_comment = "//", block_start = "/*", block_end = "*/"}
+
 LANGUAGE_PROPS :: []Language_Props_Row{
 	{langs = {"python", "python-jedi", "python-ty"}, props = {
 		comment = {line_comment = "#"},
@@ -132,7 +137,7 @@ LANGUAGE_PROPS :: []Language_Props_Row{
 		"typescript", "rust", "kotlin", "swift", "dart", "php", "scala",
 		"groovy", "zig", "haxe", "hlsl", "systemverilog", "solidity",
 	}, props = {
-		comment = {line_comment = "//", block_start = "/*", block_end = "*/"},
+		comment = C_FAMILY_COMMENT,
 		family = .C_Like,
 	}},
 }
@@ -150,6 +155,6 @@ language_props :: proc(lang: string) -> (props: Language_Props, listed: bool) {
 		}
 	}
 	return Language_Props{
-		comment = {line_comment = "//", block_start = "/*", block_end = "*/"},
+		comment = C_FAMILY_COMMENT,
 	}, false
 }

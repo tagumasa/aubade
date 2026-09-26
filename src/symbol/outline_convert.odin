@@ -66,44 +66,43 @@ outline_def_text :: proc(sym: ^ts.Outline_Symbol, source: string) -> string {
 
 // outline_kind_to_lsp maps the outliner's normalized kind strings to LSP
 // symbol kinds. The outliner passes unknown "@definition.X" suffixes
-// through unchanged, so this switch must cover every suffix that appears
+// through unchanged, so the table must cover every suffix that appears
 // in the shipped tags queries; anything else falls back to Function. Go
 // type declarations are refined to Struct or Interface by inspecting the
 // declaration text.
+Outline_Kind_Row :: struct {
+	suffixes: []string,
+	kind:     Symbol_Kind,
+}
+
+OUTLINE_KIND_ROWS :: []Outline_Kind_Row{
+	{suffixes = {"function", "macro"}, kind = .Function},
+	{suffixes = {"method"}, kind = .Method},
+	{suffixes = {"field"}, kind = .Field},
+	{suffixes = {"class"}, kind = .Class},
+	{suffixes = {"interface", "trait"}, kind = .Interface},
+	{suffixes = {"constructor"}, kind = .Constructor},
+	{suffixes = {"constant"}, kind = .Constant},
+	{suffixes = {"variable"}, kind = .Variable},
+	{suffixes = {"module"}, kind = .Module},
+	{suffixes = {"enum"}, kind = .Enum},
+	{suffixes = {"enum_member"}, kind = .Enum_Member},
+	{suffixes = {"object"}, kind = .Object},
+	{suffixes = {"type", "record", "struct", "union"}, kind = .Struct},
+}
+
 outline_kind_to_lsp :: proc(kind: string, def_text: string, lang: string) -> Symbol_Kind {
-	switch kind {
-	case "function", "macro":
-		return .Function
-	case "method":
-		return .Method
-	case "field":
-		return .Field
-	case "class":
-		return .Class
-	case "interface", "trait":
-		return .Interface
-	case "constructor":
-		return .Constructor
-	case "constant":
-		return .Constant
-	case "variable":
-		return .Variable
-	case "module":
-		return .Module
-	case "enum":
-		return .Enum
-	case "enum_member":
-		return .Enum_Member
-	case "object":
-		return .Object
-	case "type", "record", "struct", "union":
-		if lang == "go" && is_go_interface_decl(def_text) {
-			return .Interface
+	for row in OUTLINE_KIND_ROWS {
+		for suffix in row.suffixes {
+			if suffix == kind {
+				if row.kind == .Struct && lang == "go" && is_go_interface_decl(def_text) {
+					return .Interface
+				}
+				return row.kind
+			}
 		}
-		return .Struct
-	case:
-		return .Function
 	}
+	return .Function
 }
 
 // is_go_interface_decl reports whether a Go type declaration text defines

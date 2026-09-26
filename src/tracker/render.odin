@@ -570,33 +570,49 @@ incident_matches :: proc(h: ^Incident_Header, f: ^Incident_Filter, ctx: ^Filter_
 	return true
 }
 
+Incident_Less :: proc(list: []^Incident_Header, i: int, j: int) -> bool
+
+less_updated :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
+	return list[i].updated_ms > list[j].updated_ms
+}
+
+less_created :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
+	return list[i].created_ms < list[j].created_ms
+}
+
+less_priority :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
+	ri := priority_index(list[i].priority)
+	rj := priority_index(list[j].priority)
+	if ri < 0 {
+		ri = 4 // unrecognized (foreign) sorts last, never most urgent
+	}
+	if rj < 0 {
+		rj = 4
+	}
+	if ri != rj {
+		return ri < rj
+	}
+	return list[i].updated_ms > list[j].updated_ms
+}
+
+Sort_Entry :: struct {
+	key:  string,
+	less: Incident_Less,
+}
+
+// The filter's sort vocabulary; "updated" is the default and carries no
+// row (it is less_updated).
+SORT_ENTRIES :: []Sort_Entry{
+	{key = "created", less = less_created},
+	{key = "priority", less = less_priority},
+}
+
 sort_incidents :: proc(list: []^Incident_Header, sort_key: string) {
-	less_updated :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
-		return list[i].updated_ms > list[j].updated_ms
-	}
-	less_created :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
-		return list[i].created_ms < list[j].created_ms
-	}
-	less_priority :: proc(list: []^Incident_Header, i: int, j: int) -> bool {
-		ri := priority_index(list[i].priority)
-		rj := priority_index(list[j].priority)
-		if ri < 0 {
-			ri = 4 // unrecognized (foreign) sorts last, never most urgent
-		}
-		if rj < 0 {
-			rj = 4
-		}
-		if ri != rj {
-			return ri < rj
-		}
-		return list[i].updated_ms > list[j].updated_ms
-	}
 	less := less_updated
-	switch sort_key {
-	case "created":
-		less = less_created
-	case "priority":
-		less = less_priority
+	for entry in SORT_ENTRIES {
+		if entry.key == sort_key {
+			less = entry.less
+		}
 	}
 	// insertion sort — lists are small and ownership stays trivial
 	for i in 1..<len(list) {

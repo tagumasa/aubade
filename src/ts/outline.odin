@@ -143,17 +143,18 @@ GO_OUTLINE_QUERY :: `
 (var_spec name: (identifier) @name) @definition.variable
 `
 
-// outline_query_override returns the replacement tags query for languages
-// whose shipped/inferred query misses symbol families aubade needs, ""
-// when the registry entry's tags_query should be used as-is. The odin row
-// takes effect once the odin grammar is pinned; the grammar ships no tags
-// query of its own.
-outline_query_override :: proc(lang_name: string) -> string {
-	switch lang_name {
-	case "go":
-		return GO_OUTLINE_QUERY
-	case "odin":
-		return `
+Outline_Query_Override :: struct {
+	lang:  string,
+	query: string,
+}
+
+// Outline-query overrides for languages whose shipped/inferred tags query
+// misses symbol families aubade needs; a lookup miss means the registry
+// entry's tags_query is used as-is. The odin row takes effect once the odin
+// grammar is pinned; the grammar ships no tags query of its own.
+OUTLINE_QUERY_OVERRIDES :: []Outline_Query_Override{
+	{lang = "go", query = GO_OUTLINE_QUERY},
+	{lang = "odin", query = `
 (procedure_declaration . (identifier) @name) @definition.function
 (struct_declaration . (identifier) @name) @definition.type
 (enum_declaration . (identifier) @name) @definition.type
@@ -161,9 +162,8 @@ outline_query_override :: proc(lang_name: string) -> string {
 (bit_field_declaration . (identifier) @name) @definition.type
 (const_declaration . (identifier) @name) @definition.constant
 (variable_declaration . (identifier) @name) @definition.variable
-`
-	case "typescript":
-		return `
+`},
+	{lang = "typescript", query = `
 (function_declaration name: (identifier) @name) @definition.function
 (method_definition name: (property_identifier) @name) @definition.method
 (class_declaration name: (type_identifier) @name) @definition.class
@@ -173,10 +173,21 @@ outline_query_override :: proc(lang_name: string) -> string {
 (enum_declaration name: (identifier) @name) @definition.type
 (lexical_declaration (variable_declarator name: (identifier) @name)) @definition.variable
 (variable_declaration (variable_declarator name: (identifier) @name)) @definition.variable
-`
-	case:
-		return ""
+`},
+}
+
+// outline_query_override returns the replacement tags query for languages
+// whose shipped/inferred query misses symbol families aubade needs, ""
+// when the registry entry's tags_query should be used as-is. The odin row
+// takes effect once the odin grammar is pinned; the grammar ships no tags
+// query of its own.
+outline_query_override :: proc(lang_name: string) -> string {
+	for row in OUTLINE_QUERY_OVERRIDES {
+		if row.lang == lang_name {
+			return row.query
+		}
 	}
+	return ""
 }
 
 // The per-language owner-rule table. Every row is gated against the

@@ -291,8 +291,24 @@ html_pop_buf :: proc(c: ^Converter) -> string {
 	return s
 }
 
+// HEADING_PREFIXES maps h1..h6 onto the Markdown heading prefix each level
+// renders; heading_prefix is the one lookup.
+HEADING_PREFIXES :: [6]string{"\n\n# ", "\n\n## ", "\n\n### ", "\n\n#### ", "\n\n##### ", "\n\n###### "}
+
+heading_prefix :: proc(tag: string) -> (string, bool) {
+	if len(tag) != 2 || tag[0] != 'h' || tag[1] < '1' || tag[1] > '6' {
+		return "", false
+	}
+	prefixes := HEADING_PREFIXES
+	return prefixes[tag[1] - '1'], true
+}
+
 html_enter_element :: proc(c: ^Converter, node: ^LXB_Dom_Node) -> bool {
 	tag := lxb_node_tag(node, context.temp_allocator)
+	if p, is_heading := heading_prefix(tag); is_heading {
+		html_write(c, p)
+		return false
+	}
 	switch tag {
 	case "b", "strong":
 		append(&c.emph, "**")
@@ -315,13 +331,6 @@ html_enter_element :: proc(c: ^Converter, node: ^LXB_Dom_Node) -> bool {
 			append(&c.link_hrefs, href)
 			html_push_buf(c)
 		}
-
-	case "h1": html_write(c, "\n\n# ")
-	case "h2": html_write(c, "\n\n## ")
-	case "h3": html_write(c, "\n\n### ")
-	case "h4": html_write(c, "\n\n#### ")
-	case "h5": html_write(c, "\n\n##### ")
-	case "h6": html_write(c, "\n\n###### ")
 
 	case "p":  html_write(c, "\n\n")
 	case "br": html_write(c, "\n")
