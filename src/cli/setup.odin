@@ -12,6 +12,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "src:config"
+import "src:jsonutil"
 import "src:platform"
 import "src:util"
 
@@ -293,7 +294,7 @@ apply_zcode_config :: proc(path: string, binary: string, args: []string) -> int 
 // (mcp=1, servers=2, aubade=3), the args array inline. `nl` is the file's
 // line separator, so the block matches a CRLF config's convention.
 render_zcode_entry :: proc(binary: string, args: []string, unit, nl: string, a := context.allocator) -> string {
-	quoted_binary := config.json_quote(binary, context.temp_allocator)
+	quoted_binary := jsonutil.json_quote_bytes(binary, context.temp_allocator)
 	command := config.render_inline_array(args, context.temp_allocator)
 	fragments := make([]string, 3, context.temp_allocator)
 	fragments[0] = "\"type\": \"stdio\""
@@ -312,10 +313,10 @@ render_zcode_entry :: proc(binary: string, args: []string, unit, nl: string, a :
 // fresh-file writer does: four-space indentation, the args array one
 // element per line, trailing newline.
 render_fresh_zcode_config :: proc(binary: string, args: []string, a := context.allocator) -> string {
-	quoted_binary := config.json_quote(binary, context.temp_allocator)
+	quoted_binary := jsonutil.json_quote_bytes(binary, context.temp_allocator)
 	arg_lines := make([dynamic]string, 0, len(args), context.temp_allocator)
 	for arg in args {
-		append(&arg_lines, strings.concatenate({"        ", config.json_quote(arg, context.temp_allocator)}, context.temp_allocator))
+		append(&arg_lines, strings.concatenate({"        ", jsonutil.json_quote_bytes(arg, context.temp_allocator)}, context.temp_allocator))
 	}
 	args_joined := config.join_strings(arg_lines[:], ",\n", context.temp_allocator)
 	return strings.concatenate({
@@ -650,7 +651,7 @@ render_opencode_entry :: proc(command_array: string, unit, nl: string, a := cont
 render_fresh_opencode_config :: proc(binary: string, a := context.allocator) -> string {
 	return strings.concatenate({
 		"{\n    \"$schema\": \"https://opencode.ai/config.json\",\n    \"mcp\": {\n        \"aubade\": {\n            \"type\": \"local\",\n            \"command\": [\n                ",
-		config.json_quote(binary, context.temp_allocator),
+		jsonutil.json_quote_bytes(binary, context.temp_allocator),
 		",\n                \"mcp\",\n                \"--project-from-cwd\"\n            ]\n        }\n    }\n}\n",
 	}, a)
 }

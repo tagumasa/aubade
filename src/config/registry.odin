@@ -130,7 +130,7 @@ registry_save :: proc(home: string, entries: []string) -> platform.Err {
 		if i > 0 {
 			append(&buf, ", ")
 		}
-		quoted := json_quote(u, context.temp_allocator)
+		quoted := jsonutil.json_quote_bytes(u, context.temp_allocator)
 		append(&buf, quoted)
 		delete(quoted, context.temp_allocator)
 	}

@@ -359,7 +359,7 @@ insert_member :: proc(
 	close_indent:        string,
 	a:                   mem.Allocator,
 ) -> []u8 {
-	quoted := json_quote(name, context.temp_allocator)
+	quoted := jsonutil.json_quote_bytes(name, context.temp_allocator)
 	nl := detect_newline(data)
 	if len(info.members) == 0 {
 		body_start := info.open + 1
@@ -660,7 +660,7 @@ member_values_equal :: proc(data: []u8, m: Member_Info, value_text: string) -> b
 render_inline_array :: proc(items: []string, a := context.allocator) -> string {
 	quoted := make([]string, len(items), context.temp_allocator)
 	for s, i in items {
-		quoted[i] = json_quote(s, context.temp_allocator)
+		quoted[i] = jsonutil.json_quote_bytes(s, context.temp_allocator)
 	}
 	joined := join_strings(quoted, ", ", context.temp_allocator)
 	return strings.concatenate({"[", joined, "]"}, a)

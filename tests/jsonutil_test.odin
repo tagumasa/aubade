@@ -238,3 +238,29 @@ jsonutil_json_quote_tab_and_cr :: proc(t: ^testing.T) {
 	testing.expect_value(t, got, "\"\"")
 	delete(got)
 }
+
+@(test)
+jsonutil_json_quote_bytes_preserves_bytes :: proc(t: ^testing.T) {
+	// On valid UTF-8 the two quote forms render byte-identical output,
+	// named escapes and C0 \u00XX included.
+	same := "a\tb\rc\"d\\e\x0bf"
+	bq := jsonutil.json_quote_bytes(same, context.allocator)
+	rq := jsonutil.json_quote(same, context.allocator)
+	testing.expect(t, bq == rq)
+	delete(bq)
+	delete(rq)
+
+	// Invalid UTF-8 passes through byte-for-byte instead of becoming
+	// U+FFFD — the file-render contract: the literal records the
+	// source bytes (config templates, registrations, registry).
+	broken := "x\xFFy"
+	got := jsonutil.json_quote_bytes(broken, context.allocator)
+	testing.expect(t, got == "\"x\xFFy\"")
+	delete(got)
+
+	// The sanitizing form replaces the broken byte with U+FFFD — the
+	// wire/tool-answer contract.
+	sanitized := jsonutil.json_quote(broken, context.allocator)
+	testing.expect(t, sanitized == "\"x\xEF\xBF\xBDy\"")
+	delete(sanitized)
+}

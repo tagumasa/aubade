@@ -11,6 +11,7 @@ package config
 
 import "core:fmt"
 import "core:strings"
+import "src:jsonutil"
 
 GLOBAL_TEMPLATE :: `
 // Aubade global configuration (~/.aubade/config.jsonc).
@@ -340,12 +341,12 @@ mode_def_jsonc :: proc(def: ^Mode_Def, a := context.allocator) -> string {
 // without a trailing comma.
 append_def_jsonc :: proc(buf: ^[dynamic]u8, description, prompt: string, inc: ^Tool_Inclusion, a := context.allocator) {
 	append(buf, "\t// description of the context or mode (meta-information only).\n\t\"description\": ")
-	dq := json_quote(description, a)
+	dq := jsonutil.json_quote_bytes(description, a)
 	append(buf, dq)
 	delete(dq, a)
 
 	append(buf, ",\n\n\t// prompt that becomes part of the system prompt / instructions for this definition.\n\t\"prompt\": ")
-	pq := json_quote(prompt, a)
+	pq := jsonutil.json_quote_bytes(prompt, a)
 	append(buf, pq)
 	delete(pq, a)
 
@@ -384,7 +385,7 @@ generate_project_config :: proc(
 	body := project_template_reference(a)
 	langs := render_language_server_entries(language_servers, a)
 	out := subst_placeholder(body, "{{LANGUAGE_SERVERS}}", langs, a)
-	out = subst_placeholder(out, "{{PROJECT_NAME}}", json_quote(name, a), a)
+	out = subst_placeholder(out, "{{PROJECT_NAME}}", jsonutil.json_quote_bytes(name, a), a)
 	out = subst_placeholder(out, "{{DEFAULT_ENCODING}}", DEFAULT_ENCODING, a)
 	return out
 }
@@ -399,7 +400,7 @@ render_language_server_entries :: proc(ids: []string, a := context.allocator) ->
 			append(&buf, ", ")
 		}
 		append(&buf, `{"name": `)
-		quoted := json_quote(s, a)
+		quoted := jsonutil.json_quote_bytes(s, a)
 		append(&buf, quoted)
 		delete(quoted, a)
 		append(&buf, '}')
@@ -415,42 +416,10 @@ render_string_array :: proc(items: []string, a := context.allocator) -> string {
 		if i > 0 {
 			append(&buf, ", ")
 		}
-		quoted := json_quote(s, a)
+		quoted := jsonutil.json_quote_bytes(s, a)
 		append(&buf, quoted)
 		delete(quoted, a)
 	}
 	append(&buf, ']')
-	return string(buf[:])
-}
-
-// json_quote renders a JSON string literal (escaping quotes, backslashes,
-// and control characters — the values are identifiers or paths, but be
-// correct anyway). UTF-8 content passes through byte-wise.
-json_quote :: proc(s: string, a := context.allocator) -> string {
-	buf := make([dynamic]u8, 0, len(s) + 2, a)
-	append(&buf, '"')
-	for c in transmute([]u8)s {
-		switch c {
-		case '"':
-			append(&buf, "\\\"")
-		case '\\':
-			append(&buf, "\\\\")
-		case '\n':
-			append(&buf, "\\n")
-		case '\r':
-			append(&buf, "\\r")
-		case '\t':
-			append(&buf, "\\t")
-		case:
-			if c < 0x20 {
-				append(&buf, fmt.aprintf("\\u%04x", c, allocator = a))
-				// The aprintf buffer is reclaimed with `a` (arena in
-				// practice); nothing to delete per byte.
-			} else {
-				append(&buf, c)
-			}
-		}
-	}
-	append(&buf, '"')
 	return string(buf[:])
 }
