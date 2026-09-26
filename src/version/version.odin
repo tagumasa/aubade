@@ -1,8 +1,5 @@
 // The aubade version. This constant is the single source of the version
-// string — the CLI banner, the LSP initialize handshake, the config
-// overview, and the user agent all cite it; nothing else may hardcode a
-// version number. (Semantic-version parsing and comparison stay in
-// src/util — they are generic string utilities.)
+// string; nothing else may hardcode a version number.
 package version
 
 AUBADE_VERSION :: "1.0.4"
