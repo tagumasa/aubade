@@ -190,6 +190,17 @@ test_daemon_with_configs :: proc(
 		svc.table_register(&d.svc_table, "svc.test/slow", slow_wait_cancel)
 	}
 	svc.table_register(&d.svc_table, "svc.test/slow2", slow2_wait_cancel)
+	// The worker pool is pre-started for the same reason as the table
+	// above (the session's in-process path documents the race):
+	// daemon_in_process_accept runs on this thread while the run thread
+	// is still warming up, and a pump thread that beats daemon_run's
+	// pool_init would queue the first request into a zero-value pool and
+	// lose the task — the client then times out, and the concurrent use
+	// during construction is free to tear the pool's core task queue.
+	// daemon_run sees is_pool_started and skips its own init.
+	thread.pool_init(&d.pool, d.allocator, max(d.cfg.workers, 1))
+	thread.pool_start(&d.pool)
+	d.is_pool_started = true
 
 	// The remaining failure paths release everything they created: fail_now
 	// skips defers, so live daemon state (store, tracker) or a live run
