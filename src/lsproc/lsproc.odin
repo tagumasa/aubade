@@ -292,7 +292,7 @@ lsproc_close_stdin :: proc(p: ^Proc) {
 // serializes stdin writes through the jsonrpc writer, and a write racing
 // the stop's close sees EBADF and reports -1.
 lsproc_write_stdin :: proc(p: ^Proc, buf: []u8) -> int {
-	return platform_write_stdin_locked(p, buf)
+	return platform_write_stdin(p, buf)
 }
 
 // lsproc_read_stdout reads reply bytes (blocking; n == 0 reports EOF).
@@ -300,14 +300,14 @@ lsproc_write_stdin :: proc(p: ^Proc, buf: []u8) -> int {
 // reader thread owns this end until teardown, and the stdout fd is only
 // closed by lsproc_destroy after that reader is gone.
 lsproc_read_stdout :: proc(p: ^Proc, buf: []u8) -> (n: int, eof: bool) {
-	return platform_read_stdout_locked(p, buf)
+	return platform_read_stdout(p, buf)
 }
 
 // lsproc_read_stderr drains diagnostic bytes (blocking; n == 0 reports
 // EOF). No mutex, for the same reason as the stdout reader: the wiring's
 // stderr pump thread owns this end until teardown.
 lsproc_read_stderr :: proc(p: ^Proc, buf: []u8) -> (n: int, eof: bool) {
-	return platform_read_stderr_locked(p, buf)
+	return platform_read_stderr(p, buf)
 }
 
 // lsproc_child_pids snapshots the descendant pids of a process

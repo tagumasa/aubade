@@ -196,7 +196,13 @@ platform_contained :: proc(p: ^Proc) -> bool {
 	return p.state.job != nil
 }
 
-// platform stream accessors (called with p.mu held by the callers).
+// platform stream accessors. The _locked suffix means the caller holds
+// p.mu — true only for close_stdin (lsproc_stop calls it between its wait
+// stages). The stream I/O accessors are deliberately lock-free: each end
+// has one owning thread (stdin writes go through the jsonrpc writer,
+// stdout belongs to the reader thread, stderr to the pump), and a stop or
+// death racing the I/O surfaces as a failed os.read/os.write or EOF at
+// the handle level, never as a mutex ordering.
 
 platform_close_stdin_locked :: proc(p: ^Proc) {
 	if p.state.stdin_w != nil {
@@ -205,7 +211,7 @@ platform_close_stdin_locked :: proc(p: ^Proc) {
 	}
 }
 
-platform_write_stdin_locked :: proc(p: ^Proc, buf: []u8) -> int {
+platform_write_stdin :: proc(p: ^Proc, buf: []u8) -> int {
 	if p.state.stdin_w == nil {
 		return -1
 	}
@@ -216,7 +222,7 @@ platform_write_stdin_locked :: proc(p: ^Proc, buf: []u8) -> int {
 	return n
 }
 
-platform_read_stdout_locked :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
+platform_read_stdout :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
 	if p.state.stdout_r == nil {
 		return 0, true
 	}
@@ -229,7 +235,7 @@ platform_read_stdout_locked :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
 	return n, false
 }
 
-platform_read_stderr_locked :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
+platform_read_stderr :: proc(p: ^Proc, buf: []u8) -> (int, bool) {
 	if p.state.stderr_r == nil {
 		return 0, true
 	}
