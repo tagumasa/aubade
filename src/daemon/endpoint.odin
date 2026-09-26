@@ -91,13 +91,7 @@ endpoint_from_value :: proc(value: json.Value, a := context.allocator) -> (Endpo
 	case:
 		return {}, false
 	}
-	if v, found := jsonutil.obj_get(value, "started_at"); found {
-		#partial switch x in v {
-		case json.Integer:
-			info.started_at_ms = x
-		case:
-		}
-	}
+	info.started_at_ms = jsonutil.obj_get_int(value, "started_at")
 	return info, true
 }
 

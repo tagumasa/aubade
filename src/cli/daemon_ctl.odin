@@ -188,27 +188,14 @@ daemon_status :: proc(g: ^Globals) -> int {
 		return 1
 	}
 
-	pid := svc_int(result, "pid")
-	port := svc_int(result, "port")
-	started := svc_int(result, "started_at_ms")
-	live := svc_int(result, "children_live")
-	total := svc_int(result, "children_total")
+	pid := jsonutil.obj_get_int(result, "pid")
+	port := jsonutil.obj_get_int(result, "port")
+	started := jsonutil.obj_get_int(result, "started_at_ms")
+	live := jsonutil.obj_get_int(result, "children_live")
+	total := jsonutil.obj_get_int(result, "children_total")
 
 	fmt.printf("daemon running: pid=%d port=%d started_at_ms=%d\n", pid, port, started)
 	fmt.printf("children: live=%d total=%d\n", live, total)
-	return 0
-}
-
-// svc_int reads an integer member from a JSON result object (0 when absent
-// or not an integer).
-svc_int :: proc(v: json.Value, key: string) -> int {
-	if member, ok := jsonutil.obj_get(v, key); ok {
-		#partial switch x in member {
-		case json.Integer:
-			return int(x)
-		case:
-		}
-	}
 	return 0
 }
 

@@ -7,7 +7,6 @@
 // never run unguarded.
 package tools
 
-import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "src:platform"
@@ -177,11 +176,7 @@ SHELL_RUN_PARAMS :: []Param_Desc{
 // arg_int reads a validated integer parameter (0 when absent).
 arg_int :: proc(args: ^Args, name: string) -> int {
 	if v, ok := args.values[name]; ok {
-		#partial switch x in v {
-		case json.Integer:
-			return int(x)
-		case:
-		}
+		return int(jsonutil.value_int(v))
 	}
 	return 0
 }

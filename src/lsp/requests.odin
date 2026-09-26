@@ -634,20 +634,8 @@ request_inlay_hints :: proc(
 			case:
 			}
 		}
-		if pl_v, pok := jsonutil.obj_get(item, "paddingLeft"); pok {
-			#partial switch x in pl_v {
-			case json.Boolean:
-				hint.padding_left = x
-			case:
-			}
-		}
-		if pr_v, prok := jsonutil.obj_get(item, "paddingRight"); prok {
-			#partial switch x in pr_v {
-			case json.Boolean:
-				hint.padding_right = x
-			case:
-			}
-		}
+		hint.padding_left = jsonutil.obj_get_bool(item, "paddingLeft")
+		hint.padding_right = jsonutil.obj_get_bool(item, "paddingRight")
 		append(&out, hint)
 	}
 	if len(out) == 0 {

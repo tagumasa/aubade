@@ -142,18 +142,14 @@ decode_envelope :: proc(body: []u8, a: mem.Allocator) -> (env: ^Envelope, code: 
 		case json.Object:
 			em := cast(map[string]json.Value)ev
 			if cv, found := em["code"]; found {
-				#partial switch n in cv {
-				case json.Integer:
-					env.err_code = code_from_i64(i64(n))
-				case:
-					env.err_code = .Internal_Error
-				}
+				// value_int yields 0 for a non-integer code, and
+				// code_from_i64 maps 0 to Internal_Error — the absent and
+				// malformed spellings stay indistinguishable, as before.
+				env.err_code = code_from_i64(jsonutil.value_int(cv))
 			}
 			if mv, found := em["message"]; found {
-				#partial switch ms in mv {
-				case json.String:
-					env.err_message = strings.clone(string(ms), a)
-				case:
+				if s := jsonutil.value_str(mv); s != "" {
+					env.err_message = strings.clone(s, a)
 				}
 			}
 		case:

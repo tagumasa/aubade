@@ -249,12 +249,8 @@ line_slice :: proc(contents: string, n: int) -> (string, bool) {
 // kind_from_json maps the wire SymbolKind number onto the closed enum;
 // out-of-range values (servers invent future kinds) become Unknown.
 kind_from_json :: proc(v: json.Value) -> symbol.Symbol_Kind {
-	#partial switch x in v {
-	case json.Integer:
-		if x >= 1 && x <= 26 {
-			return cast(symbol.Symbol_Kind)x
-		}
-	case:
+	if n := jsonutil.value_int(v); n >= 1 && n <= 26 {
+		return cast(symbol.Symbol_Kind)n
 	}
 	return .Unknown
 }

@@ -40,6 +40,34 @@ obj_get_bool :: proc(v: json.Value, key: string) -> bool {
 	return false
 }
 
+// value_int extracts an integer from an Integer value (0 otherwise).
+value_int :: proc(v: json.Value) -> i64 {
+	#partial switch x in v {
+	case json.Integer:
+		return i64(x)
+	case:
+	}
+	return 0
+}
+
+// value_bool extracts a bool from a Boolean value (false otherwise).
+value_bool :: proc(v: json.Value) -> bool {
+	#partial switch x in v {
+	case json.Boolean:
+		return x
+	case:
+	}
+	return false
+}
+
+// obj_get_int reads an integer member (0 when absent or not an integer).
+obj_get_int :: proc(v: json.Value, key: string) -> i64 {
+	if val, ok := obj_get(v, key); ok {
+		return value_int(val)
+	}
+	return 0
+}
+
 // as_array casts an Array value to its base dynamic array (shared).
 as_array :: proc(v: json.Value) -> ([]json.Value, bool) {
 	#partial switch a in v {

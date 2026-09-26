@@ -502,11 +502,11 @@ index_summary :: proc(conn: ^jsonrpc.Conn, within: string, a := context.allocato
 	if !ok {
 		return "aubade project index: daemon answered without stats", 1
 	}
-	files := svc_int(stats, "files_indexed")
-	symbols := svc_int(stats, "symbols")
-	ignored := svc_int(stats, "files_ignored")
-	unsupported := svc_int(stats, "files_unsupported")
-	failed := svc_int(stats, "files_failed")
+	files := jsonutil.obj_get_int(stats, "files_indexed")
+	symbols := jsonutil.obj_get_int(stats, "symbols")
+	ignored := jsonutil.obj_get_int(stats, "files_ignored")
+	unsupported := jsonutil.obj_get_int(stats, "files_unsupported")
+	failed := jsonutil.obj_get_int(stats, "files_failed")
 	return fmt.aprintf(
 		"Indexed %d files (%d symbols; %d ignored, %d unsupported, %d failed).",
 		files, symbols, ignored, unsupported, failed,
