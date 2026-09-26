@@ -125,10 +125,12 @@ File_Buffer :: struct {
 }
 
 file_buffer_init :: proc(buf: ^File_Buffer, rel_path: string, contents: string, a := context.allocator) {
+	// lines/line_seps start zero-valued: rebuild_lines owns them (its
+	// delete of a zero-value dynamic is a no-op), so nothing is made here
+	// only to be replaced a line later.
 	buf^ = {
 		rel_path = strings.clone(rel_path, a),
 		contents = strings.clone(contents, a),
-		lines    = make([dynamic]string, 0, 64, a),
 		allocator    = a,
 	}
 	rebuild_lines(buf)
@@ -802,45 +804,22 @@ buffer_acquire :: proc(e: ^Editor, rel_path: string) -> (^File_Buffer, Editor_Er
 // edit_file runs one edit under the file lock with snapshot rollback:
 // the action edits the buffer; on action or save failure the buffer is
 // restored from the snapshot (re-reading the disk when possible), so a
-// partial edit never reaches the disk.
+// partial edit never reaches the disk. Single actions ride the same
+// transaction ladder as the multi-step jobs (editor_edit_ctx) — one
+// ladder, one rollback discipline.
+Action_Job :: struct {
+	action: Edit_Action,
+	a:      runtime.Allocator,
+}
+
+action_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string) {
+	job := cast(^Action_Job)user
+	return apply_action(ef, job.action, job.a)
+}
+
 edit_file :: proc(e: ^Editor, rel_path: string, action: Edit_Action) -> (err: Editor_Err, msg: string) {
-	if _, perr, pmsg := safe_path(e, rel_path); perr != .None {
-		return perr, strings.concatenate({"invalid relative path: ", pmsg}, context.temp_allocator)
-	}
-
-	// First-registered defer fires last: the bound check runs outside
-	// every editor lock (it takes per-victim file locks itself).
-	defer editor_prune_buffers(e, rel_path)
-
-	h := file_lock(e, rel_path)
-	defer file_release(e, rel_path)
-	sync.mutex_lock(&h.mu)
-	defer sync.mutex_unlock(&h.mu)
-
-	buf, acq_err, acq_msg := buffer_acquire(e, rel_path)
-	if acq_err != .None {
-		return acq_err, acq_msg
-	}
-	snapshot := strings.clone(buf.contents, e.allocator)
-	defer delete(snapshot, e.allocator)
-
-	ef := Edited_File{buf = buf}
-	if aerr, amsg := apply_action(&ef, action, e.allocator); aerr != .None {
-		rollback_buffer(e, buf, rel_path, snapshot)
-		return aerr, amsg
-	}
-
-	if serr, smmsg := save(e, rel_path, buf.contents, buf.has_utf8_bom); serr != .None {
-		rollback_buffer(e, buf, rel_path, snapshot)
-		return serr, strings.concatenate({"save edited file: ", smmsg}, context.temp_allocator)
-	}
-	// The written bytes have no observed stat: drop the reload gate's
-	// record so the next read probes (and re-records with a pre-read
-	// stat). Stating after our own write would pair the record with
-	// whoever wrote last, not necessarily this buffer.
-	buf.has_disk_stat = false
-	buffer_notify_change(e, rel_path, buf.contents)
-	return .None, ""
+	job := Action_Job{action = action, a = e.allocator}
+	return editor_edit_ctx(e, rel_path, {apply = action_step, user = &job})
 }
 
 // rollback_buffer restores a buffer to a known-good state after a failed
