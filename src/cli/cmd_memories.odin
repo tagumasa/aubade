@@ -339,6 +339,18 @@ memories_check_refs :: proc(mf: ^svc.Memory_Files, a: mem.Allocator) -> []Memory
 	}
 	sort.quick_sort(all[:])
 
+	// One compile for the whole scan, on the caller's arena: a Regex
+	// belongs to its using thread and is never cached across calls, so the
+	// constant pattern is compiled once per invocation and shared by every
+	// line — the twin in memories_autoprefix compiles once per run too.
+	re, cerr := regex.compile_regex(MEM_REF_PATTERN, a)
+	if cerr != nil {
+		delete(known)
+		delete(all)
+		return nil
+	}
+	defer regex.regex_destroy(&re)
+
 	refs := make([dynamic]Memory_Ref, 0, 8, a)
 	for name in all {
 		content, found, lerr := svc.memory_load(mf, name, a)
@@ -351,13 +363,13 @@ memories_check_refs :: proc(mf: ^svc.Memory_Files, a: mem.Allocator) -> []Memory
 		line_start := 0
 		for i := 0; i < len(content); i += 1 {
 			if content[i] == '\n' {
-				scan_ref_line(known, content[line_start:i], name, line_num, &refs, a)
+				scan_ref_line(&re, known, content[line_start:i], name, line_num, &refs, a)
 				line_num += 1
 				line_start = i + 1
 			}
 		}
 		if line_start < len(content) {
-			scan_ref_line(known, content[line_start:], name, line_num, &refs, a)
+			scan_ref_line(&re, known, content[line_start:], name, line_num, &refs, a)
 		}
 	}
 	delete(known)
@@ -365,10 +377,15 @@ memories_check_refs :: proc(mf: ^svc.Memory_Files, a: mem.Allocator) -> []Memory
 	return refs[:]
 }
 
-// scan_ref_line reports the unresolved references on one line. The
-// extraction grammar: group 1 is the name, group 2 the boundary
-// character (start < 0 marks an unset group).
+// MEM_REF_PATTERN is the reference-extraction grammar: group 1 is the
+// name, group 2 the boundary character after it (start < 0 marks an
+// unset group).
+MEM_REF_PATTERN :: "mem:([^\\s)\\]\"'`]+?)([^\\w/]|$)"
+
+// scan_ref_line reports the unresolved references on one line, matching
+// with the caller's once-compiled MEM_REF_PATTERN regex.
 scan_ref_line :: proc(
+	re: ^regex.Regex,
 	known: map[string]bool,
 	line: string,
 	from: string,
@@ -376,18 +393,10 @@ scan_ref_line :: proc(
 	refs: ^[dynamic]Memory_Ref,
 	a: mem.Allocator,
 ) {
-	// Per-call compile on the caller's arena: a Regex belongs to its
-	// using thread and is never cached across calls.
-	re, cerr := regex.compile_regex("mem:([^\\s)\\]\"'`]+?)([^\\w/]|$)", a)
-	if cerr != nil {
-		return
-	}
-	defer regex.regex_destroy(&re)
-
-	ms := regex.regex_find_all(&re, line, a)
+	ms := regex.regex_find_all(re, line, a)
 	defer delete(ms, a)
 	for m in ms {
-		caps := regex.regex_captures_at(&re, line, m.start, a)
+		caps := regex.regex_captures_at(re, line, m.start, a)
 		// Group 1 is the name: caps[0] is the whole match, which would
 		// drag the mem: prefix and the boundary character along and flag
 		// every known reference as unknown.
