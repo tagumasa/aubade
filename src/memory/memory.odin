@@ -19,7 +19,7 @@ MEMORY_SUFFIX :: ".md"
 REF_PREFIX :: "mem:"
 
 // MAX_MEMORY_READ_BYTES caps one memory read; a memory beyond it is a
-// pathology, not content (the same bound as file reads).
+// pathology, not content.
 MAX_MEMORY_READ_BYTES :: 10 << 20
 
 // ---------------------------------------------------------------------------
