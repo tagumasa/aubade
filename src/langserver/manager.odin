@@ -211,9 +211,18 @@ manager_init :: proc(
 // for its own reset path.)
 manager_destroy :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) {
 	sync.mutex_lock(&m.mu)
+	// The idempotency latch: the reset at the bottom zeroes the struct
+	// (allocator included), and nothing but that reset ever does — a nil
+	// reg marks an already-destroyed manager. The early return keeps the
+	// second call from manager_reset's cooldown map make, which would
+	// allocate through the zeroed allocator.
+	already := m.reg == nil
 	m.is_stopped = true
 	m.cancel = token
 	sync.mutex_unlock(&m.mu)
+	if already {
+		return
+	}
 	manager_stop_idle(m)
 	manager_stop_eager(m)
 	manager_stop_all(m, token)
@@ -237,13 +246,13 @@ manager_destroy :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) {
 	free_string_array_map(m.overrides, m.allocator)
 	free_string_map(m.options, m.allocator)
 	// Reset like every sibling destroyer: the freed members must not stay
-	// dangling, or a second call (the documented idempotency) would
-	// double-free them. The is_stopped flag and cancel token outlive the
-	// reset on purpose: a factory create that raced this destroy checks
-	// them after the create returns (start_language, manager_restart) and
-	// must still find the manager dead — a plain zeroing resurrects it as
-	// alive-with-empty-tables, and the insert that follows lands in a
-	// zero-value map through the wrong allocator.
+	// dangling for straggling readers. The is_stopped flag and cancel
+	// token outlive the reset on purpose: a factory create that raced
+	// this destroy checks them after the create returns
+	// (start_language, manager_restart) and must still find the manager
+	// dead — a plain zeroing resurrects it as alive-with-empty-tables,
+	// and the insert that follows lands in a zero-value map through the
+	// wrong allocator.
 	m^ = {}
 	m.is_stopped = true
 	m.cancel = token
