@@ -129,8 +129,8 @@ proctree_spawn :: proc(desc: Proctree_Desc) -> (pid: int, err: Err) {
 	if rerrno != .NONE {
 		return 0, Err(.Internal)
 	}
-	null_fd = rfd
-	stdin_fd := null_fd
+	null_r_fd = rfd
+	stdin_fd := null_r_fd
 	defer if null_r_fd >= 0 {
 		_ = linux.close(null_r_fd)
 	}
