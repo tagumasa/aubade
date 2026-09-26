@@ -910,6 +910,46 @@ project_language_server_options :: proc(t: ^testing.T) {
 	testing.expect_value(t, mode_names_of(s2, context.temp_allocator), "no-onboarding,one-shot,planning,")
 }
 
+// A project's explicit empty default_modes is a selection (base_modes
+// only), not an unset key: null or absence is the unset spelling, so []
+// must not fall back to the global list.
+@(test) project_empty_default_modes_is_explicit :: proc(t: ^testing.T) {
+	home := temp_home(t)
+	defer {
+		os.remove_all(home)
+		delete(home, context.allocator)
+	}
+
+	write_config_file(
+		t,
+		platform.config_path(home, context.temp_allocator),
+		`{
+	"base_modes": ["no-onboarding"],
+	"default_modes": ["interactive"],
+}`,
+	)
+	project_root := strings.concatenate({home, "/repo-empty-modes"}, context.temp_allocator)
+	os.make_directory_all(project_root, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	managed := strings.concatenate({project_root, "/.aubade"}, context.temp_allocator)
+	write_config_file(
+		t,
+		platform.project_config_path(managed, context.temp_allocator),
+		`{
+	"project_name": "repo",
+	"default_modes": [],
+}`,
+	)
+
+	s, err := config.stack_build({project_root = project_root}, home, context.allocator)
+	testing.expect(t, err == nil, "stack must build")
+	defer config.stack_destroy(s)
+	testing.expect(t, s.project.shared.default_modes_set, "an explicit [] must set default_modes_set")
+	testing.expect_value(t, len(s.modes), 1)
+	if len(s.modes) == 1 {
+		testing.expect_value(t, s.modes[0].name, "no-onboarding")
+	}
+}
+
 @(test) stack_line_ending_falls_back_to_global :: proc(t: ^testing.T) {
 	home := temp_home(t)
 	defer {
