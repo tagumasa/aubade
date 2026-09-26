@@ -71,9 +71,13 @@ index_warm_crawl :: proc(d: ^Daemon) {
 	svc.spec_release_c_side(ignore.extra)
 	if err != nil {
 		if !stats.cancelled {
+			// Temp like the refresh loop's failure message — the free_all
+			// below owns the reset; the allocator default is this thread's
+			// heap and would leak the string.
 			util.log_warning(
 				strings.concatenate(
 					{"index warm-up: crawl failed; the next daemon start retries: ", platform.err_message(err)},
+					context.temp_allocator,
 				),
 			)
 		}
