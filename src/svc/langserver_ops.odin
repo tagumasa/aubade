@@ -154,24 +154,15 @@ langserver_json_int :: proc(v: json.Value, key: string) -> i64 {
 	return 0
 }
 
+// SEVERITY_NAMES is indexed by the wire DiagnosticSeverity (1..4).
+SEVERITY_NAMES :: [4]string{"error", "warning", "information", "hint"}
+
 // langserver_severity_name maps the wire DiagnosticSeverity
 // (1..4) to the diagnostics DTO's severity names.
 langserver_severity_name :: proc(sev: json.Value) -> string {
-	#partial switch x in sev {
-	case json.Integer:
-		switch x {
-		case 1:
-			return "error"
-		case 2:
-			return "warning"
-		case 3:
-			return "information"
-		case 4:
-			return "hint"
-		case:
-			return ""
-		}
-	case:
+	if n := jsonutil.value_int(sev); n >= 1 && n <= 4 {
+		names := SEVERITY_NAMES
+		return names[n - 1]
 	}
 	return ""
 }

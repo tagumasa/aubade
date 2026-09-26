@@ -13,6 +13,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "src:config"
 import "src:jsonutil"
@@ -310,21 +311,19 @@ is_read_file_tool :: proc(client: Hook_Client, tool_name: string, tool_input: js
 	}
 }
 
-// is_code_file_extension ports the code-extension allowlist; files without
-// an extension count as code.
+// CODE_FILE_EXTENSIONS is the code-extension allowlist; files without an
+// extension count as code.
+CODE_FILE_EXTENSIONS :: []string{
+	".go", ".rs", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt",
+	".scala", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".cs",
+	".rb", ".php", ".swift", ".m", ".mm", ".dart", ".lua", ".r", ".R",
+	".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".fs", ".fsx", ".clj",
+	".cljs", ".cljc", ".elm", ".vim", ".zig", ".nim", ".v", ".sv", ".vh",
+	".pl", ".pm", ".tcl", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1",
+	".gradle", ".groovy", ".proto", ".thrift", ".sol", ".move", ".cairo",
+}
 is_code_file_extension :: proc(ext: string) -> bool {
-	switch ext {
-	case ".go", ".rs", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt",
-		".scala", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".cs",
-		".rb", ".php", ".swift", ".m", ".mm", ".dart", ".lua", ".r", ".R",
-		".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".fs", ".fsx", ".clj",
-		".cljs", ".cljc", ".elm", ".vim", ".zig", ".nim", ".v", ".sv", ".vh",
-		".pl", ".pm", ".tcl", ".sql", ".sh", ".bash", ".zsh", ".fish", ".ps1",
-		".gradle", ".groovy", ".proto", ".thrift", ".sol", ".move", ".cairo":
-		return true
-	case:
-		return false
-	}
+	return slice.contains(CODE_FILE_EXTENSIONS, ext)
 }
 
 is_read_code_file :: proc(file_path: string) -> bool {
@@ -337,28 +336,69 @@ is_read_code_file :: proc(file_path: string) -> bool {
 
 // --- tool-use counter --------------------------------------------------------
 
-COUNTER_FILE_NAME           :: "tool_use_counter.json"
+COUNTER_FILE_NAME   :: "tool_use_counter.json"
+MIN_DENY_INTERVAL_S :: 120
+
+Counter_Kind :: enum {
+	Grep,
+	Read,
+	Non_Symbolic,
+}
+
+// One kind's live state: consecutive uses within the reset period plus the
+// period's last stamp.
+Kind_State :: struct {
+	n:      int,
+	last:   i64,
+	has_ts: bool,
+}
+
+// Per-kind thresholds and reset periods.
 READ_USES_THRESHOLD         :: 3
 GREP_USES_THRESHOLD         :: 3
 NON_SYMBOLIC_USES_THRESHOLD :: 4
 READ_RESET_PERIOD_S         :: 1000
 GREP_RESET_PERIOD_S         :: 1000
 NON_SYMBOLIC_RESET_PERIOD_S :: 2000
-MIN_DENY_INTERVAL_S         :: 120
+
+COUNTER_THRESHOLDS :: [Counter_Kind]int{
+	.Grep         = GREP_USES_THRESHOLD,
+	.Read         = READ_USES_THRESHOLD,
+	.Non_Symbolic = NON_SYMBOLIC_USES_THRESHOLD,
+}
+
+COUNTER_RESET_PERIODS :: [Counter_Kind]i64{
+	.Grep         = GREP_RESET_PERIOD_S,
+	.Read         = READ_RESET_PERIOD_S,
+	.Non_Symbolic = NON_SYMBOLIC_RESET_PERIOD_S,
+}
+
+Counter_Wire_Field :: struct {
+	kind: Counter_Kind,
+	key:  string,
+}
+
+// The persisted counter's member order, pinned by earlier builds: the
+// counts and the timestamps each carry their own fixed order (and the two
+// orders differ).
+COUNTER_COUNT_FIELDS :: []Counter_Wire_Field{
+	{kind = .Read,         key = "n_recent_read_file_uses"},
+	{kind = .Grep,         key = "n_recent_grep_uses"},
+	{kind = .Non_Symbolic, key = "n_recent_non_symbolic_uses"},
+}
+
+COUNTER_TS_FIELDS :: []Counter_Wire_Field{
+	{kind = .Grep,         key = "last_grep_use_timestamp"},
+	{kind = .Read,         key = "last_read_file_use_timestamp"},
+	{kind = .Non_Symbolic, key = "last_non_symbolic_use_timestamp"},
+}
+
+DENY_TS_KEY :: "last_deny_timestamp"
 
 Counter :: struct {
-	n_read:    int,
-	n_grep:    int,
-	n_non_sym: int,
-
-	last_grep:      i64,
-	has_grep_ts:    bool,
-	last_read:      i64,
-	has_read_ts:    bool,
-	last_non_sym:   i64,
-	has_non_sym_ts: bool,
-	last_deny:      i64,
-	has_deny_ts:    bool,
+	kinds:       [Counter_Kind]Kind_State,
+	last_deny:   i64,
+	has_deny_ts: bool,
 
 	is_dirty: bool,
 }
@@ -400,46 +440,32 @@ load_counter :: proc(dir: string) -> Counter {
 		return c
 	}
 	v := i64(0)
-	if counter_read_int(value, "n_recent_read_file_uses", &v) {
-		c.n_read = int(v)
+	for row in COUNTER_COUNT_FIELDS {
+		if counter_read_int(value, row.key, &v) {
+			c.kinds[row.kind].n = int(v)
+		}
 	}
-	if counter_read_int(value, "n_recent_grep_uses", &v) {
-		c.n_grep = int(v)
+	for row in COUNTER_TS_FIELDS {
+		if counter_read_int(value, row.key, &v) {
+			c.kinds[row.kind].last = v
+			c.kinds[row.kind].has_ts = true
+		}
 	}
-	if counter_read_int(value, "n_recent_non_symbolic_uses", &v) {
-		c.n_non_sym = int(v)
-	}
-	if counter_read_int(value, "last_grep_use_timestamp", &v) {
-		c.last_grep = v
-		c.has_grep_ts = true
-	}
-	if counter_read_int(value, "last_read_file_use_timestamp", &v) {
-		c.last_read = v
-		c.has_read_ts = true
-	}
-	if counter_read_int(value, "last_non_symbolic_use_timestamp", &v) {
-		c.last_non_sym = v
-		c.has_non_sym_ts = true
-	}
-	if counter_read_int(value, "last_deny_timestamp", &v) {
+	if counter_read_int(value, DENY_TS_KEY, &v) {
 		c.last_deny = v
 		c.has_deny_ts = true
 	}
-	if c.n_read < 0 {
-		c.n_read = 0
-	}
-	if c.n_grep < 0 {
-		c.n_grep = 0
-	}
-	if c.n_non_sym < 0 {
-		c.n_non_sym = 0
+	for kind in Counter_Kind {
+		if c.kinds[kind].n < 0 {
+			c.kinds[kind].n = 0
+		}
 	}
 	return c
 }
 
 // save_counter persists the counter atomically (write to <path>.tmp, then
-// rename). Field order and omitempty are pinned so counter files written
-// by earlier builds keep parsing.
+// rename). The member order and omitempty come from the wire tables, so
+// counter files written by earlier builds keep parsing byte-for-byte.
 save_counter :: proc(dir: string, c: ^Counter, a := context.allocator) {
 	if err := os.make_directory_all(dir); err != nil && !os.is_directory(dir) {
 		util.log_error("hook: failed to save tool use counter")
@@ -449,26 +475,29 @@ save_counter :: proc(dir: string, c: ^Counter, a := context.allocator) {
 	// proc, so the caller's lifetime governs all of it).
 	buf := make([dynamic]u8, 0, 256, a)
 	defer delete(buf)
-	append(&buf, "{\"n_recent_read_file_uses\":")
-	append(&buf, util.int_to_dec(c.n_read, a))
-	append(&buf, ",\"n_recent_grep_uses\":")
-	append(&buf, util.int_to_dec(c.n_grep, a))
-	append(&buf, ",\"n_recent_non_symbolic_uses\":")
-	append(&buf, util.int_to_dec(c.n_non_sym, a))
-	if c.has_grep_ts {
-		append(&buf, ",\"last_grep_use_timestamp\":")
-		append(&buf, counter_i64_to_string(c.last_grep, a))
+	append(&buf, "{\"")
+	first := true
+	for row in COUNTER_COUNT_FIELDS {
+		if !first {
+			append(&buf, ",\"")
+		}
+		first = false
+		append(&buf, row.key)
+		append(&buf, "\":")
+		append(&buf, util.int_to_dec(c.kinds[row.kind].n, a))
 	}
-	if c.has_read_ts {
-		append(&buf, ",\"last_read_file_use_timestamp\":")
-		append(&buf, counter_i64_to_string(c.last_read, a))
-	}
-	if c.has_non_sym_ts {
-		append(&buf, ",\"last_non_symbolic_use_timestamp\":")
-		append(&buf, counter_i64_to_string(c.last_non_sym, a))
+	for row in COUNTER_TS_FIELDS {
+		if c.kinds[row.kind].has_ts {
+			append(&buf, ",\"")
+			append(&buf, row.key)
+			append(&buf, "\":")
+			append(&buf, counter_i64_to_string(c.kinds[row.kind].last, a))
+		}
 	}
 	if c.has_deny_ts {
-		append(&buf, ",\"last_deny_timestamp\":")
+		append(&buf, ",\"")
+		append(&buf, DENY_TS_KEY)
+		append(&buf, "\":")
 		append(&buf, counter_i64_to_string(c.last_deny, a))
 	}
 	append(&buf, '}')
@@ -490,10 +519,15 @@ counter_i64_to_string :: proc(v: i64, a := context.temp_allocator) -> string {
 	return fmt.aprintf("%d", v, allocator = a)
 }
 
-counter_too_many_reads :: proc(c: ^Counter) -> bool { return c.n_read >= READ_USES_THRESHOLD }
-counter_too_many_greps :: proc(c: ^Counter) -> bool { return c.n_grep >= GREP_USES_THRESHOLD }
+counter_over :: proc(c: ^Counter, kind: Counter_Kind) -> bool {
+	thresholds := COUNTER_THRESHOLDS
+	return c.kinds[kind].n >= thresholds[kind]
+}
+
+counter_too_many_reads :: proc(c: ^Counter) -> bool { return counter_over(c, .Read) }
+counter_too_many_greps :: proc(c: ^Counter) -> bool { return counter_over(c, .Grep) }
 counter_too_many_non_symbolic :: proc(c: ^Counter) -> bool {
-	return c.n_non_sym >= NON_SYMBOLIC_USES_THRESHOLD
+	return counter_over(c, .Non_Symbolic)
 }
 
 // counter_hook_active reports whether the deny nudge may fire again
@@ -506,13 +540,25 @@ counter_hook_active :: proc(c: ^Counter, now_unix: i64) -> bool {
 }
 
 counter_reset :: proc(c: ^Counter) {
-	c.n_read = 0
-	c.n_grep = 0
-	c.n_non_sym = 0
-	c.has_grep_ts = false
-	c.has_read_ts = false
-	c.has_non_sym_ts = false
+	for kind in Counter_Kind {
+		c.kinds[kind] = {}
+	}
 	c.is_dirty = true
+}
+
+// counter_bump folds one use of a kind into its state. It never marks the
+// counter dirty: the non-symbolic counter only advances alongside a grep
+// or read bump (which already did), so the caller states dirtiness.
+counter_bump :: proc(c: ^Counter, kind: Counter_Kind, now_unix: i64) {
+	periods := COUNTER_RESET_PERIODS
+	st := &c.kinds[kind]
+	if st.has_ts && now_unix - st.last <= periods[kind] {
+		st.n += 1
+	} else {
+		st.n = 1
+	}
+	st.last = now_unix
+	st.has_ts = true
 }
 
 // counter_update folds the current tool use into the counters.
@@ -527,35 +573,15 @@ counter_update :: proc(c: ^Counter, input: ^Hook_Input, now_unix: i64, names: Au
 		is_read_code_file(input.file_path)
 
 	if is_grep {
-		if c.has_grep_ts && now_unix - c.last_grep <= GREP_RESET_PERIOD_S {
-			c.n_grep += 1
-		} else {
-			c.n_grep = 1
-		}
-		c.last_grep = now_unix
-		c.has_grep_ts = true
+		counter_bump(c, .Grep, now_unix)
 		c.is_dirty = true
 	}
-
 	if is_read {
-		if c.has_read_ts && now_unix - c.last_read <= READ_RESET_PERIOD_S {
-			c.n_read += 1
-		} else {
-			c.n_read = 1
-		}
-		c.last_read = now_unix
-		c.has_read_ts = true
+		counter_bump(c, .Read, now_unix)
 		c.is_dirty = true
 	}
-
 	if is_grep || is_read {
-		if c.has_non_sym_ts && now_unix - c.last_non_sym <= NON_SYMBOLIC_RESET_PERIOD_S {
-			c.n_non_sym += 1
-		} else {
-			c.n_non_sym = 1
-		}
-		c.last_non_sym = now_unix
-		c.has_non_sym_ts = true
+		counter_bump(c, .Non_Symbolic, now_unix)
 	}
 }
 
@@ -765,16 +791,9 @@ remind_execute :: proc(input: ^Hook_Input, now_unix: i64, names: Aubade_Tool_Nam
 		save_counter(input.persistence_dir, &c, context.temp_allocator)
 	}
 
-	switch deny_kind {
-	case .Grep:
-		output = render_pre_tool_output(input.client, "deny", GREP_DENY_REASON, GREP_DENY_CONTEXT, a)
-	case .Read:
-		output = render_pre_tool_output(input.client, "deny", READ_DENY_REASON, READ_DENY_CONTEXT, a)
-	case .Non_Symbolic:
-		output = render_pre_tool_output(
-			input.client, "deny", NON_SYMBOLIC_DENY_REASON, NON_SYMBOLIC_DENY_CONTEXT, a,
-		)
-	case .None:
+	msgs := DENY_MESSAGES
+	if msgs[deny_kind].reason != "" {
+		output = render_pre_tool_output(input.client, "deny", msgs[deny_kind].reason, msgs[deny_kind].detail, a)
 	}
 	return {stdout = output}
 }
@@ -784,4 +803,19 @@ Deny_Kind :: enum {
 	Grep,
 	Read,
 	Non_Symbolic,
+}
+
+Deny_Msg :: struct {
+	reason: string,
+	// `context` is a keyword in Odin; the field carries the deny output's
+	// additionalContext member.
+	detail: string,
+}
+
+// Deny output per kind; .None carries no message and renders nothing.
+DENY_MESSAGES :: [Deny_Kind]Deny_Msg{
+	.None         = {},
+	.Grep         = {reason = GREP_DENY_REASON, detail = GREP_DENY_CONTEXT},
+	.Read         = {reason = READ_DENY_REASON, detail = READ_DENY_CONTEXT},
+	.Non_Symbolic = {reason = NON_SYMBOLIC_DENY_REASON, detail = NON_SYMBOLIC_DENY_CONTEXT},
 }
