@@ -28,11 +28,7 @@ arg_str :: proc(args: ^Args, key: string) -> string {
 
 arg_bool :: proc(args: ^Args, key: string) -> bool {
 	if v, ok := args.values[key]; ok {
-		#partial switch x in v {
-		case json.Boolean:
-			return bool(x)
-		case:
-		}
+		return jsonutil.value_bool(v)
 	}
 	return false
 }
@@ -49,12 +45,7 @@ arg_u32_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []u32 {
 	}
 	out := make([]u32, len(items), a)
 	for i in 0..<len(items) {
-		#partial switch x in items[i] {
-		case json.Integer:
-			out[i] = u32(x)
-		case:
-			out[i] = 0
-		}
+		out[i] = u32(jsonutil.value_int(items[i]))
 	}
 	return out
 }
