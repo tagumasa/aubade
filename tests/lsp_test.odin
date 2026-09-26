@@ -967,6 +967,29 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	// A fresh empty set clears.
 	lsp.diagnostics_store_set(&s, uri, "[]", 7)
 	testing.expect_value(t, lsp.diagnostics_store_count(&s), 0)
+
+	// The watermark survives the empty clear as a bare marker: a late
+	// publication tagged below the cleared version stays dropped, while an
+	// untagged late publication applies again (and still leaves the
+	// watermark alone — a later stale set keeps losing to it).
+	lsp.diagnostics_store_set(&s, uri, `[{"message":"late-stale"}]`, 5)
+	testing.expect_value(t, lsp.diagnostics_store_count(&s), 0)
+	lsp.diagnostics_store_set(&s, uri, `[{"message":"late-untagged"}]`)
+	testing.expect_value(t, lsp.diagnostics_store_count(&s), 1)
+	raw5, ok5 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
+	testing.expect(t, ok5)
+	if ok5 {
+		testing.expect_value(t, raw5, `[{"message":"late-untagged"}]`)
+		delete(raw5, context.temp_allocator)
+	}
+	lsp.diagnostics_store_set(&s, uri, `[{"message":"late-stale-2"}]`, 6)
+	testing.expect_value(t, lsp.diagnostics_store_count(&s), 1)
+	raw6, ok6 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
+	testing.expect(t, ok6)
+	if ok6 {
+		testing.expect_value(t, raw6, `[{"message":"late-untagged"}]`)
+		delete(raw6, context.temp_allocator)
+	}
 }
 
 // The store must own its map keys: the producer passes a view into the
@@ -1067,6 +1090,58 @@ lsp_doc_close_clears_stored_diagnostics :: proc(t: ^testing.T) {
 	// Reopening does not resurface the old set.
 	testing.expect(t, lsp.doc_open(p.client, uri, "go", "package main\n"))
 	testing.expect_value(t, lsp.diagnostics_store_count(&p.client.diagnostics), 0)
+}
+
+// lsp_publish_one pushes one single-diagnostic publishDiagnostics for
+// `uri` through the fake's conn (the diagnostic's message field carries
+// `message`, so stored-set asserts can tell sets apart).
+lsp_publish_one :: proc(conn: ^jsonrpc.Conn, uri, message: string) {
+	diag := jsonutil.json_object(1, context.temp_allocator)
+	jsonutil.obj_set(&diag, "message", jsonutil.json_string(message))
+	params := jsonutil.json_object(2, context.temp_allocator)
+	jsonutil.obj_set(&params, "uri", jsonutil.json_string(uri))
+	jsonutil.obj_set(
+		&params,
+		"diagnostics",
+		jsonutil.json_array({json.Value(json.Object(diag))}, context.temp_allocator),
+	)
+	_ = jsonrpc.conn_notify(conn, lsp.METHOD_PUBLISH_DIAGNOSTICS, json.Value(json.Object(params)), context.temp_allocator)
+}
+
+// A document's open epoch starts clean: a late publication that re-landed
+// for the closed document (the store cannot know it closed and reopened)
+// must not ride into the new epoch's diagnostics reads. Only the
+// epoch-creating open clears — a shared open keeps the epoch's live set.
+@(test)
+lsp_doc_open_starts_clean_diagnostics_epoch :: proc(t: ^testing.T) {
+	p := lsp_pair_init(t)
+	if p == nil {
+		testing.expectf(t, false, "pair init failed")
+		return
+	}
+	defer lsp_pair_shutdown(p)
+
+	uri := "file:///epoch.go"
+
+	lsp_publish_one(p.fake.conn, uri, "stale-from-last-epoch")
+	_, _, _, echo_err := lsp.client_call(p.client, "test/echo", nil, context.temp_allocator)
+	testing.expect_value(t, echo_err, jsonrpc.Call_Err.None)
+	testing.expect_value(t, lsp.diagnostics_store_count(&p.client.diagnostics), 1)
+
+	testing.expect(t, lsp.doc_open(p.client, uri, "go", "package main\n"))
+	testing.expectf(
+		t,
+		lsp.diagnostics_store_count(&p.client.diagnostics) == 0,
+		"the new epoch must not inherit the old set",
+	)
+
+	// The shared open keeps the epoch's live set: only the epoch-creating
+	// open clears.
+	lsp_publish_one(p.fake.conn, uri, "fresh")
+	_, _, _, echo2 := lsp.client_call(p.client, "test/echo", nil, context.temp_allocator)
+	testing.expect_value(t, echo2, jsonrpc.Call_Err.None)
+	testing.expect(t, lsp.doc_open(p.client, uri, "go", "shared"))
+	testing.expect_value(t, lsp.diagnostics_store_count(&p.client.diagnostics), 1)
 }
 
 // The lifecycle handshake: initialize parses the server capabilities into

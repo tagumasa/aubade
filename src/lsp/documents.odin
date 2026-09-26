@@ -48,6 +48,14 @@ doc_open :: proc(cl: ^Client, uri, language_id, text: string) -> bool {
 	}
 	cl.docs[st.uri] = st
 	sync.mutex_unlock(&cl.state_mu)
+	// A new open epoch starts clean: a late publication for the closed
+	// document can re-land after the previous epoch's close cleared the
+	// store (the entry dies at close by design — a fresh epoch restarts
+	// versions at 1, and a watermark surviving the close would drop its
+	// early publications), and the new epoch's reads must not inherit it.
+	// Only the epoch-creating open comes through here; shared opens keep
+	// the epoch's live set.
+	diagnostics_store_clear(&cl.diagnostics, uri)
 
 	td := jsonutil.json_object(4, context.temp_allocator)
 	jsonutil.obj_set(&td, "uri", jsonutil.json_string(uri))
