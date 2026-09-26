@@ -250,6 +250,27 @@ template_nested_for_binds_own_var :: proc(t: ^testing.T) {
 	_ = out
 }
 
+// `{%}` is a malformed tag whose closer scan lands inside the opener
+// (the `%}` bytes sit at offset 1): the parse must fail the render —
+// the raw_tag slice it would build is lo>hi and panics the process —
+// so render_prompt_text degrades to the raw text instead of crashing.
+@(test)
+prompt_template_malformed_opener_fails :: proc(t: ^testing.T) {
+	vars: prompt.Template_Vars
+	prompt.template_vars_init(&vars, context.allocator)
+	defer prompt.template_vars_destroy(&vars)
+
+	bad := []string{"{%}", "a {%} b", "{%%}"}
+	for src in bad {
+		_, ok := prompt.template_render(src, &vars, context.allocator)
+		testing.expectf(t, !ok, "malformed template %q must fail the render", src)
+	}
+
+	fallback := prompt.render_prompt_text("raw {%} body", &vars, context.allocator)
+	testing.expect(t, fallback == "raw {%} body", fallback)
+	delete(fallback, context.allocator)
+}
+
 // A template file past the size cap falls back to the embedded default
 // (or "not found" for names without one) — a runaway file must not load.
 @(test) prompt_template_oversize_falls_back :: proc(t: ^testing.T) {
