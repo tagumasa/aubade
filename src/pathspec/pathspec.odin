@@ -18,7 +18,6 @@ import "src:regex"
 MAX_LINE_BYTES :: 1 << 20
 
 Pattern :: struct {
-	original: string, // cloned in the spec's allocator
 	re:       ^regex.Regex,
 	negate:   bool,
 	// Literal fast path: most gitignore lines are wildcard-free path
@@ -84,9 +83,6 @@ pathspec_destroy :: proc(ps: ^Path_Spec) {
 		return
 	}
 	for i in 0..<len(ps.patterns) {
-		if ps.patterns[i].original != "" {
-			delete(ps.patterns[i].original, ps.allocator)
-		}
 		if ps.patterns[i].literal != "" {
 			delete(ps.patterns[i].literal, ps.allocator)
 		}
@@ -113,9 +109,11 @@ pathspec_match_file :: proc(ps: ^Path_Spec, path: string) -> bool {
 
 // pattern_matches reports whether one pattern matches a path: the literal
 // fast path when the pattern classifies as one (see Pattern), the compiled
-// regex otherwise. The literal checks are exact restatements of the two
-// regex flavors the translator emits for wildcard-free patterns —
-// `^lit$` (lit_exact) and `^lit(/.*)?$` (subtree).
+// regex otherwise. The literal checks restate the two regex flavors the
+// translator emits for wildcard-free patterns — `^lit$` (lit_exact) and
+// `^lit(/.*)?$` (subtree) — byte for byte on every valid UTF-8 path; a
+// path carrying invalid UTF-8 bytes matches the literal path where the
+// UTF-compiled regex no-matches.
 pattern_matches :: proc(p: ^Pattern, path: string) -> bool {
 	if p.literal == "" {
 		return regex.regex_match(p.re, path)
@@ -148,7 +146,6 @@ pathspec_match_path :: proc(path: string, ps: ^Path_Spec) -> bool {
 
 compile_pattern :: proc(pattern_in: string, a := context.allocator) -> (pat: Pattern, ok: bool) {
 	pattern := pattern_in // parameters are immutable; mutate a local copy
-	original := pattern
 	dir_only := false
 	negate := false
 
@@ -204,7 +201,7 @@ compile_pattern :: proc(pattern_in: string, a := context.allocator) -> (pat: Pat
 	}
 	re := new(regex.Regex, a)
 	re^ = compiled
-	return {original = strings.clone(original, a), re = re, negate = negate, literal = literal, lit_exact = lit_exact}, true
+	return {re = re, negate = negate, literal = literal, lit_exact = lit_exact}, true
 }
 
 // glob_to_regex translates a gitignore glob pattern into an anchored
