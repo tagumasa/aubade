@@ -1703,3 +1703,14 @@ langserver_manager_restart_after_destroy_refuses_insert :: proc(t: ^testing.T) {
 	// server_destroy is safe to free only now.
 	platform.token_destroy(root, lt.allocator)
 }
+
+// The documented idempotency: a second manager_destroy on the torn-down
+// manager must return instead of walking into manager_reset's cooldown
+// map make through the zeroed allocator.
+@(test)
+langserver_manager_destroy_is_idempotent :: proc(t: ^testing.T) {
+	lt := ls_test_init(t, false, {"tst"}, false)
+	defer ls_test_destroy(lt) // its own destroy call is the third — also a no-op
+	langserver.manager_destroy(lt.m)
+	langserver.manager_destroy(lt.m)
+}
