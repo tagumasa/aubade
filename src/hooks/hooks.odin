@@ -639,7 +639,7 @@ render_pre_tool_output :: proc(
 		append(
 			&fragments,
 			strings.concatenate({
-				"\"additionalContext\":", config.json_quote(additional_context, context.temp_allocator),
+				"\"additionalContext\":", jsonutil.json_quote_bytes(additional_context, context.temp_allocator),
 			}, context.temp_allocator),
 		)
 	}
@@ -651,7 +651,7 @@ render_pre_tool_output :: proc(
 	append(
 		&fragments,
 		strings.concatenate({
-			"\"permissionDecisionReason\":", config.json_quote(reason, context.temp_allocator),
+			"\"permissionDecisionReason\":", jsonutil.json_quote_bytes(reason, context.temp_allocator),
 		}, context.temp_allocator),
 	)
 	return render_hook_specific(fragments[:], a)
@@ -676,7 +676,7 @@ run_activate :: proc(client_name: string, raw: []u8, now_unix: i64, a := context
 		append(
 			&fragments,
 			strings.concatenate({
-				"\"additionalContext\":", config.json_quote(ACTIVATE_CONTEXT, context.temp_allocator),
+				"\"additionalContext\":", jsonutil.json_quote_bytes(ACTIVATE_CONTEXT, context.temp_allocator),
 			}, context.temp_allocator),
 		)
 	}

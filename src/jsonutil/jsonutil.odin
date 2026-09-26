@@ -273,7 +273,10 @@ free_value :: proc(v: json.Value, a: mem.Allocator) {
 }
 
 // json_quote renders s as a JSON string literal: \u00XX (lowercase
-// hex) for C0 controls, U+FFFD passthrough for invalid UTF-8.
+// hex) for C0 controls, and invalid UTF-8 decodes to U+FFFD, so the
+// output is always valid UTF-8. The form for everything a consumer
+// parses back (wire payloads, tool answers); json_quote_bytes below
+// is the byte-preserving sibling for file rendering.
 json_quote :: proc(s: string, a := context.allocator) -> string {
 	buf := make([dynamic]u8, 0, len(s) + 8, a)
 	append(&buf, '"')
@@ -299,6 +302,43 @@ json_quote :: proc(s: string, a := context.allocator) -> string {
 				append(&buf, hex_digit(u32(r) & 0xF))
 			} else {
 				append_quote_rune(&buf, r)
+			}
+		}
+	}
+	append(&buf, '"')
+	return string(buf[:])
+}
+
+// json_quote_bytes renders s as a JSON string literal without
+// re-encoding: valid UTF-8 renders byte-identical to json_quote, and
+// invalid UTF-8 passes through as-is rather than becoming U+FFFD —
+// the literal records the source bytes, at the cost of being invalid
+// UTF-8 itself for invalid input. The form for renders whose bytes
+// are the record: config templates, client registrations, the
+// project registry, hook output.
+json_quote_bytes :: proc(s: string, a := context.allocator) -> string {
+	buf := make([dynamic]u8, 0, len(s) + 2, a)
+	append(&buf, '"')
+	for c in transmute([]u8)s {
+		switch c {
+		case '"':
+			append(&buf, "\\\"")
+		case '\\':
+			append(&buf, "\\\\")
+		case '\n':
+			append(&buf, "\\n")
+		case '\r':
+			append(&buf, "\\r")
+		case '\t':
+			append(&buf, "\\t")
+		case:
+			if c < 0x20 {
+				// The C0 escape matches json_quote's \u00XX form.
+				append(&buf, "\\u00")
+				append(&buf, hex_digit(u32(c >> 4) & 0xF))
+				append(&buf, hex_digit(u32(c) & 0xF))
+			} else {
+				append(&buf, c)
 			}
 		}
 	}
