@@ -148,10 +148,10 @@ outbound_thread_main :: proc(data: rawptr) {
 		// the queue order.
 		err := write_frame(&c.writer, transmute([]u8)frame)
 		delete(frame, out.allocator)
-		// Per-frame temp reset (the queue worker's idiom): write_frame
-		// builds Content-Length headers through temp, and this writer has
-		// no enclosing frame loop to reset it — without this, every frame
-		// leaks its header scratch for the connection's lifetime.
+		// Per-frame temp reset (the frame loop's idiom): the library send
+		// path is temp-free, but the host write_fn under write_frame may
+		// scratch on this thread's temp, and the writer has no enclosing
+		// loop to reset it.
 		free_all(context.temp_allocator)
 		if err != .None {
 			// The pipe is gone (dead or killed peer, closed stdin): the

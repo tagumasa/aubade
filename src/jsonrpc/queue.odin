@@ -120,11 +120,10 @@ queue_worker_entry :: proc(data: rawptr) {
 		}
 		mem.dynamic_arena_destroy(entry.arena)
 		free(entry.arena, q.allocator)
-		// Per-reply temp reset (the dispatch threads' idiom): write_frame
-		// builds Content-Length headers through temp, and this worker has
-		// no enclosing frame loop to reset it — without this, every
-		// answered request leaks its header scratch for the connection's
-		// lifetime.
+		// Per-reply temp reset (the frame loop's idiom): the library send
+		// path is temp-free (write_frame formats its header into a stack
+		// buffer), but host handlers scratch on this thread's temp, and
+		// the worker has no enclosing frame loop to reset it.
 		free_all(context.temp_allocator)
 	}
 }
