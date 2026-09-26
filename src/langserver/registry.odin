@@ -202,7 +202,7 @@ registry_add :: proc(reg: ^Registry, e: Entry) -> ^Entry {
 	append(&reg.ordered, stored)
 	for pat in stored.file_patterns {
 		// Only "*.ext" patterns feed the extension index; the rest are
-		// matched by registry_detect_filename's suffix walk.
+		// matched by the suffix walk registry_detect falls back to.
 		if len(pat) > 2 && pat[0] == '*' && pat[1] == '.' {
 			// The lowercase clone becomes the map key's storage; it lives
 			// in the arena, which outlives the map by construction.
@@ -238,24 +238,28 @@ registry_find :: proc(reg: ^Registry, id: string) -> ^Entry {
 
 // registry_detect maps a file path to the best non-experimental entry
 // for its extension (highest priority wins); nil when nothing matches.
+// The extension index answers first; a miss falls back to the suffix
+// walk, the only tier that can match multi-dot patterns ("*.app.src"
+// keys the index as ".app.src" while the file's extension is ".src") —
+// and an index bucket whose candidates are all experimental matches
+// nothing here either, so both land in the same walk.
 registry_detect :: proc(reg: ^Registry, file_path: string) -> ^Entry {
 	ext := path_extension(file_path)
 	if ext == "" {
 		return nil
 	}
 	lower := strings.to_lower(ext, context.temp_allocator)
-	candidates, ok := reg.by_ext[lower]
-	if !ok {
-		return nil
-	}
 	best: ^Entry = nil
-	for c in candidates {
+	for c in reg.by_ext[lower] {
 		if c.experimental {
 			continue
 		}
 		if best == nil || c.priority > best.priority {
 			best = c
 		}
+	}
+	if best == nil {
+		return registry_detect_filename(reg, file_path)
 	}
 	return best
 }

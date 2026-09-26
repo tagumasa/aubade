@@ -366,6 +366,16 @@ langserver_registry_shape :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, erl.id == "erlang")
 
+	// The same tier through the production entry point: detect's
+	// extension lookup (".src") cannot see "*.app.src", so the miss must
+	// fall back to the suffix walk.
+	erl2 := langserver.registry_detect(reg, "rel/foo.app.src")
+	if erl2 == nil {
+		testing.expectf(t, false, "detect(.app.src) returned nil")
+		return
+	}
+	testing.expect(t, erl2.id == "erlang")
+
 	ids := langserver.registry_all_ids(reg, context.temp_allocator)
 	testing.expect(t, len(ids) == 54)
 
