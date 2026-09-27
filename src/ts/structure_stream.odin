@@ -341,15 +341,7 @@ structure_stream_outline :: proc(
 	// destroy it so the caller's allocator carries the answer once.
 	defer strings.builder_destroy(&b)
 	st := structure_state_init(&b, opts, a)
-	end := len(source)
-	for end > 0 {
-		last := source[end - 1]
-		if last == '\n' || last == '\r' || last == ' ' || last == '\t' {
-			end -= 1
-		} else {
-			break
-		}
-	}
+	end := stream_trimmed_end(source)
 	tail := Stream_Cursor{src = source}
 	stream_advance(&tail, end)
 	if jsonl {
@@ -357,7 +349,7 @@ structure_stream_outline :: proc(
 		n, _ := stream_count_values(&counter, false, a)
 		structure_write_line(&st, 0, strings.concatenate({
 			fmt.aprintf("[%d]", n, allocator = a),
-			" ", stream_span_label(0, tail.line, a),
+			" ", span_lines_label(0, tail.line, a),
 		}, a))
 		if st.truncated {
 			return strings.clone(strings.to_string(b), a), true, ""
@@ -374,7 +366,7 @@ structure_stream_outline :: proc(
 	}
 	structure_write_line(&st, 0, strings.concatenate({
 		stream_root_head(source, a),
-		" ", stream_span_label(start_line, c.line, a),
+		" ", span_lines_label(start_line, c.line, a),
 	}, a))
 	if st.truncated {
 		return strings.clone(strings.to_string(b), a), true, ""
@@ -524,7 +516,7 @@ render_stream_entry :: proc(st: ^Structure_State, c: ^Stream_Cursor, label: stri
 	}
 	structure_write_line(st, depth, strings.concatenate({
 		label, ": ", head,
-		" ", stream_span_label(start_line, c.line, a),
+		" ", span_lines_label(start_line, c.line, a),
 	}, a))
 	if kind == '{' || kind == '[' {
 		render_stream_value(st, &child, depth + 1, a)
@@ -568,34 +560,23 @@ stream_preview_at :: proc(source: string, i: int, a := context.allocator, st: ^S
 			end += 1
 		}
 	}
-	text := strings.trim_space(source[i:end])
-	if len(text) == 0 {
-		return "(empty)"
-	}
-	b := strings.builder_make_len_cap(0, len(text) + 8, a)
-	defer strings.builder_destroy(&b)
-	count := 0
-	for r in text {
-		if count >= runes {
-			strings.write_rune(&b, '…')
-			break
-		}
-		if r == '\n' || r == '\r' {
-			strings.write_rune(&b, '⏎')
-		} else {
-			strings.write_rune(&b, r)
-		}
-		count += 1
-	}
-	return strings.clone(strings.to_string(b), a)
+	return preview_render(strings.trim_space(source[i:end]), runes, a)
 }
 
-// stream_span_label renders the (L..) / (L..-L..) line label.
-stream_span_label :: proc(start, end: int, a := context.allocator) -> string {
-	if start == end {
-		return fmt.aprintf("(L%d)", start, allocator = a)
+// stream_trimmed_end returns the offset past the source's last
+// non-whitespace byte — the JSONL root's content bound and end-line anchor
+// (a trailing newline would otherwise count a phantom final line).
+stream_trimmed_end :: proc(src: string) -> int {
+	end := len(src)
+	for end > 0 {
+		switch src[end - 1] {
+		case '\n', '\r', ' ', '\t':
+			end -= 1
+		case:
+			return end
+		}
 	}
-	return fmt.aprintf("(L%d-L%d)", start, end, allocator = a)
+	return end
 }
 
 // ---------------------------------------------------------------------------
@@ -634,10 +615,7 @@ structure_stream_resolve_path :: proc(
 		if iterate_last {
 			return stream_render_items(&c, max_chars, false, a), ""
 		}
-		end := len(source)
-		for end > 0 && (source[end - 1] == '\n' || source[end - 1] == ' ' || source[end - 1] == '\t' || source[end - 1] == '\r') {
-			end -= 1
-		}
+		end := stream_trimmed_end(source)
 		content := string(source[:end])
 		truncated := false
 		if max_chars > 0 && len(content) > max_chars {

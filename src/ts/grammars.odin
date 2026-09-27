@@ -11,6 +11,8 @@ package ts
 import "core:slice"
 import "core:strings"
 
+import "src:util"
+
 Grammar_Entry :: struct {
 	name:       string,
 	aliases:    []string,
@@ -25,12 +27,12 @@ Grammar_Entry :: struct {
 registry_lookup :: proc(name: string) -> (idx: int, ok: bool) {
 	table := GRAMMARS
 	for i in 0..<len(table) {
-		if name_eq(name, table[i].name) {
+		if util.ascii_equal_ci(name, table[i].name) {
 			return i, true
 		}
 		aliases := table[i].aliases
 		for j in 0..<len(aliases) {
-			if name_eq(name, aliases[j]) {
+			if util.ascii_equal_ci(name, aliases[j]) {
 				return i, true
 			}
 		}
@@ -89,7 +91,7 @@ registry_lookup_by_extension :: proc(filename: string) -> (idx: int, ok: bool) {
 		for i in 0..<len(table) {
 			exts := table[i].extensions
 			for j in 0..<len(exts) {
-				if name_eq(exts[j], ext) {
+				if util.ascii_equal_ci(exts[j], ext) {
 					return i, true
 				}
 			}
@@ -149,7 +151,7 @@ registry_lookup_by_shebang :: proc(first_line: string) -> (idx: int, ok: bool) {
 	}
 	claims := LINGUIST_INTERPRETERS
 	for i in 0..<len(claims) {
-		if name_eq(claims[i].key, interp) {
+		if util.ascii_equal_ci(claims[i].key, interp) {
 			return registry_lookup(claims[i].grammar)
 		}
 	}
@@ -274,23 +276,4 @@ file_base_name :: proc(filename: string) -> string {
 		}
 	}
 	return filename[sep+1:]
-}
-
-name_eq :: proc(a, b: string) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i in 0..<len(a) {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca = ca + ('a' - 'A')
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb = cb + ('a' - 'A')
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
