@@ -617,8 +617,8 @@ client_memory_delete :: proc(conn: ^jsonrpc.Conn, name: string, arena: mem.Alloc
 
 // --- tracker ----------------------------------------------------------------
 
-client_tracker_list_incidents :: proc(conn: ^jsonrpc.Conn, status: []string, verdict, sprint, label: string, priority: []string, assignee, created_by, query, blocked_by, sort: string, limit: int, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
-	params := jsonutil.json_object(11, arena)
+client_tracker_list_incidents :: proc(conn: ^jsonrpc.Conn, status: []string, verdict, sprint, label: string, priority: []string, assignee, created_by, query, blocked_by, sort: string, limit, offset: int, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	params := jsonutil.json_object(12, arena)
 	if len(status) > 0 {
 		jsonutil.obj_set(&params, "status", jsonutil.json_string_array(status, arena))
 	}
@@ -651,6 +651,9 @@ client_tracker_list_incidents :: proc(conn: ^jsonrpc.Conn, status: []string, ver
 	}
 	if limit != 0 {
 		jsonutil.obj_set(&params, "limit", jsonutil.json_int(i64(limit)))
+	}
+	if offset != 0 {
+		jsonutil.obj_set(&params, "offset", jsonutil.json_int(i64(offset)))
 	}
 	return client_call(conn, METHOD_TRACKER_LIST_INCIDENTS, json.Value(json.Object(params)), arena, deadline_ms, token)
 }

@@ -11,6 +11,7 @@ import "core:strings"
 import "core:testing"
 import "src:store"
 import "src:jsonutil"
+import "src:platform"
 import "src:tracker"
 
 @(private)
@@ -933,6 +934,58 @@ tracker_render_list_and_summary :: proc(t: ^testing.T) {
 		"{\"target\":\"INC-002\",\"from\":\"reported\",\"to\":\"fixing\",\"resolution\":\"\",\"evidence_md\":\"\"}"))
 	out, _ = tracker.render_incident_list(&h.state, &tracker.Incident_Filter{}, NOW_MS_FOR_TEST, context.temp_allocator)
 	testing.expect(t, strings.contains(out, "1 anomaly (run incident_get for details)"), out)
+}
+
+@(test)
+tracker_list_paging_and_sort_vocabulary :: proc(t: ^testing.T) {
+	h: Fold_Harness
+	harness_init(&h)
+	defer harness_destroy(&h)
+
+	// Five incidents, creation-ordered INC-001..005; the only orderings in
+	// play are created (ascending) and updated (reverse creation here).
+	titles := []string{"page one", "page two", "page three", "page four", "page five"}
+	for i in 0..<5 {
+		payload := strings.concatenate(
+			{"{\"title\":\"", titles[i], "\",\"priority\":\"low\",\"body_md\":\"claim\"}"},
+			context.temp_allocator,
+		)
+		ns := i64(i + 1) * 1_000_000
+		testing.expectf(t, harness_apply(t, &h, ns, "incident.created", payload),
+			"paging create %d failed", i)
+	}
+
+	// offset pages after the sort: rows 3-4 of the created order, one left.
+	f := tracker.Incident_Filter{sort = "created", limit = 2, offset = 2}
+	out, err := tracker.render_incident_list(&h.state, &f, NOW_MS_FOR_TEST, context.temp_allocator)
+	testing.expectf(t, err == nil, "paged list err: %v", err)
+	testing.expect(t, strings.contains(out, "\nINC-003"), out)
+	testing.expect(t, strings.contains(out, "\nINC-004"), out)
+	testing.expect(t, !strings.contains(out, "\nINC-001"), out)
+	testing.expect(t, strings.has_suffix(out, "\n…and 1 more (raise limit or filter)"), out)
+
+	// Paging past the end names the offset and the matched count.
+	f = tracker.Incident_Filter{offset = 5}
+	out, err = tracker.render_incident_list(&h.state, &f, NOW_MS_FOR_TEST, context.temp_allocator)
+	testing.expectf(t, err == nil, "past-end err: %v", err)
+	testing.expect(t, strings.contains(out, "offset 5 is past the end (5 matched)"), out)
+	testing.expect(t, !strings.contains(out, "\nINC-00"), out)
+
+	// The closed facets refuse loud instead of degrading silently.
+	f = tracker.Incident_Filter{offset = -1}
+	out, err = tracker.render_incident_list(&h.state, &f, NOW_MS_FOR_TEST, context.temp_allocator)
+	testing.expectf(t, err != nil, "negative offset must refuse")
+	if err != nil {
+		testing.expect(t, strings.contains(platform.err_message(err, context.temp_allocator), "offset must be >= 0"), platform.err_message(err, context.temp_allocator))
+	}
+	testing.expect(t, out == "", out)
+
+	f = tracker.Incident_Filter{sort = "recency"}
+	_, err = tracker.render_incident_list(&h.state, &f, NOW_MS_FOR_TEST, context.temp_allocator)
+	testing.expectf(t, err != nil, "unknown sort key must refuse")
+	if err != nil {
+		testing.expect(t, strings.contains(platform.err_message(err, context.temp_allocator), "sort must be one of updated|created|priority"), platform.err_message(err, context.temp_allocator))
+	}
 }
 
 @(private)

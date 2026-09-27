@@ -41,7 +41,8 @@ INCIDENT_LIST_PARAMS :: []Param_Desc{
 	{name = "query", kind = .Str, description = "Case-insensitive substring on title and aliases.", required = false},
 	{name = "blocked_by", kind = .Str, description = "INC-NNN: incidents blocked by this ID, directly or transitively.", required = false},
 	{name = "limit", kind = .Int, description = "Max rows (default 20, negative = unlimited). All output is bounded by a hard ceiling (500 rows and an answer-size budget); the tail line says when it fired.", required = false},
-	{name = "sort", kind = .Str, description = "updated (default), priority, or created.", required = false},
+	{name = "offset", kind = .Int, description = "Skip the first N matched rows — pair with limit to page through a large result (0 = start at the top).", required = false},
+	{name = "sort", kind = .Str, description = "updated (default), priority, or created.", required = false, enum_vals = INCIDENT_SORT_MODES},
 }
 
 INCIDENT_GET_PARAMS :: []Param_Desc{
@@ -131,6 +132,7 @@ TRACKER_EXPORT_PARAMS :: []Param_Desc{
 
 INCIDENT_PRIORITY_MODES :: []string{"urgent", "high", "medium", "low"}
 INCIDENT_VERDICT_MODES :: []string{"confirmed", "rejected"}
+INCIDENT_SORT_MODES :: []string{"updated", "created", "priority"}
 INCIDENT_FP_MODES :: []string{"untraced-guard", "hallucinated", "spec", "threat-model", "design-intent"}
 INCIDENT_RESOLUTION_MODES :: []string{"fixed", "mitigated", "documented"}
 SPRINT_DEFER_MODES :: []string{"blocked", "question", "descope"}
@@ -161,9 +163,10 @@ incident_list :: Tool_Desc{
 	description = "List incidents. The output starts with a counts header (no need to count yourself). " +
 		"Filter by status (use \"open\" for all non-terminal incidents), sprint, label, priority, assignee, " +
 		"created_by, query (substring match on title and aliases), verdict, or blocked_by (incidents blocked " +
-		"by a given ID, directly or transitively). Row output is bounded by a hard ceiling (500 rows and an " +
-		"answer-size budget) whatever limit you pass; `aubade tracker report` exports the complete set. " +
-		"Use incident_get for full context.",
+		"by a given ID, directly or transitively). Page through a large result with limit + offset (offset " +
+		"skips the first N matched rows; there is no page parameter). Row output is bounded by a hard " +
+		"ceiling (500 rows and an answer-size budget) whatever limit you pass; `aubade tracker report` " +
+		"exports the complete set. Use incident_get for full context.",
 	optional    = false,
 	category    = .Tracker,
 	params      = INCIDENT_LIST_PARAMS,
@@ -455,6 +458,7 @@ incident_list_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 		arg_str(args, "blocked_by"),
 		arg_str(args, "sort"),
 		arg_int(args, "limit"),
+		arg_int(args, "offset"),
 		ctx.allocator, svc_deadline(ctx), ctx.cancel,
 	)
 	return call_answer_result(ctx, call)
