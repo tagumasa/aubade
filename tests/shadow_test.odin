@@ -307,6 +307,73 @@ test_shadow_lifecycle :: proc(t: ^testing.T) {
 	}
 }
 
+// The snapshot contract holds across a daemon restart: has_head is
+// daemon-lifetime state, HEAD is repository state — a fresh handle over an
+// existing repository must not commit an unchanged workspace as empty. A
+// repository with no commits yet lists empty in log (plain git log exits
+// 128 there) instead of failing.
+@(test)
+test_shadow_snapshot_across_restart :: proc(t: ^testing.T) {
+	env := shadow_setup(t, "aubade-shadow-re-")
+	if env.sg == nil {
+		return
+	}
+	defer shadow_teardown(&env)
+	a := mem.dynamic_arena_allocator(env.arena)
+
+	log0, lerr := shadow.shadow_log(env.sg, 10, nil, a)
+	testing.expectf(t, lerr == nil, "headless log: %s", shadow_err_text(lerr))
+	testing.expect(t, len(log0) == 0, "headless log lists empty")
+
+	h1, err := shadow.shadow_snapshot(env.sg, "one", nil, a)
+	if err != nil {
+		testing.expectf(t, false, "snapshot 1: %s", shadow_err_text(err))
+		return
+	}
+
+	// The restart: a fresh handle over the same home and workspace.
+	sg2 := new(shadow.Shadow_Git, context.allocator)
+	defer {
+		shadow.shadow_destroy(sg2, context.allocator)
+		free(sg2, context.allocator)
+	}
+	ierr := shadow.shadow_init(sg2, env.home, env.workspace, context.allocator)
+	if ierr != nil {
+		testing.expectf(t, false, "restart init: %s", shadow_err_text(ierr))
+		return
+	}
+	if rerr := shadow.shadow_repo_init(sg2); rerr != nil {
+		testing.expectf(t, false, "restart repo init: %s", shadow_err_text(rerr))
+		return
+	}
+
+	h1b, err2 := shadow.shadow_snapshot(sg2, "", nil, a)
+	if err2 != nil {
+		testing.expectf(t, false, "restart snapshot: %s", shadow_err_text(err2))
+		return
+	}
+	testing.expect(t, h1b == h1, "unchanged workspace across a restart returns HEAD")
+
+	log, lerr2 := shadow.shadow_log(sg2, 10, nil, a)
+	if lerr2 != nil {
+		testing.expectf(t, false, "restart log: %s", shadow_err_text(lerr2))
+		return
+	}
+	testing.expect(t, len(log) == 1, "the restart created no empty commit")
+
+	rewrite := strings.concatenate({env.workspace, "/a.txt"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(rewrite, "two\n"); werr != nil {
+		testing.expectf(t, false, "rewrite failed")
+		return
+	}
+	h2, err3 := shadow.shadow_snapshot(sg2, "two", nil, a)
+	if err3 != nil {
+		testing.expectf(t, false, "restart snapshot 2: %s", shadow_err_text(err3))
+		return
+	}
+	testing.expect(t, h2 != h1, "a changed workspace still commits after a restart")
+}
+
 @(test)
 test_shadow_refusals :: proc(t: ^testing.T) {
 	env := shadow_setup(t, "aubade-shadow-ref-")

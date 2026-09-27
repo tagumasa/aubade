@@ -172,6 +172,23 @@ shadow_snapshot :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 		return "", git_fail_with_output(gerr, "shadowgit snapshot add", out, a)
 	}
 
+	// has_head is daemon-lifetime memory; HEAD is repository state. A
+	// restarted daemon meets a repository that already has commits — ask
+	// git, or the first snapshot after every restart commits an unchanged
+	// workspace as an empty commit. rev-parse exiting non-zero means no
+	// HEAD (the flag stays false and the initial path runs); a cancelled
+	// or timed-out probe propagates instead of guessing.
+	if !s.has_head {
+		vout, verr := git(s, nil, token, a, "rev-parse", "--verify", "--quiet", "HEAD")
+		delete(vout, a)
+		if verr != nil {
+			if platform.err_kind(verr) != .Internal {
+				return "", verr
+			}
+		} else {
+			s.has_head = true
+		}
+	}
 	if !s.has_head {
 		s.has_head = true
 		hash, err := snapshot_commit(s, msg, token, a, initial = true)
@@ -183,7 +200,9 @@ shadow_snapshot :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 	}
 	// diff --cached --quiet exits zero when nothing is staged: the
 	// workspace matches HEAD, so HEAD is the snapshot.
-	if _, gerr := git(s, nil, token, a, "diff", "--cached", "--quiet"); gerr == nil {
+	qout, qerr := git(s, nil, token, a, "diff", "--cached", "--quiet")
+	delete(qout, a)
+	if qerr == nil {
 		return head_hash(s, token, a)
 	}
 	return snapshot_commit(s, msg, token, a, initial = false)
@@ -264,6 +283,7 @@ shadow_files_at :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_To
 files_at_unlocked :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_Token, a := context.allocator) -> ([]string, platform.Err) {
 	out, gerr := git(s, nil, token, a, "ls-tree", "-r", "--name-only", "-z", hash)
 	if gerr != nil {
+		defer delete(out, a) // git() hands back its output on error paths too
 		return nil, git_fail(gerr, "shadowgit files-at: ls-tree failed")
 	}
 	paths := make([dynamic]string, 0, 16, a)
@@ -455,7 +475,11 @@ shadow_log :: proc(s: ^Shadow_Git, n: int, token: ^platform.Cancel_Token = nil, 
 	sync.mutex_lock(&s.mu)
 	defer sync.mutex_unlock(&s.mu)
 
-	out, gerr := git(s, nil, token, a, "log", log_limit_flag(count, context.temp_allocator), "--format=%H")
+	// --all lists every ref's history — on this daemon-private repository
+	// that is exactly HEAD's — and, unlike a bare `git log -N`, exits zero
+	// with empty output on a repository with no commits yet ("does not
+	// have any commits yet" is a listable state, not a failure).
+	out, gerr := git(s, nil, token, a, "log", "--all", log_limit_flag(count, context.temp_allocator), "--format=%H")
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return nil, git_fail(gerr, "shadowgit log: git log failed")
