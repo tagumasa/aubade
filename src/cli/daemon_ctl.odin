@@ -153,6 +153,12 @@ close_control_link :: proc(c: ^jsonrpc.Conn, stream: ^rpc.Stream, box: ^Control_
 	free(box, context.allocator)
 	jsonrpc.conn_destroy(c)
 	free(c, context.allocator)
+	// The dialed stream frees last, after every user has left it: the
+	// callbacks capture the TCP state inside this allocation, and the
+	// reader thread (joined above) and the conn (destroyed above) are its
+	// last holders. Without this the wrapper leaks on every control
+	// command — the socket closes, the allocation does not.
+	rpc.stream_free(stream, context.allocator)
 }
 
 daemon_status :: proc(g: ^Globals) -> int {
