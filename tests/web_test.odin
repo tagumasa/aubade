@@ -264,6 +264,11 @@ web_fetch_refusals :: proc(t: ^testing.T) {
 		{url = "http://localhost:8080/x", block = "fetching private or local network hosts is not allowed"},
 		{url = "http://127.0.0.1/x", block = "fetching private or local network hosts is not allowed"},
 		{url = "http:///nohost", block = "missing domain in URL"},
+		// Query- and fragment-only URLs (no path slash) must still hand the
+		// private-host check a bare literal — the hand-rolled host cut used
+		// to glue "?x=1" onto it and the literal parse then failed.
+		{url = "http://127.0.0.1?x=1", block = "fetching private or local network hosts is not allowed"},
+		{url = "http://192.168.0.1#frag", block = "fetching private or local network hosts is not allowed"},
 	}
 	for c in cases {
 		_, err := web.fetch_check_url(c.url, nil, false)
