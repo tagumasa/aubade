@@ -119,6 +119,29 @@ brace_expansion_warns :: proc(t: ^testing.T) {
 	testing.expect(t, found)
 }
 
+// An unterminated-brace storm must stay linear: without the per-word scan
+// budget every '{' rescans the word's tail and a megabyte command pins the
+// worker for minutes (command length is unbounded up to the frame cap).
+// With the budget this parses instantly and simply finds no closer. The
+// storm is built byte-wise — fmt would read the '{' itself as a parameter
+// brace.
+@(test)
+brace_storm_parses_within_scan_budget :: proc(t: ^testing.T) {
+	buf := make([dynamic]u8, 0, 1024*1024+8, context.temp_allocator)
+	for c in "echo " {
+		append(&buf, u8(c))
+	}
+	for _ in 0..<1024*1024 {
+		append(&buf, u8('{'))
+	}
+	storm := string(buf[:])
+
+	commands, warns := safety.parse_shell_command(storm, context.temp_allocator)
+	testing.expect_value(t, len(commands), 1)
+	testing.expect_value(t, len(warns), 0)
+	delete(buf)
+}
+
 @(test)
 subshell_warns :: proc(t: ^testing.T) {
 	_, warns := safety.parse_shell_command("(echo foo)", context.temp_allocator)
