@@ -252,33 +252,23 @@ Pattern_Component :: struct {
 	overload_idx: int, // -1 = none
 }
 
-// name_path_matcher_new builds a matcher from a name path expression:
-//   - a simple name ("method") matches any symbol with that name
-//   - a relative path ("class/method") matches any suffix of a name path
-//   - an absolute path ("/class/method") requires an exact full match
-//   - an overload index ("MyClass/my_method[1]") disambiguates overloads
-//
-// The empty pattern is an error. Component strings are cloned into `a`;
-// name_path_matcher_destroy releases them.
-name_path_matcher_new :: proc(pattern: string, substring_matching: bool, a := context.allocator) -> (m: ^Name_Path_Matcher, err: string) {
+// split_name_path_segments splits a name-path expression under the one
+// grammar every pattern face shares: a simple name ("method"), a
+// relative path ("class/method" — a suffix match), or an anchored one
+// ("/class/method" — the full chain from the top level). Trailing
+// separators trim; interior empty segments are errors; the leading empty
+// segment of an anchored pattern is tolerated. The segments are views
+// into `pattern`; `a` backs the returned slice. The err strings are
+// scratch (temp allocator) — clone before storing them anywhere.
+split_name_path_segments :: proc(pattern: string, a := context.allocator) -> (segments: []string, anchored: bool, err: string) {
 	if pattern == "" {
-		return nil, "name_path must not be empty"
+		return nil, false, "name_path must not be empty"
 	}
 	expr := strings.trim_left(pattern, NAME_PATH_SEP)
 	expr = strings.trim_right(expr, NAME_PATH_SEP)
-	is_absolute := strings.has_prefix(pattern, NAME_PATH_SEP)
+	anchored = strings.has_prefix(pattern, NAME_PATH_SEP)
 
-	m = new(Name_Path_Matcher, a)
-	m^ = {
-		expr = pattern,
-		substring_matching = substring_matching,
-		is_absolute = is_absolute,
-		components = make([dynamic]Pattern_Component, 0, 4, a),
-		allocator = a,
-	}
-
-	// Split on the separator, tolerating the leading empty segment of an
-	// absolute pattern.
+	dyn := make([dynamic]string, 0, 4, a)
 	seg_start := 0
 	for i := 0; i <= len(expr); i += 1 {
 		if i < len(expr) && expr[i] != NAME_PATH_SEP[0] {
@@ -287,17 +277,44 @@ name_path_matcher_new :: proc(pattern: string, substring_matching: bool, a := co
 		part := expr[seg_start:i]
 		seg_start = i + 1
 		if part == "" {
-			if i == 0 && is_absolute {
+			if i == 0 && anchored {
 				continue
 			}
-			name_path_matcher_destroy(m)
-			return nil, strings.concatenate({"name_path contains empty segment: ", pattern}, context.temp_allocator)
+			return nil, false, strings.concatenate({"name_path contains empty segment: ", pattern}, context.temp_allocator)
 		}
-		append(&m.components, parse_pattern_component(part, a))
+		append(&dyn, part)
 	}
-	if len(m.components) == 0 {
-		name_path_matcher_destroy(m)
-		return nil, "name_path must not be empty after normalisation"
+	if len(dyn) == 0 {
+		return nil, false, "name_path must not be empty after normalisation"
+	}
+	return dyn[:], anchored, ""
+}
+
+// name_path_matcher_new builds a matcher from a name path expression:
+//   - a simple name ("method") matches any symbol with that name
+//   - a relative path ("class/method") matches any suffix of a name path
+//   - an absolute path ("/class/method") requires an exact full match
+//   - an overload index ("MyClass/my_method[1]") disambiguates overloads
+//
+// The segment grammar is split_name_path_segments' — the one splitter
+// the index face shares. Component strings are cloned into `a`;
+// name_path_matcher_destroy releases them.
+name_path_matcher_new :: proc(pattern: string, substring_matching: bool, a := context.allocator) -> (m: ^Name_Path_Matcher, err: string) {
+	segments, anchored, serr := split_name_path_segments(pattern, context.temp_allocator)
+	if serr != "" {
+		return nil, serr
+	}
+
+	m = new(Name_Path_Matcher, a)
+	m^ = {
+		expr               = pattern,
+		substring_matching = substring_matching,
+		is_absolute        = anchored,
+		components         = make([dynamic]Pattern_Component, 0, len(segments), a),
+		allocator          = a,
+	}
+	for seg in segments {
+		append(&m.components, parse_pattern_component(seg, a))
 	}
 	return m, ""
 }
