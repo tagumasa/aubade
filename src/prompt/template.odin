@@ -119,7 +119,12 @@ parse_nodes :: proc(
 			start := i + tag_at
 			append_text(&nodes, src[i:start], a)
 			end := strings.index(src[start:], "%}")
-			if end < 0 {
+			// The closer scan can land INSIDE the opener: in `{%}` the two
+			// bytes `%}` sit at offset 1, and slicing [start+2:start+1] would
+			// be lo>hi — a runtime bounds panic on user-controlled markup.
+			// A closer before offset 2 means there is no tag body at all:
+			// fail the parse like any malformed tag.
+			if end < 2 {
 				return nodes, i, .None, false
 			}
 			raw_tag := src[start + 2:start + end]
