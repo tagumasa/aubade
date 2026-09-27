@@ -51,7 +51,6 @@ foreign sqlite {
 	sqlite3_bind_int64 :: proc(stmt: rawptr, idx: i32, value: i64) -> i32 ---
 	sqlite3_bind_blob :: proc(stmt: rawptr, idx: i32, data: rawptr, n: i32, destructor: rawptr) -> i32 ---
 	sqlite3_bind_zeroblob :: proc(stmt: rawptr, idx: i32, n: i32) -> i32 ---
-	sqlite3_bind_null :: proc(stmt: rawptr, idx: i32) -> i32 ---
 	sqlite3_step :: proc(stmt: rawptr) -> i32 ---
 	sqlite3_reset :: proc(stmt: rawptr) -> i32 ---
 	sqlite3_clear_bindings :: proc(stmt: rawptr) -> i32 ---
@@ -60,8 +59,6 @@ foreign sqlite {
 	sqlite3_column_blob :: proc(stmt: rawptr, column: i32) -> rawptr ---
 	sqlite3_column_bytes :: proc(stmt: rawptr, column: i32) -> i32 ---
 	sqlite3_column_int64 :: proc(stmt: rawptr, column: i32) -> i64 ---
-	sqlite3_column_count :: proc(stmt: rawptr) -> i32 ---
-	sqlite3_column_type :: proc(stmt: rawptr, column: i32) -> i32 ---
 	sqlite3_errmsg :: proc(db: rawptr) -> cstring ---
 	sqlite3_busy_timeout :: proc(db: rawptr, ms: i32) -> i32 ---
 	sqlite3_changes :: proc(db: rawptr) -> i32 ---
@@ -70,12 +67,6 @@ foreign sqlite {
 SQLITE_OK :: i32(0)
 SQLITE_ROW :: i32(100)
 SQLITE_DONE :: i32(101)
-
-SQLITE_INTEGER :: i32(1)
-SQLITE_FLOAT :: i32(2)
-SQLITE_TEXT :: i32(3)
-SQLITE_BLOB :: i32(4)
-SQLITE_NULL :: i32(5)
 
 SQLITE_OPEN_READWRITE :: i32(0x00000002)
 SQLITE_OPEN_CREATE :: i32(0x00000004)

@@ -74,8 +74,6 @@ events_append_txn :: proc(db: ^DB, row: ^Event_Row) -> platform.Err {
 	return nil
 }
 
-// events_read_all returns the whole stream in uid order. All strings are
-// cloned into a; destroy with events_rows_destroy.
 // event_row_from_stmt materializes one events-table row; the SELECT's
 // column order (uid, ts, origin, kind, version, payload) is fixed by
 // every reader in this file.
@@ -90,12 +88,19 @@ event_row_from_stmt :: proc(stmt: ^Stmt, a: runtime.Allocator) -> Event_Row {
 	}
 }
 
-events_read_all :: proc(db: ^DB, a := context.allocator) -> (rows: []Event_Row, err: platform.Err) {
-	stmt, serr := stmt_prepare(db, "SELECT uid, ts, origin, kind, version, payload FROM events ORDER BY uid ASC;")
+// events_read_query steps one ordered events SELECT to exhaustion and
+// returns the rows as a plain owned slice in `a` — the shared body of the
+// two readers below. All strings are cloned into `a`; destroy with
+// events_rows_destroy.
+events_read_query :: proc(db: ^DB, sql: string, binds: []Bind, a := context.allocator) -> (rows: []Event_Row, err: platform.Err) {
+	stmt, serr := stmt_prepare(db, sql)
 	if serr != nil {
 		return nil, serr
 	}
 	defer stmt_finalize(&stmt)
+	if berr := stmt_bind_all(&stmt, binds); berr != nil {
+		return nil, berr
+	}
 	dyn := make([dynamic]Event_Row, 0, 64, a)
 	for {
 		has_row, rerr := stmt_step(&stmt)
@@ -116,6 +121,11 @@ events_read_all :: proc(db: ^DB, a := context.allocator) -> (rows: []Event_Row, 
 	}
 	delete(dyn)
 	return out, nil
+}
+
+// events_read_all returns the whole stream in uid order.
+events_read_all :: proc(db: ^DB, a := context.allocator) -> (rows: []Event_Row, err: platform.Err) {
+	return events_read_query(db, "SELECT uid, ts, origin, kind, version, payload FROM events ORDER BY uid ASC;", nil, a)
 }
 
 events_rows_destroy :: proc(rows: []Event_Row, a := context.allocator) {
@@ -143,32 +153,7 @@ events_rows_destroy :: proc(rows: []Event_Row, a := context.allocator) {
 // watermark comes from a persisted fold snapshot; uid order is the
 // stream order. Destroy with events_rows_destroy.
 events_read_after :: proc(db: ^DB, after_uid: string, a := context.allocator) -> (rows: []Event_Row, err: platform.Err) {
-	stmt, serr := stmt_prepare(db, "SELECT uid, ts, origin, kind, version, payload FROM events WHERE uid > ?1 ORDER BY uid ASC;")
-	if serr != nil {
-		return nil, serr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, after_uid); berr != nil {
-		return nil, berr
-	}
-	dyn := make([dynamic]Event_Row, 0, 64, a)
-	for {
-		has_row, rerr := stmt_step(&stmt)
-		if rerr != nil {
-			events_rows_destroy(dyn[:], a)
-			return nil, rerr
-		}
-		if !has_row {
-			break
-		}
-		append(&dyn, event_row_from_stmt(&stmt, a))
-	}
-	out := make([]Event_Row, len(dyn), a)
-	for r, i in dyn {
-		out[i] = r
-	}
-	delete(dyn)
-	return out, nil
+	return events_read_query(db, "SELECT uid, ts, origin, kind, version, payload FROM events WHERE uid > ?1 ORDER BY uid ASC;", {after_uid}, a)
 }
 
 // events_last_uid returns the greatest uid in the stream (the events_uid
@@ -191,7 +176,9 @@ events_last_uid :: proc(db: ^DB, a := context.allocator) -> (uid: string, found:
 	return stmt_column_text_clone(&stmt, 0, a), true, nil
 }
 
-// events_count returns the number of stored events (startup diagnostics).
+// events_count returns the number of stored events — the suite's direct
+// probe of the append-only stream (the production startup diagnostics
+// count symbol rows instead).
 events_count :: proc(db: ^DB) -> (n: i64, err: platform.Err) {
 	stmt, serr := stmt_prepare(db, "SELECT COUNT(*) FROM events;")
 	if serr != nil {
@@ -208,8 +195,9 @@ events_count :: proc(db: ^DB) -> (n: i64, err: platform.Err) {
 	return stmt_column_int(&stmt, 0), nil
 }
 
-// event_payload_by_uid fetches one event's payload JSON by uid (detail
-// rendering walks the fold's event references through this).
+// event_payload_by_uid fetches one event's payload JSON by uid — the
+// single-row point read; production detail rendering walks the batch
+// fetch above, and the suite cross-checks the two against each other.
 event_payload_by_uid :: proc(db: ^DB, uid: string, a := context.allocator) -> (payload: string, found: bool, err: platform.Err) {
 	return query_one_text(db, "SELECT payload FROM events WHERE uid = ?1;", uid, a)
 }
