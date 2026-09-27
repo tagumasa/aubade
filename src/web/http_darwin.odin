@@ -42,7 +42,7 @@ resolve_host :: proc(host: string, a := context.allocator) -> [dynamic]IP_Addr {
 		}
 		base := cast([^]u8)(it.ai_addr)
 		addr: IP_Addr
-		if family == 2 {
+		if family == AF_INET_VAL {
 			addr.family = .V4
 			for i := 0; i < 4; i += 1 {
 				addr.bytes[i] = base[4 + i]

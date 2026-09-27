@@ -151,20 +151,12 @@ fetch_check_url :: proc(
 	if scheme != "http" && scheme != "https" {
 		return .Invalid_Url, "only http/https URLs are allowed"
 	}
-	rest := raw_url[scheme_end + 3:]
-	host := rest
-	if slash := strings.index_byte(rest, '/'); slash >= 0 {
-		host = rest[:slash]
-	}
-	if at := strings.last_index_byte(host, '@'); at >= 0 {
-		host = host[at + 1:]
-	}
-	if bracket := strings.index_byte(host, ']'); bracket >= 0 {
-		host = strings.trim_prefix(strings.trim_prefix(host[:bracket + 1], "["), "]")
-	} else if colon := strings.index_byte(host, ':'); colon >= 0 {
-		host = host[:colon]
-	}
-	if host == "" {
+	// The host comes from the one authority parser. Its query/fragment
+	// cut matters here too: a query-only URL ("http://127.0.0.1?x=1") must
+	// hand the private-host check a bare literal, not the literal with the
+	// query glued on (which parses as no IP at all).
+	_, host, hok := url_origin(raw_url)
+	if !hok || host == "" {
 		return .Invalid_Url, "missing domain in URL"
 	}
 	if obvious_private_host(host, w, allow_private) {
