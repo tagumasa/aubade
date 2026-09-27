@@ -249,9 +249,15 @@ svc_file_edit_ops :: proc(t: ^testing.T) {
 
 	svc_symbol_write_file(t, pair.tmp, "edit.txt", "alpha\nbeta\ngamma\n")
 
-	// insert at line 1 (content gains the missing trailing newline).
+	// insert at line 1 (content gains the missing trailing newline). The
+	// expectf forms carry the daemon's refusal verbatim: a failed edit op
+	// is otherwise an opaque Error_Response, and the refusing layer (state
+	// dir, editor load, atomic-rename save) is exactly what the message
+	// names.
 	ins := svc.client_file_insert_lines(conn, "edit.txt", 1, "INSERTED", alloc, deadline)
-	testing.expect_value(t, ins.call_err, jsonrpc.Call_Err.None)
+	testing.expectf(t, ins.call_err == jsonrpc.Call_Err.None,
+		"insert refused: call_err=%v err_code=%v err_message=%q",
+		ins.call_err, ins.err_code, ins.err_message)
 	testing.expect_value(
 		t,
 		file_read_content(t, conn, "edit.txt", 0, 0, false, alloc, deadline),
@@ -260,7 +266,9 @@ svc_file_edit_ops :: proc(t: ^testing.T) {
 
 	// replace lines 0..1 with one line.
 	rl := svc.client_file_replace_lines(conn, "edit.txt", 0, 1, "ONE", alloc, deadline)
-	testing.expect_value(t, rl.call_err, jsonrpc.Call_Err.None)
+	testing.expectf(t, rl.call_err == jsonrpc.Call_Err.None,
+		"replace lines refused: call_err=%v err_code=%v err_message=%q",
+		rl.call_err, rl.err_code, rl.err_message)
 	testing.expect_value(
 		t,
 		file_read_content(t, conn, "edit.txt", 0, 0, false, alloc, deadline),
@@ -269,7 +277,9 @@ svc_file_edit_ops :: proc(t: ^testing.T) {
 
 	// delete line 1.
 	dl := svc.client_file_delete_lines(conn, "edit.txt", 1, 1, alloc, deadline)
-	testing.expect_value(t, dl.call_err, jsonrpc.Call_Err.None)
+	testing.expectf(t, dl.call_err == jsonrpc.Call_Err.None,
+		"delete lines refused: call_err=%v err_code=%v err_message=%q",
+		dl.call_err, dl.err_code, dl.err_message)
 	testing.expect_value(
 		t,
 		file_read_content(t, conn, "edit.txt", 0, 0, false, alloc, deadline),
