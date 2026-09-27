@@ -21,7 +21,10 @@ Retry_Box :: struct {
 
 retry_writer_entry :: proc(data: rawptr) {
 	b := cast(^Retry_Box)data
-	b.err = platform.atomic_write(b.path, transmute([]u8)"second", os.Permissions_Default_File)
+	// A typed local, not a literal: transmute refuses untyped string
+	// constants, and this file only compiles on the Windows runner.
+	payload := "second"
+	b.err = platform.atomic_write(b.path, transmute([]u8)payload, os.Permissions_Default_File)
 }
 
 @(test)
@@ -37,7 +40,8 @@ atomic_write_waits_out_a_reader_holding_the_target :: proc(t: ^testing.T) {
 	path, _ := filepath.join([]string{dir, "held.txt"}, context.allocator)
 	defer delete(path, context.allocator)
 
-	if err := platform.atomic_write(path, transmute([]u8)"first", os.Permissions_Default_File); err != nil {
+	seed := "first"
+	if err := platform.atomic_write(path, transmute([]u8)seed, os.Permissions_Default_File); err != nil {
 		testing.expectf(t, false, "seed write failed")
 		return
 	}
