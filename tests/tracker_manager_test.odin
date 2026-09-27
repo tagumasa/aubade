@@ -1203,6 +1203,26 @@ tracker_alias_release_and_validator_gates :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, cr4.id != cr3.id)
 
+	// A composite update that RETAINS an existing alias is the owner
+	// exercising its own registration, not a collision: the fields
+	// validator sees the projected header (a shallow clone at another
+	// address), so ownership must compare ids, not pointers.
+	fu_keep := tracker.Fields_Update{aliases = []string{"R2-SG-02", "R2-SG-03"}, aliases_set = true}
+	up_keep := tracker.Update_Input{fields = fu_keep, fields_set = true}
+	if _, _, kerr := tracker.manager_update_incident(m, cr3.id, &up_keep, ra); kerr != nil {
+		testing.expectf(t, false, "alias retention update: %v", kerr)
+		return
+	}
+	kdet, kgerr := tracker.manager_get_incident(m, cr3.id, 0, ra)
+	testing.expectf(t, kgerr == nil, "get detail after retention: %v", kgerr)
+	testing.expectf(t, strings.contains(kdet, "aliases R2-SG-02, R2-SG-03"), "retained aliases render: %s", kdet)
+	// The newly added spelling is now owned: another incident cannot claim it.
+	in5 := tracker.Create_Input{title = "five", body_md = "b", aliases = []string{"R2-SG-03"}}
+	if _, terr5 := tracker.manager_create(m, &in5, ra); terr5 == nil {
+		testing.expect(t, false, "an alias added by retention must be owned afterwards")
+		return
+	}
+
 	// Whitespace-only resolve evidence is rejected on the resolved path.
 	if _, verr4 := tracker.manager_verify(m, cr4.id, "confirmed", "", "why", "evidence", ra); verr4 != nil {
 		testing.expectf(t, false, "verify cr4: %v", verr4)
