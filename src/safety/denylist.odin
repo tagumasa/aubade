@@ -283,6 +283,14 @@ deny_match_target :: proc(d: ^Deny_List, target: string) -> bool {
 		if regex.regex_match(&r, slash) {
 			return true
 		}
+		// Budget exhaustion reads as "no match" from regex_match alone; a
+		// deny gate denies rather than guesses (same stance as the shell
+		// and URL guards' block loops). The default glob-derived patterns
+		// stay well inside the budget even on very long paths, so this
+		// guards the shape, not a measured default-pattern case.
+		if r.limit_hit {
+			return true
+		}
 	}
 	return false
 }

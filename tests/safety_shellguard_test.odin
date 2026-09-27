@@ -1,6 +1,7 @@
 // Tests for src/safety shellguard + the shell_run tool's safety gating.
 package tests
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import "src:safety"
@@ -132,6 +133,30 @@ shellguard_allowlist :: proc(t: ^testing.T) {
 	// Non-deterministic constructs are refused under an allowlist.
 	blocked_nd, _ := safety.shellguard_is_blocked(&sg, "git log $HOME")
 	testing.expect(t, blocked_nd)
+}
+
+// The default rm-root pattern's backtracking trips the regex budget on a
+// decoy-flag flood while the command is still the destructive delete the
+// pattern exists to stop — regex_match then answers "no match", and the
+// guard must refuse rather than let the budget exhaustion read as allowed
+// (a ~6 KB command already crosses the limit; this one has margin).
+@(test)
+shellguard_blocks_on_regex_budget_exhaustion :: proc(t: ^testing.T) {
+	sg: safety.Shell_Guard
+	safety.shellguard_init(&sg, context.allocator)
+	defer safety.shellguard_destroy(&sg)
+
+	b := strings.builder_make_len_cap(0, 4*20000+32, context.temp_allocator)
+	fmt.sbprintf(&b, "rm -r ")
+	for _ in 0..<20000 {
+		fmt.sbprintf(&b, "-q ")
+	}
+	fmt.sbprintf(&b, "-f /")
+	subject := strings.clone(strings.to_string(b), context.temp_allocator)
+
+	blocked, reason := safety.shellguard_is_blocked(&sg, subject)
+	testing.expect(t, blocked)
+	testing.expect(t, strings.contains(reason, "too complex"))
 }
 
 @(test)

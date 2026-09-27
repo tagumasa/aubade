@@ -70,6 +70,12 @@ urlguard_is_blocked :: proc(ug: ^URL_Guard, raw_url: string) -> (bool, string) {
 		if regex.regex_match(&re, raw_url) {
 			return true, ug.url_patterns[i].reason
 		}
+		// regex_match folds budget exhaustion into "no match"; a block gate
+		// refuses instead of guessing (the shell guard's block loop carries
+		// the full rationale).
+		if re.limit_hit {
+			return true, "URL is too complex for the block-pattern matcher to decide"
+		}
 	}
 
 	host, has_host := url_hostname(raw_url)
@@ -100,6 +106,9 @@ urlguard_is_blocked :: proc(ug: ^URL_Guard, raw_url: string) -> (bool, string) {
 		re := ug.host_patterns[i].re
 		if regex.regex_match(&re, canon) {
 			return true, ug.host_patterns[i].reason
+		}
+		if re.limit_hit {
+			return true, "URL is too complex for the block-pattern matcher to decide"
 		}
 	}
 	return false, ""
@@ -158,12 +167,22 @@ urlguard_check_for_secrets :: proc(ug: ^URL_Guard, raw_url: string) -> (bool, st
 	if !ug.is_vendor_ready {
 		return false, ""
 	}
-	if regex.regex_match(&ug.vendor_re, raw_url) {
+	// The copy isolates limit_hit reads from the shared Regex: matching
+	// through &ug.vendor_re would leave a sticky exhaustion flag that
+	// poisons every later check (nothing in the regex package resets it).
+	re := ug.vendor_re
+	if regex.regex_match(&re, raw_url) {
 		return true, "blocked: URL contains what appears to be an API key or token"
 	}
+	if re.limit_hit {
+		return true, "blocked: URL is too complex for the secret-pattern matcher to decide"
+	}
 	decoded := util.percent_decode(raw_url, context.temp_allocator, plus_to_space = true, malformed = .Return_Input)
-	if regex.regex_match(&ug.vendor_re, decoded) {
+	if regex.regex_match(&re, decoded) {
 		return true, "blocked: URL contains what appears to be an API key or token"
+	}
+	if re.limit_hit {
+		return true, "blocked: URL is too complex for the secret-pattern matcher to decide"
 	}
 	return false, ""
 }
