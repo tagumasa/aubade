@@ -741,38 +741,23 @@ symbol_find_refresh_on_miss :: proc(d: ^Daemon, ctx: ^svc.Svc_Ctx) -> bool {
 SYMBOL_FIND_MAX_COMPONENTS :: 32
 
 // symbol_find_parse_pattern splits a symbol_find pattern into its
-// components with the same grammar as the forest-side name-path matcher:
-// a simple name, a relative path ("class/method" — a suffix of the full
-// chain), or an anchored one ("/class/method" — the full chain from the
-// top level). Trailing separators trim; interior empty segments are
-// errors. Overload suffixes ("method[1]") are rejected with a steering
-// message: the index rows carry no overload information, and silently
-// matching the bare name would answer more than the pattern asked for.
+// components through split_name_path_segments — the one segment grammar,
+// shared with the forest-side name-path matcher — then applies the index
+// face's own rules. Overload suffixes ("method[1]") are rejected with a
+// steering message: the index rows carry no overload information, and
+// silently matching the bare name would answer more than the pattern
+// asked for. The depth cap bounds one indexed parent query (and one
+// stack frame) per component.
 symbol_find_parse_pattern :: proc(pattern: string, a: mem.Allocator) -> (comps: []string, anchored: bool, err: platform.Err) {
 	if pattern == "" {
 		return nil, false, platform.Wrapped{kind = .Invalid, msg = "name must not be empty"}
 	}
-	expr := strings.trim_left(pattern, "/")
-	expr = strings.trim_right(expr, "/")
-	anchored = strings.has_prefix(pattern, "/")
-
-	dyn := make([dynamic]string, 0, 4, a)
-	seg_start := 0
-	for i := 0; i <= len(expr); i += 1 {
-		if i < len(expr) && expr[i] != '/' {
-			continue
-		}
-		part := expr[seg_start:i]
-		seg_start = i + 1
-		if part == "" {
-			if i == 0 && anchored {
-				continue
-			}
-			return nil, false, platform.Wrapped{
-				kind = .Invalid,
-				msg  = strings.concatenate({"name_path contains empty segment: ", pattern}, a),
-			}
-		}
+	serr: string
+	comps, anchored, serr = symbol.split_name_path_segments(pattern, a)
+	if serr != "" {
+		return nil, false, platform.Wrapped{kind = .Invalid, msg = strings.clone(serr, a)}
+	}
+	for part in comps {
 		if component_has_overload_index(part) {
 			return nil, false, platform.Wrapped{
 				kind = .Invalid,
@@ -782,18 +767,14 @@ symbol_find_parse_pattern :: proc(pattern: string, a: mem.Allocator) -> (comps: 
 				}, a),
 			}
 		}
-		append(&dyn, part)
 	}
-	if len(dyn) == 0 {
-		return nil, false, platform.Wrapped{kind = .Invalid, msg = "name_path must not be empty after normalisation"}
-	}
-	if len(dyn) > SYMBOL_FIND_MAX_COMPONENTS {
+	if len(comps) > SYMBOL_FIND_MAX_COMPONENTS {
 		return nil, false, platform.Wrapped{
 			kind = .Invalid,
-			msg  = "name_path is too deep (more than 32 components)",
+			msg = "name_path is too deep (more than 32 components)",
 		}
 	}
-	return dyn[:], anchored, nil
+	return comps, anchored, nil
 }
 
 // component_has_overload_index reports whether a pattern component carries
