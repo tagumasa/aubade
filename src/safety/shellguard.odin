@@ -87,6 +87,15 @@ shellguard_is_blocked :: proc(sg: ^Shell_Guard, command: string) -> (bool, strin
 			sync.mutex_unlock(&sg.mu)
 			return true, reason
 		}
+		// regex_match folds budget exhaustion into "no match", and a block
+		// gate must not guess: `rm -r <a few thousand decoy flags> -f /`
+		// still IS the destructive command the pattern exists to stop, but
+		// its backtracking trips the budget first (measured at a ~6 KB
+		// command against the default rm-root pattern). Refuse instead.
+		if re.limit_hit {
+			sync.mutex_unlock(&sg.mu)
+			return true, "command is too complex for the block-pattern matcher to decide; split or simplify the command"
+		}
 	}
 	allowlist_active := len(sg.allowed) > 0
 	sync.mutex_unlock(&sg.mu)
@@ -359,6 +368,15 @@ shellguard_detect_sensitive_path :: proc(sg: ^Shell_Guard, cmd: string) -> (bool
 				if regex.regex_match(&re, tok.value) {
 					return true, strings.concatenate(
 						{"command targets sensitive path: ", tok.value},
+						context.temp_allocator,
+					)
+				}
+				// Same fail-closed stance as the block loop: budget
+				// exhaustion reads as "not sensitive" from regex_match
+				// alone, and this detection is a gate, not advice.
+				if re.limit_hit {
+					return true, strings.concatenate(
+						{"sensitive-path check exceeded the matcher budget for: ", tok.value},
 						context.temp_allocator,
 					)
 				}
