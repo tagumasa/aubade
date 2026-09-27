@@ -394,6 +394,107 @@ snapshot_seed_events :: proc(t: ^testing.T, m: ^tracker.Manager, ra: mem.Allocat
 	return true
 }
 
+@(private)
+// duplicate_first_incident splices the corrupt shape that reaches the
+// restore's entity inserts: a second copy of the first incident object in
+// the incidents array (brace-matched; the seeded titles carry no braces)
+// AND its uid repeated in incident_order — the length check alone (3
+// objects vs 2 order entries) refuses long before an insert could
+// overwrite anything. With both repeated, the insert loop is the first to
+// see the duplicate. The marshal renders root keys sorted, so
+// "incident_order" sits before "incidents" in the blob.
+duplicate_first_incident :: proc(blob: string, a: mem.Allocator) -> (string, bool) {
+	ockey := "\"incident_order\":[\""
+	ok_ := strings.index(blob, ockey)
+	if ok_ < 0 {
+		return "", false
+	}
+	ouid_start := ok_ + len(ockey)
+	ouid_end := -1
+	for i in ouid_start..<len(blob) {
+		if blob[i] == '"' {
+			ouid_end = i
+			break
+		}
+	}
+	if ouid_end < 0 {
+		return "", false
+	}
+	uid := blob[ouid_start:ouid_end]
+
+	ickey := "\"incidents\":["
+	ik := strings.index(blob, ickey)
+	if ik < 0 {
+		return "", false
+	}
+	istart := ik + len(ickey)
+	if istart >= len(blob) || blob[istart] != '{' {
+		return "", false
+	}
+	depth := 0
+	iend := -1
+	for i in istart..<len(blob) {
+		c := blob[i]
+		if c == '{' {
+			depth += 1
+		} else if c == '}' {
+			depth -= 1
+			if depth == 0 {
+				iend = i + 1
+				break
+			}
+		}
+	}
+	if iend < 0 {
+		return "", false
+	}
+	first := blob[istart:iend]
+
+	parts := [7]string{
+		blob[:ouid_end],       // through the first uid (closing quote excluded)
+		"\",\"",               // reopen and close a string entry…
+		uid,                   // …repeating the uid
+		blob[ouid_end:iend],   // through the first incident object
+		",",                   // reopen the array…
+		first,                 // …repeating the incident object
+		blob[iend:],           // and the rest of the blob
+	}
+	return strings.concatenate(parts[:], a), true
+}
+
+@(test)
+tracker_snapshot_restore_refuses_repeats :: proc(t: ^testing.T) {
+	h: Fold_Harness
+	harness_init(&h)
+	defer harness_destroy(&h)
+
+	testing.expect(t, harness_apply(t, &h, 1_000_000_000, "incident.created",
+		"{\"title\":\"one\",\"body_md\":\"claim\"}"))
+	testing.expect(t, harness_apply(t, &h, 2_000_000_000, "incident.created",
+		"{\"title\":\"two\",\"body_md\":\"claim\"}"))
+
+	blob, ok := tracker.snapshot_serialize(&h.state, h.state.last_uid, context.allocator)
+	testing.expect(t, ok)
+	defer delete(blob, context.allocator)
+
+	dupe, dok := duplicate_first_incident(blob, context.temp_allocator)
+	testing.expect(t, dok)
+	if !dok {
+		return
+	}
+
+	// The duplicated incident shares its uid: the restore must refuse (the
+	// map insert would otherwise overwrite and strand the earlier header —
+	// under the test tracking allocator that strand is a leak).
+	s: tracker.Fold_State
+	tracker.fold_state_init(&s, context.allocator)
+	defer tracker.fold_state_destroy(&s)
+	lsu, rok, reason := tracker.snapshot_restore(&s, dupe, h.state.last_uid, true, context.temp_allocator)
+	testing.expectf(t, !rok, "a repeated incident uid must refuse the restore")
+	testing.expect(t, strings.contains(reason, "repeats an incident uid"), reason)
+	testing.expect(t, lsu == "")
+}
+
 @(test)
 tracker_snapshot_restore_equivalence :: proc(t: ^testing.T) {
 	dir, derr := os.make_directory_temp("", "aubade-snap-", context.allocator)
