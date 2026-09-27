@@ -33,6 +33,15 @@ Shell_Command :: struct {
 	args:       [dynamic]string,
 }
 
+// Per-word byte budget for the brace-closer scan: the scan only decides
+// whether to warn about brace expansion, and without a budget every '{'
+// of an unterminated-construct storm rescans the word's remaining bytes
+// — tokenization goes quadratic on the command length, and command
+// length is unbounded up to the frame cap. Normal brace bodies cost a
+// handful of bytes; a word that burns the whole budget keeps parsing,
+// just without further brace warnings.
+SHELL_BRACE_SCAN_BUDGET :: 64 * 1024
+
 // parse_shell_command performs structural analysis of a shell command
 // string. It splits on unquoted separators, resolves quoting and escapes,
 // and flags constructs that prevent deterministic evaluation.
@@ -229,6 +238,7 @@ shell_parse_word :: proc(p: ^_Shell_Parser) {
 	defer delete(raw_buf)
 	quoted := false
 	quote_ch: byte = 0
+	brace_scan_left := SHELL_BRACE_SCAN_BUDGET
 
 	push_buf :: proc(buf: ^[dynamic]u8, src: string, n: int) {
 		for i in 0 ..< n {
@@ -460,17 +470,20 @@ shell_parse_word :: proc(p: ^_Shell_Parser) {
 			continue
 		}
 
-		// Brace expansion {a,b,c} flagged.
+		// Brace expansion {a,b,c} flagged. The closer scan is bounded by
+		// the word's remaining budget: consecutive unterminated '{'s must
+		// not each walk the whole tail.
 		if ch == '{' {
 			scan := p.pos
 			end := -1
-			for scan < len(p.s) {
+			for scan < len(p.s) && scan - p.pos < brace_scan_left {
 				if p.s[scan] == '}' {
 					end = scan
 					break
 				}
 				scan += 1
 			}
+			brace_scan_left -= scan - p.pos
 			if end > p.pos {
 				region := p.s[p.pos:end]
 				has_comma := false
