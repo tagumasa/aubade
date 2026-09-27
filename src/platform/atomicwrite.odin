@@ -43,7 +43,10 @@ atomic_write :: proc(path: string, data: []u8, perms: os.Permissions) -> Err {
 		}
 	}
 	os.close(f)
-	if rerr := os.rename(tmp, path); rerr != nil {
+	// The platform halves of the rename (atomicwrite_windows/atomicwrite_other)
+	// wait out a transient hold of the target where the platform's replace
+	// semantics allow one to exist.
+	if rerr := rename_publish(tmp, path); rerr != nil {
 		os.remove(tmp)
 		return Wrapped{
 			kind = .Internal,
