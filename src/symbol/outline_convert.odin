@@ -139,10 +139,12 @@ position_converter_destroy :: proc(conv: ^Position_Converter) {
 	if conv == nil {
 		return
 	}
-	if conv.offsets != nil {
-		delete(conv.offsets)
-	}
 	a := conv.allocator
+	if conv.offsets != nil {
+		// A plain slice carries no allocator: a bare delete would free it
+		// through the destroying thread's context, not the converter's.
+		delete(conv.offsets, a)
+	}
 	free(conv, a)
 }
 
