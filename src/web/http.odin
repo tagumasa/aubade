@@ -396,20 +396,14 @@ http_header_callback :: proc "c" (ptr: [^]byte, size: c.size_t, nmemb: c.size_t,
 }
 
 // header_is_cf_challenge matches "Cf-Mitigated: challenge" with an ASCII
-// case fold — pure byte comparison, no allocation.
+// case fold (util.ascii_equal_ci) — pure byte comparison, no allocation.
 header_is_cf_challenge :: proc(line: []u8) -> bool {
 	name := "cf-mitigated"
 	if len(line) < len(name) + 2 {
 		return false
 	}
-	for i in 0..<len(name) {
-		b := line[i]
-		if b >= 'A' && b <= 'Z' {
-			b += 32
-		}
-		if b != name[i] {
-			return false
-		}
+	if !util.ascii_equal_ci(transmute(string)line[:len(name)], name) {
+		return false
 	}
 	if line[len(name)] != ':' {
 		return false
@@ -423,16 +417,7 @@ header_is_cf_challenge :: proc(line: []u8) -> bool {
 	if len(v) - i < len(val) {
 		return false
 	}
-	for j in 0..<len(val) {
-		b := v[i + j]
-		if b >= 'A' && b <= 'Z' {
-			b += 32
-		}
-		if b != val[j] {
-			return false
-		}
-	}
-	return true
+	return util.ascii_equal_ci(transmute(string)v[i:i + len(val)], val)
 }
 
 // http_open_socket is the SSRF gate: every address curl is about to

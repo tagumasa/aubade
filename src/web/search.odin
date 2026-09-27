@@ -489,6 +489,26 @@ keys_retry_search :: proc(
 	return "", last_kind, strings.concatenate({"all api keys failed, last error: ", last_err}, a)
 }
 
+// keyed_transport_outcome classifies a search_http failure for the retry
+// loop: a cancellation is the attempt's final answer (the caller asked to
+// stop, not the provider), every other transport failure moves to the
+// next key.
+keyed_transport_outcome :: proc(err_kind: Web_Err) -> Attempt_Outcome {
+	return err_kind == .Cancelled ? .Answered : .Retryable
+}
+
+// keyed_status_error renders a non-200 provider answer and its retry
+// outcome. One message shape for every keyed provider: the per-provider
+// copies this replaces had already drifted apart (one dropped its status
+// code entirely), which is what a shared home prevents.
+keyed_status_error :: proc(provider: string, status: int, body: string, a := context.allocator) -> (string, Attempt_Outcome) {
+	status_err := strings.concatenate({
+		provider, " api error (status ", util.int_to_dec(status, a), "): ",
+		truncate_for_error(body, a),
+	}, a)
+	return status_err, retryable_status(status) ? .Retryable : .Answered
+}
+
 brave_search :: proc(s: ^Searcher, query: string, count: int, range_code: string, token: ^platform.Cancel_Token, a := context.allocator) -> (string, Web_Err, string) {
 	esc := query_escape(query, context.temp_allocator)
 	url := strings.concatenate({
@@ -528,20 +548,11 @@ brave_attempt :: proc(s: ^Searcher, key: string, user: rawptr, token: ^platform.
 	}
 	res, err_kind, err := search_http(s, req, token, a)
 	if err_kind != .None {
-		if err_kind == .Cancelled {
-			return "", .Cancelled, err, .Answered
-		}
-		return "", err_kind, err, .Retryable
+		return "", err_kind, err, keyed_transport_outcome(err_kind)
 	}
 	if res.status != 200 {
-		status_err := strings.concatenate({
-			"API error (status ", util.int_to_dec(res.status, a), "): ",
-			truncate_for_error(transmute(string)res.body, a),
-		}, a)
-		if retryable_status(res.status) {
-			return "", .Provider_Error, status_err, .Retryable
-		}
-		return "", .Provider_Error, status_err, .Answered
+		status_err, verdict := keyed_status_error("brave", res.status, transmute(string)res.body, a)
+		return "", .Provider_Error, status_err, verdict
 	}
 	v, ok2 := parse_json_body(transmute(string)res.body)
 	if !ok2 {
@@ -621,20 +632,11 @@ tavily_attempt :: proc(s: ^Searcher, key: string, user: rawptr, token: ^platform
 	}
 	res, err_kind, err := search_http(s, req, token, a)
 	if err_kind != .None {
-		if err_kind == .Cancelled {
-			return "", .Cancelled, err, .Answered
-		}
-		return "", err_kind, err, .Retryable
+		return "", err_kind, err, keyed_transport_outcome(err_kind)
 	}
 	if res.status != 200 {
-		status_err := strings.concatenate({
-			"tavily api error (status ", util.int_to_dec(res.status, a), "): ",
-			truncate_for_error(transmute(string)res.body, a),
-		}, a)
-		if retryable_status(res.status) {
-			return "", .Provider_Error, status_err, .Retryable
-		}
-		return "", .Provider_Error, status_err, .Answered
+		status_err, verdict := keyed_status_error("tavily", res.status, transmute(string)res.body, a)
+		return "", .Provider_Error, status_err, verdict
 	}
 	v, ok2 := parse_json_body(transmute(string)res.body)
 	if !ok2 {
@@ -712,20 +714,11 @@ perplexity_attempt :: proc(s: ^Searcher, key: string, user: rawptr, token: ^plat
 	}
 	res, err_kind, err := search_http(s, req, token, a)
 	if err_kind != .None {
-		if err_kind == .Cancelled {
-			return "", .Cancelled, err, .Answered
-		}
-		return "", err_kind, err, .Retryable
+		return "", err_kind, err, keyed_transport_outcome(err_kind)
 	}
 	if res.status != 200 {
-		status_err := strings.concatenate({
-			"perplexity API error: ",
-			truncate_for_error(transmute(string)res.body, a),
-		}, a)
-		if retryable_status(res.status) {
-			return "", .Provider_Error, status_err, .Retryable
-		}
-		return "", .Provider_Error, status_err, .Answered
+		status_err, verdict := keyed_status_error("perplexity", res.status, transmute(string)res.body, a)
+		return "", .Provider_Error, status_err, verdict
 	}
 	v, ok2 := parse_json_body(transmute(string)res.body)
 	if !ok2 {

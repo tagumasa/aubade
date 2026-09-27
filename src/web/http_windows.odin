@@ -49,7 +49,7 @@ resolve_host :: proc(host: string, a := context.allocator) -> [dynamic]IP_Addr {
 			continue
 		}
 		addr: IP_Addr
-		if family == 2 {
+		if family == AF_INET_VAL {
 			in4 := cast(^win32.sockaddr_in)(it.ai_addr)
 			addr.family = .V4
 			be := in4.sin_addr.s_addr // little-endian load of network-order bytes
