@@ -1074,7 +1074,9 @@ manager_render_incident_report :: proc(
 ) -> (string, platform.Err) {
 	sync.mutex_lock(&m.mu)
 	defer sync.mutex_unlock(&m.mu)
+	// Reports are consumed whole: the paging facets never apply.
 	f.limit = -1
+	f.offset = 0
 	live := live_incidents(&m.state, a)
 	defer delete(live, a)
 	matched, err := matched_incidents(&m.state, f, live[:], a)

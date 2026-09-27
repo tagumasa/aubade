@@ -193,10 +193,28 @@ tracker_flag_str :: proc(cmd: string, args: []string, flag: string, i: ^int) -> 
 	return val, true, 0
 }
 
+// tracker_flag_int fetches one --flag integer value (the tracker_flag_str
+// forms), refusing non-integer values.
+tracker_flag_int :: proc(cmd: string, args: []string, flag: string, i: ^int, out: ^int) -> (matched: bool, code: int) {
+	val, ok, fcode := tracker_flag_str(cmd, args, flag, i)
+	if !ok {
+		return false, 0
+	}
+	if fcode != 0 {
+		return true, fcode
+	}
+	n, parsed := strconv.parse_int(val)
+	if !parsed {
+		return true, usage_error(cmd, strings.concatenate({flag, " requires an integer"}, context.temp_allocator))
+	}
+	(out^) = int(n)
+	return true, 0
+}
+
 // tracker_filter_flags parses the shared incident-filter flags into f;
-// limit_out (when non-nil) also accepts --limit. Returns the exit code
-// (0 = keep going).
-tracker_filter_flags :: proc(cmd: string, args: []string, f: ^tracker.Incident_Filter, limit_out: ^int) -> int {
+// limit_out/offset_out (when non-nil) also accept --limit/--offset.
+// Returns the exit code (0 = keep going).
+tracker_filter_flags :: proc(cmd: string, args: []string, f: ^tracker.Incident_Filter, limit_out, offset_out: ^int) -> int {
 	status := make([dynamic]string, 0, 4, context.temp_allocator)
 	priority := make([dynamic]string, 0, 4, context.temp_allocator)
 	i := 0
@@ -272,15 +290,18 @@ tracker_filter_flags :: proc(cmd: string, args: []string, f: ^tracker.Incident_F
 			continue
 		}
 		if limit_out != nil {
-			if val, ok, code := tracker_flag_str(cmd, args, "--limit", &i); ok {
+			if matched, code := tracker_flag_int(cmd, args, "--limit", &i, limit_out); matched {
 				if code != 0 {
 					return code
 				}
-				n, parsed := strconv.parse_int(val)
-				if !parsed {
-					return usage_error(cmd, "--limit requires an integer")
+				continue
+			}
+		}
+		if offset_out != nil {
+			if matched, code := tracker_flag_int(cmd, args, "--offset", &i, offset_out); matched {
+				if code != 0 {
+					return code
 				}
-				(limit_out^) = int(n)
 				continue
 			}
 		}
@@ -300,10 +321,12 @@ tracker_filter_flags :: proc(cmd: string, args: []string, f: ^tracker.Incident_F
 tracker_list_cmd :: proc(args: []string, g: ^Globals) -> int {
 	f: tracker.Incident_Filter
 	limit := 0
-	if code := tracker_filter_flags("tracker list", args, &f, &limit); code != 0 {
+	offset := 0
+	if code := tracker_filter_flags("tracker list", args, &f, &limit, &offset); code != 0 {
 		return code
 	}
 	f.limit = limit
+	f.offset = offset
 
 	ct, ok := tracker_open("tracker list", g)
 	if !ok {
@@ -418,7 +441,7 @@ tracker_report_cmd :: proc(args: []string, g: ^Globals) -> int {
 			),
 		)
 	}
-	if code := tracker_filter_flags("tracker report", args[i:], &f, nil); code != 0 {
+	if code := tracker_filter_flags("tracker report", args[i:], &f, nil, nil); code != 0 {
 		return code
 	}
 

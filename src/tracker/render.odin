@@ -466,6 +466,7 @@ Incident_Filter :: struct {
 	created_by: string,
 	query:      string, // substring on title + aliases, case-folded
 	limit:      int,    // 0 = default 20, negative = unlimited
+	offset:     int,    // skip the first N matched rows (paging; 0 = none)
 	sort:       string, // "updated" (default) | "priority" | "created"
 }
 
@@ -600,19 +601,47 @@ Sort_Entry :: struct {
 	less: Incident_Less,
 }
 
-// The filter's sort vocabulary; "updated" is the default and carries no
-// row (it is less_updated).
+// The filter's sort vocabulary. The first row is the default; unknown
+// keys are rejected at the filter gate, never silently re-sorted.
 SORT_ENTRIES :: []Sort_Entry{
-	{key = "created", less = less_created},
+	{key = "updated",  less = less_updated},
+	{key = "created",  less = less_created},
 	{key = "priority", less = less_priority},
 }
 
-sort_incidents :: proc(list: []^Incident_Header, sort_key: string) {
-	less := less_updated
+sort_less :: proc(sort_key: string) -> (Incident_Less, bool) {
 	for entry in SORT_ENTRIES {
 		if entry.key == sort_key {
-			less = entry.less
+			return entry.less, true
 		}
+	}
+	return nil, false
+}
+
+sort_known :: proc(sort_key: string) -> bool {
+	if sort_key == "" {
+		return true // the default (first table row)
+	}
+	_, ok := sort_less(sort_key)
+	return ok
+}
+
+// sort_keys_wire renders "updated|created|priority" for refusal messages,
+// derived from the table so the vocabulary has one home.
+sort_keys_wire :: proc(a: mem.Allocator) -> string {
+	names := make([dynamic]string, 0, len(SORT_ENTRIES), context.temp_allocator)
+	defer delete(names)
+	for entry in SORT_ENTRIES {
+		append(&names, entry.key)
+	}
+	joined, _ := strings.join(names[:], "|", a)
+	return joined
+}
+
+sort_incidents :: proc(list: []^Incident_Header, sort_key: string) {
+	less, known := sort_less(sort_key)
+	if !known {
+		less = SORT_ENTRIES[0].less // "" takes the default row; other strays stop at the filter gate
 	}
 	// insertion sort — lists are small and ownership stays trivial
 	for i in 1..<len(list) {
@@ -634,6 +663,15 @@ matched_incidents :: proc(
 	live: []^Incident_Header,
 	a: mem.Allocator,
 ) -> (matched: []^Incident_Header, err: platform.Err) {
+	// The closed facets fail loud: a negative offset or an unrecognized sort
+	// key silently degrading (empty page, default order) is exactly the
+	// "the list ignores my parameters" experience the tool must never give.
+	if f.offset < 0 {
+		return nil, inv_cat(a, {"offset must be >= 0, got: ", dec(f.offset)})
+	}
+	if !sort_known(f.sort) {
+		return nil, inv_cat(a, {"sort must be one of ", sort_keys_wire(a), ", got: ", f.sort})
+	}
 	ctx: Filter_Ctx
 	if f.blocked_by != "" {
 		target := incident_by_id(s, f.blocked_by)
@@ -687,10 +725,6 @@ render_incident_list :: proc(s: ^Fold_State, f: ^Incident_Filter, now_ms: i64, a
 	if limit == 0 {
 		limit = DEFAULT_LIST_LIMIT
 	}
-	wanted := len(matched)
-	if limit >= 0 && limit < wanted {
-		wanted = limit
-	}
 
 	anomalies := 0
 	for h in matched {
@@ -728,8 +762,29 @@ render_incident_list :: proc(s: ^Fold_State, f: ^Incident_Filter, now_ms: i64, a
 		strings.write_string(&b, noun)
 		strings.write_string(&b, " (run incident_get for details)")
 	}
-	written, hit_rows, hit_bytes := append_capped_rows(&b, matched, wanted, f.label != "", now_ms)
-	hidden := len(matched) - written
+	// Offset pages AFTER the sort: page is the matched list with its first
+	// offset rows skipped, wanted/hidden count within the page — the caller
+	// pages by advancing offset by the rows written. Paging past the end
+	// says so explicitly; an empty silent page is indistinguishable from a
+	// filter that matched nothing.
+	page := matched
+	if f.offset > 0 {
+		if f.offset >= len(matched) {
+			strings.write_string(&b, "\noffset ")
+			strings.write_string(&b, dec(f.offset))
+			strings.write_string(&b, " is past the end (")
+			strings.write_string(&b, dec(len(matched)))
+			strings.write_string(&b, " matched)")
+			return strings.clone(strings.to_string(b), a), nil
+		}
+		page = matched[f.offset:]
+	}
+	wanted := len(page)
+	if limit >= 0 && limit < wanted {
+		wanted = limit
+	}
+	written, hit_rows, hit_bytes := append_capped_rows(&b, page, wanted, f.label != "", now_ms)
+	hidden := len(page) - written
 	if hidden > 0 && !hit_rows && !hit_bytes {
 		strings.write_string(&b, "\n…and ")
 		strings.write_string(&b, dec(hidden))

@@ -539,6 +539,11 @@ restore_state_from :: proc(t: ^Fold_State, root: map[string]json.Value, scratch:
 		if !is_str {
 			return false, "fold snapshot seen uid is not a string"
 		}
+		// A repeat's clone would strand: the map keeps its first stored key
+		// and the destroy frees only stored keys.
+		if _, exists := t.seen_uids[uid]; exists {
+			return false, "fold snapshot repeats a seen uid"
+		}
 		t.seen_uids[strings.clone(uid, t.allocator)] = true
 	}
 
@@ -616,6 +621,9 @@ restore_state_from :: proc(t: ^Fold_State, root: map[string]json.Value, scratch:
 			}
 			append(&n.rev, strings.clone(s, t.allocator))
 		}
+		// No repeat guard here: the dag restores from a JSON object, whose
+		// keys parse distinct — repeats can only arrive through the
+		// array-backed populations above, which guard before inserting.
 		t.dag.nodes[strings.clone(id, t.allocator)] = n
 		stored = true
 	}
@@ -765,6 +773,12 @@ restore_incident :: proc(t: ^Fold_State, o: map[string]json.Value, scratch: mem.
 		return w
 	}
 	h.events = events
+	// A repeated key would overwrite the map entry — the overwritten header
+	// is then owned by nothing (the abort destroy walks the map) and leaks
+	// on the long-lived state allocator. Refuse instead.
+	if _, exists := t.incidents[h.uid]; exists {
+		return "fold snapshot repeats an incident uid"
+	}
 	t.incidents[h.uid] = h
 	inserted = true
 	return ""
@@ -854,6 +868,10 @@ restore_sprint :: proc(t: ^Fold_State, o: map[string]json.Value, scratch: mem.Al
 		return w
 	}
 	h.events = events
+	// Same overwrite-leak shape as the incident restore above.
+	if _, exists := t.sprints[h.id]; exists {
+		return "fold snapshot repeats a sprint id"
+	}
 	t.sprints[h.id] = h
 	inserted = true
 	return ""
@@ -906,6 +924,10 @@ restore_defer :: proc(t: ^Fold_State, o: map[string]json.Value, scratch: mem.All
 	}
 	if w := snap_clone_str(&d.resolved_by, t, o, "resolved_by", scratch); w != "" {
 		return w
+	}
+	// Same overwrite-leak shape as the incident restore above.
+	if _, exists := t.defers[d.id]; exists {
+		return "fold snapshot repeats a defer id"
 	}
 	t.defers[d.id] = d
 	inserted = true

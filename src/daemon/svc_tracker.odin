@@ -112,6 +112,13 @@ handle_tracker_list_incidents :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> 
 	if lpresent {
 		f.limit = limit
 	}
+	offset, opresent, oerr := file_opt_int(ctx, params, "offset")
+	if oerr != nil {
+		return nil, oerr
+	}
+	if opresent {
+		f.offset = offset
+	}
 
 	text, rerr := tracker.manager_list_incidents(d.tracker, &f, platform.wall_ms(), ctx.allocator)
 	if rerr != nil {
