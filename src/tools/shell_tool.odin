@@ -157,7 +157,6 @@ scrubbed_environment :: proc(ctx: ^Tool_Ctx) -> []string {
 	return safety.scrub_environment(ctx.safety, env, context.temp_allocator)
 }
 
-
 slice_of :: proc(a, b, c: string, allocator := context.allocator) -> []string {
 	out := make([]string, 3, allocator)
 	out[0] = a
@@ -171,12 +170,4 @@ SHELL_RUN_PARAMS :: []Param_Desc{
 	{name = "cwd", kind = .Str, description = "Working directory (absolute inside the project, or relative to the project root).", required = false},
 	{name = "capture_stderr", kind = .Bool, description = "Capture stderr into the result (default true).", required = false},
 	{name = "max_answer_chars", kind = .Int, description = "Truncate the answer to at most this many characters (-1 = unlimited).", required = false},
-}
-
-// arg_int reads a validated integer parameter (0 when absent).
-arg_int :: proc(args: ^Args, name: string) -> int {
-	if v, ok := args.values[name]; ok {
-		return int(jsonutil.value_int(v))
-	}
-	return 0
 }

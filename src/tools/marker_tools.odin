@@ -1,6 +1,6 @@
-// The three non-callable capability markers (kept non-callable by
-// design). They register like any tool so a config can include them by
-// name, carry no params, never edit, and answer the fixed text "marker".
+// The three capability markers (no-ops by design). They register like
+// any tool so a config can include them by name, carry no params, never
+// edit, and answer the fixed text "marker".
 // The prompt templates consume their MARKER names (ToolMarkerSymbolicRead
 // &c.) through the available_markers set, which the render paths fill
 // from the folded tool list via marker_name_for.

@@ -414,7 +414,7 @@ file_search_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	}
 	walk_truncated, _ := json_bool(call.result, "truncated")
 	total64, _ := json_int(call.result, "total_matches")
-	footer := search_footer(offset, returned, int(total64), walk_truncated, ctx.allocator)
+	footer := search_footer(offset, returned, int(total64), walk_truncated, "matches", ctx.allocator)
 
 	// Reference rendering: a JSON object mapping each file to its match
 	// display blocks; the shortened forms rank matches down to counts.
@@ -434,44 +434,6 @@ file_search_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 		capped = strings.concatenate({capped, "\n", footer}, ctx.allocator)
 	}
 	return text_result(ctx, capped)
-}
-
-// search_footer renders the notes appended under the match JSON: the
-// resume line names the next offset whenever more matches remain past
-// this page, and the walk-cap warning says the scan itself stopped early
-// (its results are incomplete, not merely unpaged). Empty when the
-// answer carries neither caveat.
-search_footer :: proc(offset, returned, total: int, walk_truncated: bool, a := context.allocator) -> string {
-	out := ""
-	if walk_truncated {
-		out = "[walk caps hit — the scan stopped early; results are incomplete]"
-	}
-	if offset+returned < total {
-		line := strings.concatenate({
-			"[showing matches ",
-			util.int_to_dec(offset+1, a), "-", util.int_to_dec(offset+returned, a),
-			" of ", util.int_to_dec(total, a),
-			" — pass offset=", util.int_to_dec(offset+returned, a),
-			" for the next page]",
-		}, a)
-		if out != "" {
-			out = strings.concatenate({out, "\n", line}, a)
-		} else {
-			out = line
-		}
-	}
-	if returned == 0 && total > 0 && offset >= total {
-		line := strings.concatenate({
-			"[no matches at or past offset ",
-			util.int_to_dec(offset, a), " (total ", util.int_to_dec(total, a), ")]",
-		}, a)
-		if out != "" {
-			out = strings.concatenate({out, "\n", line}, a)
-		} else {
-			out = line
-		}
-	}
-	return out
 }
 
 // search_group_json groups the wire matches by path (the to_json render
@@ -579,43 +541,4 @@ file_move_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 		ctx.allocator, svc_deadline(ctx), ctx.cancel,
 	)
 	return call_ok_or_err(ctx, call)
-}
-
-// call_ok_or_err answers mutating ops: an empty-object reply is the
-// reference's "OK".
-call_ok_or_err :: proc(ctx: ^Tool_Ctx, call: svc.Client_Call) -> Tool_Result {
-	if call.call_err != .None {
-		return err_result_code(ctx, call.err_code, call.err_message)
-	}
-	return ok_result(ctx)
-}
-
-// json_str / json_bool / json_int read typed members off a wire result.
-json_str :: proc(v: json.Value, key: string) -> (string, bool) {
-	if f, ok := jsonutil.obj_get(v, key); ok {
-		return jsonutil.value_str(f), true
-	}
-	return "", false
-}
-
-json_bool :: proc(v: json.Value, key: string) -> (bool, bool) {
-	if f, ok := jsonutil.obj_get(v, key); ok {
-		#partial switch x in f {
-		case json.Boolean:
-			return bool(x), true
-		case:
-		}
-	}
-	return false, false
-}
-
-json_int :: proc(v: json.Value, key: string) -> (i64, bool) {
-	if f, ok := jsonutil.obj_get(v, key); ok {
-		#partial switch x in f {
-		case json.Integer:
-			return i64(x), true
-		case:
-		}
-	}
-	return 0, false
 }

@@ -356,7 +356,7 @@ symbol_find_dead_code_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result 
 			))
 		}
 	}
-	call := svc.client_symbol_find_dead_code(ctx.svc_conn, arg_str(args, "path_prefix"), tracker_arg_str_array(args, "entry_prefixes", ctx.allocator), limit, ctx.allocator, svc_deadline(ctx), ctx.cancel)
+	call := svc.client_symbol_find_dead_code(ctx.svc_conn, arg_str(args, "path_prefix"), arg_str_array(args, "entry_prefixes", ctx.allocator), limit, ctx.allocator, svc_deadline(ctx), ctx.cancel)
 	shortened := []string{
 		strings.concatenate({"Shortened result:\n", to_json(names_by_path_json(call.result, "candidates", "path", []string{"name_path", "name"}, ctx), ctx)}, ctx.allocator),
 	}
@@ -447,14 +447,8 @@ symbol_find_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 		strings.concatenate({"Shortened result:\n", to_json(names_by_path_json(paged_value, "matches", "path", []string{"name"}, ctx), ctx)}, ctx.allocator),
 	}
 	body := util.limit_length(to_json(paged_value, ctx), max_chars, shortened, ctx.allocator)
-	if offset+len(page) < total {
-		footer := strings.concatenate({
-			"[showing symbols ",
-			util.int_to_dec(offset+1, ctx.allocator), "-", util.int_to_dec(offset+len(page), ctx.allocator),
-			" of ", util.int_to_dec(total, ctx.allocator),
-			" — pass offset=", util.int_to_dec(offset+len(page), ctx.allocator),
-			" for the next page]",
-		}, ctx.allocator)
+	footer := search_footer(offset, len(page), total, false, "symbols", ctx.allocator)
+	if footer != "" {
 		body = strings.concatenate({body, "\n", footer}, ctx.allocator)
 	}
 	return text_result(ctx, body)

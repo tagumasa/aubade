@@ -7,12 +7,9 @@
 package tools
 
 import "src:util"
-import "core:encoding/json"
 import "core:fmt"
-import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
 import "src:svc"
 import "src:tracker"
 
@@ -359,28 +356,6 @@ tracker_export :: Tool_Desc{
 
 // --- shared helpers ----------------------------------------------------------
 
-// tracker_arg_str_array pulls a string-array argument onto the arena; the
-// parameter kind was already validated by the generated validator.
-tracker_arg_str_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []string {
-	v, ok := args.values[key]
-	if !ok {
-		return nil
-	}
-	arr, aok := jsonutil.as_array(v)
-	if !aok {
-		return nil
-	}
-	out := make([dynamic]string, 0, len(arr), a)
-	for it in arr {
-		#partial switch x in it {
-		case json.String:
-			append(&out, string(x))
-		case:
-		}
-	}
-	return out[:]
-}
-
 // first_line trims a markdown body to its opening line for the acks.
 first_line :: proc(s: string) -> string {
 	cut := s
@@ -388,12 +363,6 @@ first_line :: proc(s: string) -> string {
 		cut = s[:i]
 	}
 	return strings.trim_space(cut)
-}
-
-// call_text extracts the parent's rendered markdown payload.
-call_text :: proc(result: json.Value) -> string {
-	text, _ := json_str(result, "text")
-	return text
 }
 
 // call_answer_result maps a svc call onto the tracker answer text: a
@@ -418,9 +387,9 @@ incident_create_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	req.assignee = arg_str(args, "assignee")
 	req.created_by = arg_str(args, "created_by")
 	req.sprint = arg_str(args, "sprint")
-	req.labels = tracker_arg_str_array(args, "labels", ctx.allocator)
-	req.aliases = tracker_arg_str_array(args, "aliases", ctx.allocator)
-	req.blocked_by = tracker_arg_str_array(args, "blocked_by", ctx.allocator)
+	req.labels = arg_str_array(args, "labels", ctx.allocator)
+	req.aliases = arg_str_array(args, "aliases", ctx.allocator)
+	req.blocked_by = arg_str_array(args, "blocked_by", ctx.allocator)
 
 	call := svc.client_tracker_create(ctx.svc_conn, &req, ctx.allocator, svc_deadline(ctx), ctx.cancel)
 	if call.call_err != .None {
@@ -447,11 +416,11 @@ incident_list_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	}
 	call := svc.client_tracker_list_incidents(
 		ctx.svc_conn,
-		tracker_arg_str_array(args, "status", ctx.allocator),
+		arg_str_array(args, "status", ctx.allocator),
 		arg_str(args, "verdict"),
 		arg_str(args, "sprint"),
 		arg_str(args, "label"),
-		tracker_arg_str_array(args, "priority", ctx.allocator),
+		arg_str_array(args, "priority", ctx.allocator),
 		arg_str(args, "assignee"),
 		arg_str(args, "created_by"),
 		arg_str(args, "query"),
@@ -535,11 +504,11 @@ incident_update_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	req.sprint_set = arg_has(args, "sprint")
 	req.assignee = arg_str(args, "assignee")
 	req.assignee_set = arg_has(args, "assignee")
-	req.labels = tracker_arg_str_array(args, "labels", ctx.allocator)
+	req.labels = arg_str_array(args, "labels", ctx.allocator)
 	req.labels_set = arg_has(args, "labels")
-	req.aliases = tracker_arg_str_array(args, "aliases", ctx.allocator)
+	req.aliases = arg_str_array(args, "aliases", ctx.allocator)
 	req.aliases_set = arg_has(args, "aliases")
-	req.blocked_by = tracker_arg_str_array(args, "blocked_by", ctx.allocator)
+	req.blocked_by = arg_str_array(args, "blocked_by", ctx.allocator)
 	req.blocked_by_set = arg_has(args, "blocked_by")
 
 	call := svc.client_tracker_update(ctx.svc_conn, &req, ctx.allocator, svc_deadline(ctx), ctx.cancel)
@@ -640,7 +609,7 @@ sprint_start_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	}
 	goal := arg_str(args, "goal")
 	goal_set := arg_has(args, "goal")
-	must := tracker_arg_str_array(args, "must", ctx.allocator)
+	must := arg_str_array(args, "must", ctx.allocator)
 	call := svc.client_tracker_start_sprint(
 		ctx.svc_conn, arg_str(args, "name"), goal, arg_str(args, "follows"), goal_set, must,
 		ctx.allocator, svc_deadline(ctx), ctx.cancel,
@@ -726,7 +695,7 @@ sprint_update_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	req.defer_task = arg_str(args, "task")
 	req.defer_ref = arg_str(args, "ref")
 	req.resolves = arg_str(args, "resolves")
-	req.must = tracker_arg_str_array(args, "must", ctx.allocator)
+	req.must = arg_str_array(args, "must", ctx.allocator)
 	req.must_set = arg_has(args, "must")
 	call := svc.client_tracker_update_sprint(ctx.svc_conn, &req, ctx.allocator, svc_deadline(ctx), ctx.cancel)
 	if call.call_err != .None {
