@@ -23,17 +23,16 @@
 // declaration spans — "dead" here means unused inside the project;
 // consumers outside it (a library's callers, an external framework's
 // string-built dispatch) are invisible to the scan and belong to
-// review, not to the tool. The walk, ignore rules, and file budget
-// mirror the symbol crawl so both share one notion of "the project".
+// review, not to the tool. The file list comes from the shared walk
+// engine (file_walk), whose traversal rules and file budget mirror the
+// symbol crawl, so the scans and the file faces share one notion of
+// "the project".
 package svc
 
 import "core:mem"
-import "core:os"
 import "core:sort"
 import "core:strings"
-import "src:config"
 import "src:editor"
-import "src:pathspec"
 import "src:platform"
 import "src:safety"
 import "src:ts"
@@ -111,13 +110,10 @@ dead_scan :: proc(
 	mem.dynamic_arena_init(&walk_arena, src.allocator)
 	defer mem.dynamic_arena_destroy(&walk_arena)
 	walk := mem.dynamic_arena_allocator(&walk_arena)
-	scratch_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&scratch_arena, src.allocator)
-	defer mem.dynamic_arena_destroy(&scratch_arena)
 
 	// Phase 0: the file list, under the crawl's traversal rules.
 	files := make([dynamic]Dead_Scan_File, 0, 128, walk)
-	walk_truncated, walk_cancelled := dead_scan_files(src, ignore, deny, token, walk, &scratch_arena, &files)
+	walk_truncated, walk_cancelled := dead_scan_files(src, ignore, deny, token, walk, &files)
 	if walk_cancelled {
 		return nil, wrapped_err(.Cancelled, "dead scan: cancelled", a)
 	}
@@ -256,179 +252,56 @@ Sorted_Candidates :: struct {
 	items: [dynamic]Dead_Scan_Candidate,
 }
 
-// Dead_Scan_Walk is the walk's shared state (the crawl's Crawl_Walk
-// counterpart, without the index batch): everything the per-directory
-// helper needs that never changes across the walk.
-Dead_Scan_Walk :: struct {
-	src:       ^TS_Source,
-	ignore:    Ignore_Config,
-	deny:      ^safety.Deny_List,
-	walk:      mem.Allocator, // walk-frame arena (recursed dir paths, the file list — O(depth + files kept))
-	scratch:   ^mem.Dynamic_Arena, // per-directory scratch, reset per directory
-	rel_buf:   ^[dynamic]u8, // reusable child rel-path builder (see dead_scan_dir)
-	abs_buf:   ^[dynamic]u8, // reusable child abs-path builder
+// Dead_Scan_List_Ctx is the file-list visitor's state: the walk-frame
+// allocator that owns the kept records and the file budget's stop flag.
+Dead_Scan_List_Ctx :: struct {
+	walk:      mem.Allocator,
 	files:     ^[dynamic]Dead_Scan_File,
-	token:     ^platform.Cancel_Token,
 	truncated: bool,
-	cancelled: bool,
 }
 
-// dead_scan_dir mirrors crawl_dir's traversal rules (ignore stack, deny
-// list, symlink skip, depth cap) and its enumeration discipline: entries
-// are freed at each directory boundary and child paths build in the
-// reusable buffers, so only the kept file records and the recursion's
-// cloned paths (both on the walk allocator) scale beyond one directory.
-dead_scan_dir :: proc(w: ^Dead_Scan_Walk, abs_dir, rel_dir: string, depth: int, stack: ^[dynamic]^pathspec.Path_Spec) -> (stopped: bool) {
-	if depth > MAX_CRAWL_DEPTH {
-		w.truncated = true
-		return false
+dead_scan_list_visit :: proc(data: rawptr, kind: File_Walk_Kind, rel: string, abs: string) -> File_Walk_Control {
+	c := cast(^Dead_Scan_List_Ctx)data
+	if kind == .Directory {
+		return .Continue
 	}
-	mem.dynamic_arena_free_all(w.scratch)
-	scratch := mem.dynamic_arena_allocator(w.scratch)
-	entries, derr := os.read_all_directory_by_path(abs_dir, w.src.allocator)
-	if derr != nil {
-		return false
+	if len(c.files^) >= MAX_CRAWL_FILES {
+		c.truncated = true
+		return .Stop
 	}
-	defer os.file_info_slice_delete(entries, w.src.allocator)
-	sort_entries_by_name(entries)
-
-	pushed := false
-	if !w.ignore.no_gitignore {
-		pushed = maybe_push_gitignore(w.src.allocator, scratch, abs_dir, rel_dir, stack)
-	}
-
-	walk_buf_set(w.rel_buf, rel_dir)
-	walk_buf_set(w.abs_buf, abs_dir)
-	rel_mark := len(w.rel_buf^)
-	abs_mark := len(w.abs_buf^)
-
-	for i in 0..<len(entries) {
-		if w.token != nil {
-			if _, fired := platform.token_check(w.token); fired {
-				w.cancelled = true
-				stopped = true
-				break
-			}
-		}
-		name := entries[i].name
-		if config.default_ignored_dir(name) {
-			continue
-		}
-		if rel_mark > 0 {
-			walk_buf_append(w.rel_buf, "/")
-		}
-		walk_buf_append(w.rel_buf, name)
-		child_rel := string(w.rel_buf^[:])
-		if pathspec.pathspec_match_path(child_rel, w.ignore.extra) {
-			resize(w.rel_buf, rel_mark)
-			continue
-		}
-		if managed_state_rel(w.ignore.managed_rel, child_rel) {
-			resize(w.rel_buf, rel_mark)
-			continue
-		}
-		#partial switch entries[i].type {
-		case .Directory:
-			if !w.ignore.no_gitignore && stack_match_dir(stack, child_rel, scratch) {
-				resize(w.rel_buf, rel_mark)
-				continue
-			}
-			walk_buf_append(w.abs_buf, "/")
-			walk_buf_append(w.abs_buf, name)
-			child_abs := string(w.abs_buf^[:])
-			if w.deny != nil && safety.is_denied(w.deny, child_abs) {
-				resize(w.abs_buf, abs_mark)
-				resize(w.rel_buf, rel_mark)
-				continue
-			}
-			if dead_scan_dir(
-				w,
-				strings.clone(child_abs, w.walk),
-				strings.clone(child_rel, w.walk),
-				depth + 1,
-				stack,
-			) {
-				stopped = true
-			}
-			resize(w.abs_buf, abs_mark)
-		case .Regular:
-			if len(w.files^) >= MAX_CRAWL_FILES {
-				w.truncated = true
-				stopped = true
-			} else {
-				// Ignored and deny-listed files stay invisible to both
-				// passes — the same rule the crawl applies.
-				skip := !w.ignore.no_gitignore && stack_match_file(stack, child_rel)
-				walk_buf_append(w.abs_buf, "/")
-				walk_buf_append(w.abs_buf, name)
-				child_abs := string(w.abs_buf^[:])
-				if !skip && !(w.deny != nil && safety.is_denied(w.deny, child_abs)) {
-					// The record outlives this directory's buffer views —
-					// every string is cloned onto the walk allocator.
-					append(w.files, Dead_Scan_File{
-						rel      = strings.clone(child_rel, w.walk),
-						abs      = strings.clone(child_abs, w.walk),
-						filename = strings.clone(name, w.walk),
-					})
-				}
-				resize(w.abs_buf, abs_mark)
-			}
-		case: // symlinks and special files are skipped, not followed
-		}
-		resize(w.rel_buf, rel_mark)
-		if stopped {
-			break
-		}
-	}
-
-	if pushed {
-		last := len(stack^) - 1
-		pathspec.pathspec_destroy(stack[last])
-		pop(stack)
-	}
-	return stopped
+	// rel/abs are the engine's buffer views — every kept string is cloned
+	// onto the walk allocator (filename shares the rel clone's bytes).
+	relc := strings.clone(rel, c.walk)
+	append(c.files, Dead_Scan_File{
+		rel      = relc,
+		abs      = strings.clone(abs, c.walk),
+		filename = rel_base(relc),
+	})
+	return .Continue
 }
 
-// dead_scan_files enumerates the project's regular files under the crawl's
-// traversal rules (ignore stack, deny list, symlink skip, depth cap, file
-// budget): the shared phase 0 of the dead-code and clone scans, so both
-// hold one notion of "the project". File records live on `walk`;
-// enumeration transients are freed per directory boundary (see
-// dead_scan_dir) — callers hand their walk-frame arena and per-directory
-// scratch arena, and own the files dynamic.
+// dead_scan_files enumerates the project's regular files under the shared
+// walk engine (file_walk: gitignore stack, deny composition, symlink skip,
+// depth cap, sorted order) — the same engine list_dir/find/search run on,
+// whose rules mirror the symbol crawl — so the scans and the file faces
+// hold one notion of "the project". File records live on `walk`; the
+// engine owns the enumeration machinery and its transients. truncated is
+// the MAX_CRAWL_FILES budget stop; cancelled the token firing between
+// entries (a depth-capped subtree is walked around, not reported — the
+// budget is what the field names).
 dead_scan_files :: proc(
 	src: ^TS_Source,
 	ignore: Ignore_Config,
 	deny: ^safety.Deny_List,
 	token: ^platform.Cancel_Token,
 	walk: mem.Allocator,
-	scratch: ^mem.Dynamic_Arena,
 	files: ^[dynamic]Dead_Scan_File,
 ) -> (truncated: bool, cancelled: bool) {
-	stack := make([dynamic]^pathspec.Path_Spec, 0, 8, src.allocator)
-	defer {
-		for i in 0..<len(stack) {
-			pathspec.pathspec_destroy(stack[i])
-		}
-		delete(stack)
-	}
-	rel_buf := make([dynamic]u8, 0, 512, src.allocator)
-	defer delete(rel_buf)
-	abs_buf := make([dynamic]u8, 0, 1024, src.allocator)
-	defer delete(abs_buf)
-	w := Dead_Scan_Walk{
-		src     = src,
-		ignore  = ignore,
-		deny    = deny,
-		walk    = walk,
-		scratch = scratch,
-		rel_buf = &rel_buf,
-		abs_buf = &abs_buf,
-		files   = files,
-		token   = token,
-	}
-	dead_scan_dir(&w, src.project_root, "", 0, &stack)
-	return w.truncated, w.cancelled
+	ctx := Dead_Scan_List_Ctx{walk = walk, files = files}
+	stopped := file_walk(src.project_root, "", true, !ignore.no_gitignore, ignore, deny, dead_scan_list_visit, &ctx, token, src.allocator)
+	// The visitor's only .Stop is the budget stop, which sets truncated
+	// first; any other stop is the token firing between entries.
+	return ctx.truncated, stopped && !ctx.truncated
 }
 
 // One file's definition-pass output, built in a worker's result arena

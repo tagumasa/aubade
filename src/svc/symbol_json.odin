@@ -83,7 +83,7 @@ dead_scan_candidates_json :: proc(candidates: []Dead_Scan_Candidate, arena: mem.
 }
 
 dead_scan_stats_json :: proc(stats: ^Dead_Scan_Stats, arena: mem.Allocator) -> json.Value {
-	obj := jsonutil.json_object(7, arena)
+	obj := jsonutil.json_object(6, arena)
 	jsonutil.obj_set(&obj, "files_scanned", jsonutil.json_int(i64(stats.files_scanned)))
 	jsonutil.obj_set(&obj, "files_parsed", jsonutil.json_int(i64(stats.files_parsed)))
 	jsonutil.obj_set(&obj, "definitions", jsonutil.json_int(i64(stats.definitions)))
@@ -94,7 +94,7 @@ dead_scan_stats_json :: proc(stats: ^Dead_Scan_Stats, arena: mem.Allocator) -> j
 }
 
 crawl_stats_json :: proc(stats: ^Crawl_Stats, arena: mem.Allocator) -> json.Value {
-	obj := jsonutil.json_object(13, arena)
+	obj := jsonutil.json_object(12, arena)
 	jsonutil.obj_set(&obj, "dirs_visited", jsonutil.json_int(i64(stats.dirs_visited)))
 	jsonutil.obj_set(&obj, "dirs_pruned", jsonutil.json_int(i64(stats.dirs_pruned)))
 	jsonutil.obj_set(&obj, "dirs_failed", jsonutil.json_int(i64(stats.dirs_failed)))

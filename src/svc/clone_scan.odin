@@ -137,15 +137,12 @@ clone_scan :: proc(
 	walk_arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&walk_arena, src.allocator)
 	defer mem.dynamic_arena_destroy(&walk_arena)
-	scratch_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&scratch_arena, src.allocator)
-	defer mem.dynamic_arena_destroy(&scratch_arena)
 
 	// Phase 0: the file list, under the crawl's traversal rules — the
-	// dead-scan walker verbatim, so both scans share one notion of
-	// "the project".
+	// shared walk engine (dead_scan_files), so both scans hold one
+	// notion of "the project".
 	files := make([dynamic]Dead_Scan_File, 0, 128, mem.dynamic_arena_allocator(&walk_arena))
-	walk_truncated, walk_cancelled := dead_scan_files(src, ignore, deny, token, mem.dynamic_arena_allocator(&walk_arena), &scratch_arena, &files)
+	walk_truncated, walk_cancelled := dead_scan_files(src, ignore, deny, token, mem.dynamic_arena_allocator(&walk_arena), &files)
 	if walk_cancelled {
 		return nil, wrapped_err(.Cancelled, "clone scan: cancelled", a)
 	}

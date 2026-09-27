@@ -23,7 +23,7 @@ ast_parse :: proc(code: string, lang: string, max_chars: int, a := context.alloc
 	if len(code) > AST_MAX_CODE_BYTES {
 		return "", wrapped_err(
 			.Invalid,
-			fmt.aprintf("code is too large (%d bytes); maximum is %d bytes", len(code), AST_MAX_CODE_BYTES, allocator = a),
+			fmt.aprintf("code is too large (%d bytes); maximum is %d bytes", len(code), AST_MAX_CODE_BYTES, allocator = context.temp_allocator),
 			a,
 		)
 	}
@@ -45,14 +45,14 @@ ast_query :: proc(code: string, lang: string, query_str: string, a := context.al
 	if len(code) > AST_MAX_CODE_BYTES {
 		return nil, wrapped_err(
 			.Invalid,
-			fmt.aprintf("code is too large (%d bytes); maximum is %d bytes", len(code), AST_MAX_CODE_BYTES, allocator = a),
+			fmt.aprintf("code is too large (%d bytes); maximum is %d bytes", len(code), AST_MAX_CODE_BYTES, allocator = context.temp_allocator),
 			a,
 		)
 	}
 	if len(query_str) > AST_MAX_QUERY_BYTES {
 		return nil, wrapped_err(
 			.Invalid,
-			fmt.aprintf("query is too large (%d bytes); maximum is %d bytes", len(query_str), AST_MAX_QUERY_BYTES, allocator = a),
+			fmt.aprintf("query is too large (%d bytes); maximum is %d bytes", len(query_str), AST_MAX_QUERY_BYTES, allocator = context.temp_allocator),
 			a,
 		)
 	}
