@@ -415,6 +415,12 @@ structure_write_line :: proc(st: ^Structure_State, indent: int, text: string) {
 
 structure_span_label :: proc(n: Node, a := context.allocator) -> string {
 	start, end := structure_span_lines(n)
+	return span_lines_label(start, end, a)
+}
+
+// span_lines_label renders the (L..) / (L..-L..) line label — one home for
+// the tree face and the stream face.
+span_lines_label :: proc(start, end: int, a := context.allocator) -> string {
 	if start == end {
 		return fmt.aprintf("(L%d)", start, allocator = a)
 	}
@@ -508,7 +514,12 @@ structure_render_entry :: proc(st: ^Structure_State, label: string, value: Node,
 // structure_preview clamps a scalar's source text to whole runes, folds
 // newlines to ⏎, and trims surrounding whitespace.
 structure_preview :: proc(n: Node, source: string, runes: int, a := context.allocator) -> string {
-	text := strings.trim_space(node_text(n, source))
+	return preview_render(strings.trim_space(node_text(n, source)), runes, a)
+}
+
+// preview_render is the scalar preview both faces share: "(empty)" for
+// blank text, whole-rune clamping with a leading …, and \n/\r folded to ⏎.
+preview_render :: proc(text: string, runes: int, a := context.allocator) -> string {
 	if len(text) == 0 {
 		return "(empty)"
 	}

@@ -149,17 +149,10 @@ compile_query :: proc(lang: Language, query_str: string) -> Query {
 	return query_new(lang, src, u32(len(query_str)), &error_offset, &error_type)
 }
 
+// capture_name clones a capture's name out of the Query; the borrowed
+// reader it delegates to lives beside the predicate compiler.
 capture_name :: proc(q: Query, index: u32, a := context.allocator) -> string {
-	name_len: u32
-	c := query_capture_name_for_id(q, index, &name_len)
-	if c == nil {
-		return ""
-	}
-	s := string(c)
-	if len(s) > int(name_len) {
-		s = s[:int(name_len)]
-	}
-	return strings.clone(s, a)
+	return strings.clone(query_capture_name_borrowed(q, index), a)
 }
 
 format_query_results :: proc(results: []Match_Result, max_chars: int) -> string {
