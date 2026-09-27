@@ -1,5 +1,6 @@
 // Shared helpers for the tool implementations: validated-argument
-// accessors, answer shaping (length limiting and max-chars resolution),
+// accessors, wire-result member accessors, answer shaping (paging
+// footers; length limiting and max-chars resolution live in util.text),
 // and the svc call outcome mapping.
 package tools
 
@@ -33,6 +34,14 @@ arg_bool :: proc(args: ^Args, key: string) -> bool {
 	return false
 }
 
+// arg_int reads a validated integer parameter (0 when absent).
+arg_int :: proc(args: ^Args, key: string) -> int {
+	if v, ok := args.values[key]; ok {
+		return int(jsonutil.value_int(v))
+	}
+	return 0
+}
+
 // arg_u32_array reads a validated Int_Array parameter ([] when absent).
 arg_u32_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []u32 {
 	v, ok := args.values[key]
@@ -44,10 +53,33 @@ arg_u32_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []u32 {
 		return nil
 	}
 	out := make([]u32, len(items), a)
-	for i in 0..<len(items) {
+	for i := 0; i < len(items); i += 1 {
 		out[i] = u32(jsonutil.value_int(items[i]))
 	}
 	return out
+}
+
+// arg_str_array reads a validated Str_Array parameter onto the arena
+// (nil when absent); the parameter kind was already checked by the
+// generated validator.
+arg_str_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []string {
+	v, ok := args.values[key]
+	if !ok {
+		return nil
+	}
+	arr, aok := jsonutil.as_array(v)
+	if !aok {
+		return nil
+	}
+	out := make([dynamic]string, 0, len(arr), a)
+	for it in arr {
+		#partial switch x in it {
+		case json.String:
+			append(&out, string(x))
+		case:
+		}
+	}
+	return out[:]
 }
 
 // --- answer shaping ------------------------------------------------------------
@@ -59,6 +91,45 @@ arg_u32_array :: proc(args: ^Args, key: string, a: mem.Allocator) -> []u32 {
 // no HTML escaping (<, >, & stay literal).
 to_json :: proc(v: json.Value, ctx: ^Tool_Ctx) -> string {
 	return jsonutil.marshal_value(v, ctx.allocator)
+}
+
+// search_footer renders the notes appended under a paged answer: the
+// resume line names the next offset whenever more entries remain past
+// this page, and the walk-cap warning says the scan itself stopped early
+// (its results are incomplete, not merely unpaged). `noun` names the
+// paged entries ("matches", "symbols"). Empty when the answer carries
+// neither caveat.
+search_footer :: proc(offset, returned, total: int, walk_truncated: bool, noun: string, a := context.allocator) -> string {
+	out := ""
+	if walk_truncated {
+		out = "[walk caps hit — the scan stopped early; results are incomplete]"
+	}
+	if offset+returned < total {
+		line := strings.concatenate({
+			"[showing ", noun, " ",
+			util.int_to_dec(offset+1, a), "-", util.int_to_dec(offset+returned, a),
+			" of ", util.int_to_dec(total, a),
+			" — pass offset=", util.int_to_dec(offset+returned, a),
+			" for the next page]",
+		}, a)
+		if out != "" {
+			out = strings.concatenate({out, "\n", line}, a)
+		} else {
+			out = line
+		}
+	}
+	if returned == 0 && total > 0 && offset >= total {
+		line := strings.concatenate({
+			"[no ", noun, " at or past offset ",
+			util.int_to_dec(offset, a), " (total ", util.int_to_dec(total, a), ")]",
+		}, a)
+		if out != "" {
+			out = strings.concatenate({out, "\n", line}, a)
+		} else {
+			out = line
+		}
+	}
+	return out
 }
 
 // --- tool result helpers -----------------------------------------------------
@@ -151,6 +222,53 @@ call_text_result :: proc(ctx: ^Tool_Ctx, call: svc.Client_Call, max_chars: int, 
 		return err_result_code(ctx, call.err_code, call.err_message)
 	}
 	return text_result(ctx, util.limit_length(to_json(call.result, ctx), max_chars, shortened, ctx.allocator))
+}
+
+// call_ok_or_err answers mutating ops: an empty-object reply is the
+// reference's "OK".
+call_ok_or_err :: proc(ctx: ^Tool_Ctx, call: svc.Client_Call) -> Tool_Result {
+	if call.call_err != .None {
+		return err_result_code(ctx, call.err_code, call.err_message)
+	}
+	return ok_result(ctx)
+}
+
+// --- wire-result member accessors --------------------------------------------
+
+// json_str / json_bool / json_int read typed members off a wire result.
+json_str :: proc(v: json.Value, key: string) -> (string, bool) {
+	if f, ok := jsonutil.obj_get(v, key); ok {
+		return jsonutil.value_str(f), true
+	}
+	return "", false
+}
+
+json_bool :: proc(v: json.Value, key: string) -> (bool, bool) {
+	if f, ok := jsonutil.obj_get(v, key); ok {
+		#partial switch x in f {
+		case json.Boolean:
+			return bool(x), true
+		case:
+		}
+	}
+	return false, false
+}
+
+json_int :: proc(v: json.Value, key: string) -> (i64, bool) {
+	if f, ok := jsonutil.obj_get(v, key); ok {
+		#partial switch x in f {
+		case json.Integer:
+			return i64(x), true
+		case:
+		}
+	}
+	return 0, false
+}
+
+// call_text extracts the parent's rendered markdown payload.
+call_text :: proc(result: json.Value) -> string {
+	text, _ := json_str(result, "text")
+	return text
 }
 
 // counts_by_path_json counts an answer's entries per path for a shortened

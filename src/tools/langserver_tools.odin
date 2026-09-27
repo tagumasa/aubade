@@ -40,6 +40,10 @@ LANGSERVER_GET_DIAGNOSTICS_PARAMS :: []Param_Desc{
 	{name = "max_answer_chars", kind = .Int, description = "Answer length cap (-1 = session default).", required = false},
 }
 
+LANGSERVER_LIST_PARAMS :: []Param_Desc{
+	{name = "max_answer_chars", kind = .Int, description = "Answer length cap (-1 = session default).", required = false},
+}
+
 // LANGSERVER_RANGE_PARAMS is the shared parameter table of the two
 // range-scoped tools (code actions, inlay hints): one file plus the
 // 0-based inclusive range.
@@ -131,7 +135,7 @@ langserver_list :: Tool_Desc{
 	description = "List the project's configured or running language servers with their running state.",
 	can_edit    = false,
 	category    = .Langserver,
-	params      = nil,
+	params      = LANGSERVER_LIST_PARAMS,
 	needs       = {Cap.Project, Cap.Svc},
 	apply       = langserver_list_apply,
 }
