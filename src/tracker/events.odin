@@ -691,37 +691,18 @@ label_valid :: proc(label: string) -> bool {
 }
 
 // normalize_labels validates every element and returns the deduplicated,
-// sorted set (cloned into a). Label sets are small, so the duplicate scan
-// is quadratic by design.
+// sorted set (cloned into a) — the dedup-and-sort half is dedup_sorted's,
+// the one home for that shape.
 normalize_labels :: proc(labels: []string, a: mem.Allocator) -> (out: []string, ok: bool) {
 	if len(labels) == 0 {
 		return nil, true
 	}
-	dyn := make([dynamic]string, 0, len(labels), a)
 	for label in labels {
 		if !label_valid(label) {
-			delete(dyn)
 			return nil, false
 		}
-		dup := false
-		for existing in dyn {
-			if existing == label {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			append(&dyn, strings.clone(label, a))
-		}
 	}
-	for i in 1..<len(dyn) {
-		j := i
-		for j > 0 && dyn[j-1] > dyn[j] {
-			dyn[j-1], dyn[j] = dyn[j], dyn[j-1]
-			j -= 1
-		}
-	}
-	return dyn[:], true
+	return dedup_sorted(labels, a), true
 }
 
 // ---------------------------------------------------------------------------

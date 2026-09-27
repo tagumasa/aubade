@@ -8,6 +8,7 @@ package tracker
 // serializes them into the per-event arena at mint time.
 
 import "core:mem"
+import "core:sort"
 import "core:strings"
 import "src:platform"
 import "src:util"
@@ -356,6 +357,7 @@ dedup_sorted :: proc(list: []string, a: mem.Allocator) -> []string {
 			append(&dyn, strings.clone(s, a))
 		}
 	}
+	sort.quick_sort(dyn[:])
 	out := make([]string, len(dyn), a)
 	for v, i in dyn {
 		out[i] = v
