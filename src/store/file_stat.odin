@@ -46,24 +46,7 @@ file_stat_get :: proc(db: ^DB, path: string) -> (mtime_ns: i64, size: i64, found
 // name says so): the caller owns the BEGIN/COMMIT span — the batched index
 // write calls this so the fingerprint commits with the rows it describes.
 file_stat_put_txn :: proc(db: ^DB, path: string, mtime_ns: i64, size: i64) -> platform.Err {
-	stmt, perr := stmt_prepare(db, "INSERT INTO file_stat (path, mtime_ns, size) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET mtime_ns = excluded.mtime_ns, size = excluded.size;")
-	if perr != nil {
-		return perr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, path); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_int(&stmt, 2, mtime_ns); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_int(&stmt, 3, size); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound_txn(db, "INSERT INTO file_stat (path, mtime_ns, size) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET mtime_ns = excluded.mtime_ns, size = excluded.size;", {path, mtime_ns, size})
 }
 
 // file_stat_delete drops one fingerprint. Outside an open transaction the
@@ -72,18 +55,7 @@ file_stat_put_txn :: proc(db: ^DB, path: string, mtime_ns: i64, size: i64) -> pl
 // its rows. The fingerprint of a vanished file must not outlive its rows
 // or the next walk would keep treating the path as known.
 file_stat_delete :: proc(db: ^DB, path: string) -> platform.Err {
-	stmt, perr := stmt_prepare(db, "DELETE FROM file_stat WHERE path = ?1;")
-	if perr != nil {
-		return perr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, path); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound_txn(db, "DELETE FROM file_stat WHERE path = ?1;", {path})
 }
 
 // file_stat_purge_unseen removes the fingerprints of paths absent from

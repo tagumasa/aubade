@@ -104,32 +104,19 @@ mirror_drop_keys :: proc(db: ^DB, keys: []string) {
 	}
 }
 
-// Mirror_Bind is one bound parameter of a mirror_keys_* query: the family's
-// statements vary between one text bind, two text binds, and one int bind.
-Mirror_Bind :: union {string, i64}
-
 // mirror_keys_query runs a "SELECT path, hash FROM symbol_cache …" query
 // and lists the mirror keys of every row it returns. Scan failures
 // propagate: an empty key list behind an error would leave stale mirror
 // entries serving deleted rows.
-mirror_keys_query :: proc(db: ^DB, sql: string, binds: []Mirror_Bind) -> (keys: [dynamic]string, err: platform.Err) {
+mirror_keys_query :: proc(db: ^DB, sql: string, binds: []Bind) -> (keys: [dynamic]string, err: platform.Err) {
 	keys = make([dynamic]string, 0, 4, context.temp_allocator)
 	stmt, perr := stmt_prepare(db, sql)
 	if perr != nil {
 		return keys, perr
 	}
 	defer stmt_finalize(&stmt)
-	for b, i in binds {
-		switch v in b {
-		case string:
-			if berr := stmt_bind_text(&stmt, i32(i) + 1, v); berr != nil {
-				return keys, berr
-			}
-		case i64:
-			if berr := stmt_bind_int(&stmt, i32(i) + 1, v); berr != nil {
-				return keys, berr
-			}
-		}
+	if berr := stmt_bind_all(&stmt, binds); berr != nil {
+		return keys, berr
 	}
 	for {
 		has_row, rerr := stmt_step(&stmt)

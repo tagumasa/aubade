@@ -234,6 +234,35 @@ db_exec :: proc(db: ^DB, sql: string) -> platform.Err {
 	return nil
 }
 
+// db_exec_bound_txn runs one bound statement inside the caller's open
+// transaction span (the _txn naming rule: the caller owns the
+// BEGIN..COMMIT around the call).
+db_exec_bound_txn :: proc(db: ^DB, sql: string, binds: []Bind) -> platform.Err {
+	stmt, serr := stmt_prepare(db, sql)
+	if serr != nil {
+		return serr
+	}
+	defer stmt_finalize(&stmt)
+	if berr := stmt_bind_all(&stmt, binds); berr != nil {
+		return berr
+	}
+	if _, rerr := stmt_step(&stmt); rerr != nil {
+		return rerr
+	}
+	return nil
+}
+
+// db_exec_bound runs one bound statement as one autocommit write. tx_mu
+// is held for the whole statement: an unlocked write interleaving another
+// thread's open BEGIN..COMMIT joins that transaction (rolled back with it
+// after this already returned success) and perturbs the sqlite3_changes
+// detector those spans rely on.
+db_exec_bound :: proc(db: ^DB, sql: string, binds: []Bind) -> platform.Err {
+	sync.mutex_lock(&db.tx_mu)
+	defer sync.mutex_unlock(&db.tx_mu)
+	return db_exec_bound_txn(db, sql, binds)
+}
+
 // symbol_cache_count reports the number of persistent symbol rows — a
 // verification view of the L1 table (the sweep's effect is otherwise
 // invisible: reads refuse expired rows whether or not the row is still
@@ -373,6 +402,29 @@ stmt_bind_blob :: proc(stmt: ^Stmt, idx: i32, data: []u8) -> platform.Err {
 	return nil
 }
 
+// Bind is one bound statement parameter: the store's bound statements mix
+// text and integer parameters, so the helpers take this union and bind by
+// position (binds[i] is parameter i+1) instead of one hand-written bind
+// chain per arity at every call site.
+Bind :: union {string, i64}
+
+// stmt_bind_all binds a whole parameter list in order.
+stmt_bind_all :: proc(stmt: ^Stmt, binds: []Bind) -> platform.Err {
+	for b, i in binds {
+		switch v in b {
+		case string:
+			if berr := stmt_bind_text(stmt, i32(i) + 1, v); berr != nil {
+				return berr
+			}
+		case i64:
+			if berr := stmt_bind_int(stmt, i32(i) + 1, v); berr != nil {
+				return berr
+			}
+		}
+	}
+	return nil
+}
+
 stmt_step :: proc(stmt: ^Stmt) -> (has_row: bool, err: platform.Err) {
 	rc := sqlite3_step(stmt.handle)
 	if rc == SQLITE_ROW {
@@ -448,80 +500,30 @@ kv_get :: proc(db: ^DB, key: string, a := context.allocator) -> (value: string, 
 	return query_one_text(db, "SELECT value FROM kv WHERE key = ?1;", key, a)
 }
 
-// kv_put upserts one key. tx_mu is held for the whole statement even
-// though kv_put opens no transaction of its own: SQLite transactions are
-// connection-global, so an unlocked upsert interleaving another thread's
-// open BEGIN..COMMIT joins that transaction (rolled back with it after
-// kv_put already returned success) and perturbs the sqlite3_changes
-// detector those spans rely on.
+// kv_put upserts one key.
 kv_put :: proc(db: ^DB, key: string, value: string) -> platform.Err {
-	sync.mutex_lock(&db.tx_mu)
-	defer sync.mutex_unlock(&db.tx_mu)
-	stmt, serr := stmt_prepare(db, "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value;")
-	if serr != nil {
-		return serr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, key); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_text(&stmt, 2, value); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound(db, "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value;", {key, value})
 }
 
 // kv_delete removes a key; deleting an absent key is not an error (the
-// fold-snapshot tests use it to force the full-refold path). tx_mu for
-// the same span reason as kv_put.
+// fold-snapshot tests use it to force the full-refold path).
 kv_delete :: proc(db: ^DB, key: string) -> platform.Err {
-	sync.mutex_lock(&db.tx_mu)
-	defer sync.mutex_unlock(&db.tx_mu)
-	stmt, serr := stmt_prepare(db, "DELETE FROM kv WHERE key = ?1;")
-	if serr != nil {
-		return serr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, key); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound(db, "DELETE FROM kv WHERE key = ?1;", {key})
 }
 
 // ---------------------------------------------------------------------------
 // Sprint reports (tracker export rows)
 // ---------------------------------------------------------------------------
 
-// sprint_report_put upserts one rendered sprint report. tx_mu is held for
-// the same span reason as kv_put; the writer may be the daemon's manager
-// or the CLI export command, both on their own connection.
+// sprint_report_put upserts one rendered sprint report. The writer may be
+// the daemon's manager or the CLI export command, both on their own
+// connection.
 sprint_report_put :: proc(db: ^DB, sprint_id: string, content: string, rendered_ms: i64) -> platform.Err {
-	sync.mutex_lock(&db.tx_mu)
-	defer sync.mutex_unlock(&db.tx_mu)
-	stmt, serr := stmt_prepare(db, "INSERT INTO sprint_reports (sprint_id, content, rendered_ms) VALUES (?1, ?2, ?3) ON CONFLICT(sprint_id) DO UPDATE SET content = excluded.content, rendered_ms = excluded.rendered_ms;")
-	if serr != nil {
-		return serr
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, sprint_id); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_text(&stmt, 2, content); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_int(&stmt, 3, rendered_ms); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound(
+		db,
+		"INSERT INTO sprint_reports (sprint_id, content, rendered_ms) VALUES (?1, ?2, ?3) ON CONFLICT(sprint_id) DO UPDATE SET content = excluded.content, rendered_ms = excluded.rendered_ms;",
+		{sprint_id, content, rendered_ms},
+	)
 }
 
 // sprint_report_get reads one stored report. Same unlocked-read caveat as
@@ -795,27 +797,8 @@ write_symbol_index_txn :: proc(
 
 	// Older hashes for this path's L1 payload disappear in the same
 	// transaction.
-	if derr := delete_other_hashes(db, "symbol_cache", path, hash); derr != nil {
+	if derr := db_exec_bound_txn(db, "DELETE FROM symbol_cache WHERE path = ?1 AND hash != ?2;", {path, hash}); derr != nil {
 		return derr
-	}
-	return nil
-}
-
-delete_other_hashes :: proc(db: ^DB, table: string, path: string, hash: string) -> platform.Err {
-	sql := strings.concatenate({"DELETE FROM ", table, " WHERE path = ?1 AND hash != ?2;"}, context.temp_allocator)
-	stmt, err := stmt_prepare(db, sql)
-	if err != nil {
-		return err
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, path); berr != nil {
-		return berr
-	}
-	if berr := stmt_bind_text(&stmt, 2, hash); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
 	}
 	return nil
 }
@@ -1020,18 +1003,7 @@ delete_symbol_path :: proc(db: ^DB, path: string) -> platform.Err {
 // delete_path_rows deletes one table's rows for a path (txn-internal).
 delete_path_rows :: proc(db: ^DB, table: string, path: string) -> platform.Err {
 	sql := strings.concatenate({"DELETE FROM ", table, " WHERE path = ?1;"}, context.temp_allocator)
-	stmt, err := stmt_prepare(db, sql)
-	if err != nil {
-		return err
-	}
-	defer stmt_finalize(&stmt)
-	if berr := stmt_bind_text(&stmt, 1, path); berr != nil {
-		return berr
-	}
-	if _, rerr := stmt_step(&stmt); rerr != nil {
-		return rerr
-	}
-	return nil
+	return db_exec_bound_txn(db, sql, {path})
 }
 
 // sweep_expired drops symbol cache entries whose TTL has passed, trims to
