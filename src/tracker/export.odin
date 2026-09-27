@@ -11,6 +11,7 @@ package tracker
 // newline.
 
 import "core:mem"
+import "core:sort"
 import "core:strings"
 
 import "src:jsonutil"
@@ -114,13 +115,7 @@ write_stats_matrix :: proc(b: ^strings.Builder, st: ^Sprint_Stats, a: mem.Alloca
 	for label in st.by_label {
 		append(&labels, label)
 	}
-	for i in 1..<len(labels) {
-		j := i
-		for j > 0 && labels[j-1] > labels[j] {
-			labels[j-1], labels[j] = labels[j], labels[j-1]
-			j -= 1
-		}
-	}
+	sort.quick_sort(labels[:])
 	if len(labels) == 0 {
 		strings.write_string(b, "(no labeled findings)\n")
 	} else {
@@ -156,13 +151,7 @@ write_stats_matrix :: proc(b: ^strings.Builder, st: ^Sprint_Stats, a: mem.Alloca
 	for p in st.by_pattern {
 		append(&patterns, p)
 	}
-	for i in 1..<len(patterns) {
-		j := i
-		for j > 0 && patterns[j-1] > patterns[j] {
-			patterns[j-1], patterns[j] = patterns[j], patterns[j-1]
-			j -= 1
-		}
-	}
+	sort.quick_sort(patterns[:])
 	if len(patterns) > 0 {
 		strings.write_string(b, "\nFP patterns: ")
 		for p, i in patterns {

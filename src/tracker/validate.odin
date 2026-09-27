@@ -8,6 +8,7 @@ package tracker
 // serializes them into the per-event arena at mint time.
 
 import "core:mem"
+import "core:sort"
 import "core:strings"
 import "src:platform"
 import "src:util"
@@ -166,6 +167,10 @@ sprint_state_gate :: proc(spr: ^Sprint_Header, op: Sprint_Op, a: mem.Allocator) 
 
 // validate_aliases enforces global uniqueness, excluding the owner's own
 // registrations (owner == nil during create: nothing is owned yet).
+// Ownership compares incident ids, not pointers: the composite update
+// validates against a projected header — a shallow clone at another
+// address — and an update that retains an existing alias is the owner
+// exercising its own registration.
 validate_aliases :: proc(s: ^Fold_State, aliases: []string, owner: ^Incident_Header, a: mem.Allocator) -> platform.Err {
 	for alias in aliases {
 		if alias == "" {
@@ -178,7 +183,7 @@ validate_aliases :: proc(s: ^Fold_State, aliases: []string, owner: ^Incident_Hea
 			return inv_cat(a, {"alias ", alias, " exceeds 64 characters"})
 		}
 		holder, taken := s.aliases[alias]
-		if taken && holder != owner {
+		if taken && !alias_owned_by(holder, owner) {
 			other_id := "?"
 			if holder != nil {
 				other_id = holder.id
@@ -192,6 +197,17 @@ validate_aliases :: proc(s: ^Fold_State, aliases: []string, owner: ^Incident_Hea
 // validate_blocked_targets checks target existence, aliveness, and
 // cycle-freedom for the would-be edges of self ("" during create — no
 // cycles possible, the incident does not exist yet).
+// alias_owned_by reports whether both pointers name the same incident;
+// display ids are unique among live headers, so id equality carries the
+// ownership question across projected clones.
+@(private)
+alias_owned_by :: proc(holder, owner: ^Incident_Header) -> bool {
+	if holder == nil || owner == nil {
+		return false
+	}
+	return holder.id == owner.id
+}
+
 validate_blocked_targets :: proc(s: ^Fold_State, self: string, targets: []string, a: mem.Allocator) -> platform.Err {
 	for t in targets {
 		target, err := must_incident(s, t, a)
@@ -341,13 +357,7 @@ dedup_sorted :: proc(list: []string, a: mem.Allocator) -> []string {
 			append(&dyn, strings.clone(s, a))
 		}
 	}
-	for i in 1..<len(dyn) {
-		j := i
-		for j > 0 && dyn[j-1] > dyn[j] {
-			dyn[j-1], dyn[j] = dyn[j], dyn[j-1]
-			j -= 1
-		}
-	}
+	sort.quick_sort(dyn[:])
 	out := make([]string, len(dyn), a)
 	for v, i in dyn {
 		out[i] = v

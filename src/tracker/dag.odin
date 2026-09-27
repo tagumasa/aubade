@@ -1,6 +1,7 @@
 package tracker
 
 import "core:mem"
+import "core:sort"
 import "core:strings"
 
 // blocked_by graph over incident display IDs. An edge from A to B records
@@ -162,13 +163,7 @@ dag_dependents :: proc(d: ^DAG, name: string, a: mem.Allocator) -> []string {
 	defer delete(visited)
 	result := make([dynamic]string, 0, 4, a)
 	dag_collect_dependents(d, name, &visited, &result)
-	for i in 1..<len(result) {
-		j := i
-		for j > 0 && result[j-1] > result[j] {
-			result[j-1], result[j] = result[j], result[j-1]
-			j -= 1
-		}
-	}
+	sort.quick_sort(result[:])
 	out := make([]string, len(result), a)
 	for v, i in result {
 		out[i] = v

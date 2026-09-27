@@ -12,6 +12,7 @@ import "core:mem"
 import "core:slice"
 import "core:strings"
 import "src:platform"
+import "src:util"
 
 DEFAULT_LIST_LIMIT :: 20
 TITLE_LIST_WIDTH :: 80
@@ -149,27 +150,10 @@ status_count :: proc(c: ^Counts, status: string) -> int {
 	return 0
 }
 
-// dec formats a small integer in the temp allocator (render-only).
+// dec formats a small integer in the temp allocator (render-only) — the
+// digit rendering itself is util.int_to_dec's, the one home for it.
 dec :: proc(n: int) -> string {
-	if n == 0 {
-		return "0"
-	}
-	buf: [20]u8
-	i := len(buf)
-	v := n
-	if v < 0 {
-		v = -v
-	}
-	for v > 0 {
-		i -= 1
-		buf[i] = u8('0' + v % 10)
-		v /= 10
-	}
-	if n < 0 {
-		i -= 1
-		buf[i] = '-'
-	}
-	return strings.clone(string(buf[i:]), context.temp_allocator)
+	return util.int_to_dec(n, context.temp_allocator)
 }
 
 counts_header_line :: proc(c: ^Census, a: mem.Allocator) -> string {

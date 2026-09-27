@@ -8,6 +8,7 @@ package tracker
 
 import "core:encoding/json"
 import "core:mem"
+import "core:sort"
 import "core:strings"
 
 import "src:util"
@@ -180,13 +181,7 @@ duplicated_by :: proc(s: ^Fold_State, id: string) -> []string {
 			append(&out, dep.id)
 		}
 	}
-	for i in 1..<len(out) {
-		j := i
-		for j > 0 && out[j-1] > out[j] {
-			out[j-1], out[j] = out[j], out[j-1]
-			j -= 1
-		}
-	}
+	sort.quick_sort(out[:])
 	dups := make([]string, len(out), context.temp_allocator)
 	for v, i in out {
 		dups[i] = v
