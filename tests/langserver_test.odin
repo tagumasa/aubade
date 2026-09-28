@@ -745,9 +745,14 @@ langserver_manager_failure_cooldown_virtual :: proc(t: ^testing.T) {
 	testing.expect(t, ls_peer_count(lt) == 0)
 
 	// Inside the cooldown the start is refused without touching the
-	// factory.
+	// factory, and the refusal replays the recorded failure reason (the
+	// fake fails with a bare Internal, which renders to its kind name).
 	err2 := langserver.manager_start(lt.m, "tst", context.temp_allocator)
 	testing.expect(t, platform.err_kind(err2) == .Retryable)
+	testing.expect(
+		t,
+		strings.contains(platform.err_message(err2, context.temp_allocator), "internal error"),
+	)
 	testing.expect(t, ls_peer_count(lt) == 0)
 
 	platform.clock_advance(lt.clock, 31_000)
@@ -789,8 +794,15 @@ langserver_manager_command_overrides :: proc(t: ^testing.T) {
 	err := langserver.manager_start(lt.m, "chk", context.temp_allocator)
 	testing.expect(t, platform.err_kind(err) == .NotFound)
 	testing.expect(t, ls_peer_count(lt) == 0)
-	// The failed start armed chk's cooldown — clear it before the
-	// override attempt below.
+	// The cooldown the failed start armed replays the not-installed
+	// reason instead of hiding it behind a bare cooldown notice.
+	err = langserver.manager_start(lt.m, "chk", context.temp_allocator)
+	testing.expect(t, platform.err_kind(err) == .Retryable)
+	testing.expect(
+		t,
+		strings.contains(platform.err_message(err, context.temp_allocator), "not installed"),
+	)
+	// Clear the cooldown before the override attempt below.
 	platform.clock_advance(lt.clock, 31_000)
 
 	// Built-in argv without an override.
@@ -842,6 +854,10 @@ langserver_manager_command_overrides :: proc(t: ^testing.T) {
 	testing.expect(t, ls_peer_count(lt) == 3) // three peers above; nothing spawned
 	err = langserver.manager_start(lt.m, "tst", context.temp_allocator)
 	testing.expect(t, platform.err_kind(err) == .Retryable)
+	testing.expect(
+		t,
+		strings.contains(platform.err_message(err, context.temp_allocator), "not executable"),
+	)
 	platform.clock_advance(lt.clock, 31_000)
 
 	// Restart uses the override too (the swap above replaced the map).
