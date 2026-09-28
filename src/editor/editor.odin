@@ -489,7 +489,12 @@ editor_prune_buffers :: proc(e: ^Editor, keep: string) {
 			if platform.path_equal(slot.buf.rel_path, keep) {
 				continue
 			}
-			append(&victims, slot.buf.rel_path)
+			// The spelling is cloned under the lock: the drop loop runs
+			// outside every editor lock, and a concurrent write/delete/
+			// prune that drops the same buffer frees its rel_path bytes
+			// through file_buffer_destroy before this loop reads them —
+			// the clone keeps each view stable until its own drop returns.
+			append(&victims, strings.clone(slot.buf.rel_path, context.temp_allocator))
 			rem_entries -= 1
 			rem_bytes -= slot.cost
 		}
@@ -497,6 +502,7 @@ editor_prune_buffers :: proc(e: ^Editor, keep: string) {
 	sync.mutex_unlock(&e.mu)
 	for v in victims {
 		editor_drop_buffer(e, v)
+		delete(v, context.temp_allocator)
 	}
 }
 

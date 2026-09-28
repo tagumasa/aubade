@@ -1746,6 +1746,14 @@ editor_buffer_bound_evicts_oldest :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(f.e.buffers), 3)
 	testing.expect_value(t, len(closed), 2)
 	testing.expect_value(t, closed[1], "f1.txt")
+
+	// A drop of a path that never had a buffer is a clean no-op — the
+	// shape a prune victim takes when a concurrent dropper freed the
+	// buffer between the prune's selection and its drop.
+	write_fixture_file(f, "never.txt", "x\n")
+	editor.editor_drop_buffer(f.e, "never.txt")
+	testing.expect_value(t, len(f.e.buffers), 3)
+	testing.expect_value(t, len(closed), 2)
 }
 
 // editor_buffer_bound_bytes pins the byte cap: once the charged total
