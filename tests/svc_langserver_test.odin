@@ -131,6 +131,44 @@ svc_langserver_start_uses_configured_command :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(res.err_message, "/no/such/crystalline-fp"))
 }
 
+// A project config that declares language_servers hands its allowlist to
+// the manager at daemon init; the startup path then frees its own copy of
+// the names (manager_init clones what it keeps). Constructing the pair
+// with a declared language exercises that handoff under the per-test
+// tracking allocator — a stranded startup clone would surface as a leak
+// WARN in the suite log — and the list must answer the configured row.
+@(test)
+svc_langserver_allowlist_from_project_config :: proc(t: ^testing.T) {
+	pair := test_daemon_with_project(
+		t,
+		false,
+		`{"language_servers": [{"name": "crystal"}]}`,
+	)
+	if pair == nil {
+		return
+	}
+	defer pair_shutdown(pair)
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	alloc := mem.dynamic_arena_allocator(&arena)
+	deadline := platform.mono_ms() + 10_000
+
+	list := svc.client_langserver_list(pair.conn, alloc, deadline)
+	testing.expect_value(t, list.call_err, jsonrpc.Call_Err.None)
+
+	items_v, ipresent := jsonutil.obj_get(list.result, "items")
+	testing.expect_value(t, ipresent, true)
+	testing.expect_value(t, json_array_len(items_v), 1)
+	if json_array_len(items_v) == 1 {
+		lang, _ := json_str_field(json_array_at(items_v, 0), "language")
+		testing.expect_value(t, lang, "crystal")
+	}
+	_, mpresent := jsonutil.obj_get(list.result, "message")
+	testing.expect_value(t, mpresent, false)
+}
+
 @(test)
 svc_langserver_reload_applies_live_settings :: proc(t: ^testing.T) {
 	pair := test_daemon(t, false)

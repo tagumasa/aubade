@@ -139,6 +139,10 @@ project_state_init :: proc(d: ^Daemon) -> bool {
 	langserver.manager_init(
 		ls, reg, d.cfg.project_root, d.cfg.clock, langserver.production_factory(ls), allow, eager, d.allocator,
 	)
+	// manager_init clones the allowlist onto its own allocator, so the
+	// caller-owned clone from resolve_language_settings is freed here, like
+	// its sibling slices below.
+	langserver.free_strings(allow, d.allocator)
 	if len(overrides) > 0 {
 		langserver.manager_set_overrides(ls, overrides)
 		langserver.free_string_array_map(overrides, d.allocator)
