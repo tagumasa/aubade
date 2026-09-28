@@ -419,6 +419,62 @@ svc_file_list_dir :: proc(t: ^testing.T) {
 	testing.expect_value(t, file_scope.err_code, jsonrpc.Err_Code.Invalid_Params)
 }
 
+// gitignore's trailing-slash marker restricts a pattern to directories: a
+// regular file that spells the bare directory name stays visible to the
+// ignore-scoped walk (git tracks such a file), while the directory itself
+// and everything inside it stays ignored.
+@(test)
+svc_file_walk_dir_only_pattern :: proc(t: ^testing.T) {
+	pair := test_daemon(t, false)
+	if pair == nil {
+		return
+	}
+	defer pair_shutdown(pair)
+
+	svc_symbol_write_file(t, pair.tmp, "a.go", "package main\n")
+	svc_symbol_write_file(t, pair.tmp, "include", "#include <stdio.h>\n")
+	svc_symbol_write_file(t, pair.tmp, "gen/header.h", "h\n")
+	svc_symbol_write_file(t, pair.tmp, ".gitignore", "include/\ngen/\n")
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	alloc := mem.dynamic_arena_allocator(&arena)
+	deadline := platform.mono_ms() + 10_000
+
+	full := svc.client_file_list_dir(pair.conn, "", true, true, false, alloc, deadline)
+	testing.expect_value(t, full.call_err, jsonrpc.Call_Err.None)
+	files, _ := jsonutil.obj_get(full.result, "files")
+	has_include := false
+	has_gen_header := false
+	for i in 0..<json_array_len(files) {
+		#partial switch x in json_array_at(files, i) {
+		case json.String:
+			if string(x) == "include" {
+				has_include = true
+			}
+			if string(x) == "gen/header.h" {
+				has_gen_header = true
+			}
+		case:
+		}
+	}
+	testing.expect(t, has_include)
+	testing.expect(t, !has_gen_header)
+	dirs, _ := jsonutil.obj_get(full.result, "dirs")
+	has_gen_dir := false
+	for i in 0..<json_array_len(dirs) {
+		#partial switch x in json_array_at(dirs, i) {
+		case json.String:
+			if string(x) == "gen" {
+				has_gen_dir = true
+			}
+		case:
+		}
+	}
+	testing.expect(t, !has_gen_dir)
+}
+
 @(test)
 svc_file_find_masks :: proc(t: ^testing.T) {
 	pair := test_daemon(t, false)
@@ -954,7 +1010,7 @@ svc_path_ignored_predicate :: proc(t: ^testing.T) {
 	if gierr != nil {
 		testing.fail_now(t, "gitignore open failed")
 	}
-	ignore_rules := "gen/\n*.log\n"
+	ignore_rules := "gen/\n*.log\nvendor/\n"
 	os.write(gi, transmute([]u8)ignore_rules)
 	os.close(gi)
 
@@ -962,6 +1018,20 @@ svc_path_ignored_predicate :: proc(t: ^testing.T) {
 	// component is then judged with directory semantics).
 	nm_path, _ := filepath.join({tmp, "node_modules"}, context.temp_allocator)
 	os.make_directory(nm_path, {.Read_User, .Write_User, .Execute_User})
+
+	// The gitignore-named directory exists on disk, so the final component
+	// is judged with directory semantics; the vendor pattern's directory
+	// does NOT exist and a regular file spells the bare name instead.
+	gen_path, _ := filepath.join({tmp, "gen"}, context.temp_allocator)
+	os.make_directory(gen_path, {.Read_User, .Write_User, .Execute_User})
+	vendor_path, _ := filepath.join({tmp, "vendor"}, context.temp_allocator)
+	vf, verr := os.open(vendor_path, {.Write, .Create, .Trunc}, {.Read_User, .Write_User})
+	if verr != nil {
+		testing.fail_now(t, "vendor open failed")
+	}
+	vendor_seed := "v\n"
+	os.write(vf, transmute([]u8)vendor_seed)
+	os.close(vf)
 
 	// The walk's own predicate, asked read-only: gitignore scoping
 	// (patterns and whole directories; a root-scope glob without a slash
@@ -975,8 +1045,11 @@ svc_path_ignored_predicate :: proc(t: ^testing.T) {
 	// component and as the final component.
 	testing.expect_value(t, svc.path_ignored(tmp, "node_modules/pkg/x.js", {}), true)
 	testing.expect_value(t, svc.path_ignored(tmp, "node_modules", {}), true)
-	// The gitignore directory itself, judged with directory semantics.
+	// The gitignore directory itself, judged with directory semantics
+	// (it exists on disk); a regular file that spells the bare name of a
+	// dir-only pattern stays visible — git's trailing-separator rule.
 	testing.expect_value(t, svc.path_ignored(tmp, "gen", {}), true)
+	testing.expect_value(t, svc.path_ignored(tmp, "vendor", {}), false)
 	// The configured ignore paths are a hard skip on top of the walk's
 	// own policy: a global config (home = tmp) carrying one extra path.
 	cfg_path, _ := filepath.join({tmp, "config.jsonc"}, context.temp_allocator)
@@ -993,6 +1066,10 @@ svc_path_ignored_predicate :: proc(t: ^testing.T) {
 	defer mem.dynamic_arena_destroy(&pa)
 	extra := svc.ignore_config_load(tmp, tmp, mem.dynamic_arena_allocator(&pa))
 	defer svc.spec_release_c_side(extra.extra)
+	// The extra-spec directory exists on disk, so the bare name is judged
+	// with directory semantics and the hard skip applies to it too.
+	skip_dir, _ := filepath.join({tmp, "skipme"}, context.temp_allocator)
+	os.make_directory(skip_dir, {.Read_User, .Write_User, .Execute_User})
 	testing.expect_value(t, svc.path_ignored(tmp, "skipme/x.go", extra), true)
 	testing.expect_value(t, svc.path_ignored(tmp, "skipme", extra), true)
 	testing.expect_value(t, svc.path_ignored(tmp, "src/main.go", extra), false)

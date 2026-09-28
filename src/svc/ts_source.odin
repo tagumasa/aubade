@@ -20,7 +20,6 @@ import "src:config"
 import "src:editor"
 import "src:pathspec"
 import "src:platform"
-import "src:regex"
 import "src:safety"
 import "src:store"
 import "src:symbol"
@@ -729,7 +728,7 @@ crawl_dir :: proc(
 		}
 		walk_buf_append(w.rel_buf, name)
 		child_rel := string(w.rel_buf^[:])
-		if pathspec.pathspec_match_path(child_rel, w.ignore.extra) {
+		if pathspec.pathspec_match_path(child_rel, w.ignore.extra, entries[i].type == .Directory) {
 			if entries[i].type == .Directory {
 				w.stats.dirs_pruned += 1
 			} else {
@@ -1325,13 +1324,16 @@ maybe_push_gitignore :: proc(
 
 // stack_match_once applies gitignore precedence across the stacked specs:
 // patterns are evaluated root-first and the last match decides, so a deeper
-// .gitignore overrides a shallower one.
-stack_match_once :: proc(stack: ^[dynamic]^pathspec.Path_Spec, path: string) -> bool {
+// .gitignore overrides a shallower one. is_dir selects the dir-only
+// semantics per pattern (see pathspec.pattern_matches): file checks never
+// match a dir-only pattern against the bare name, and the per-pattern
+// literal fast path applies here exactly as in pathspec_match_path.
+stack_match_once :: proc(stack: ^[dynamic]^pathspec.Path_Spec, path: string, is_dir: bool) -> bool {
 	matched := false
 	for s in 0..<len(stack^) {
 		spec := stack[s]
 		for i in 0..<len(spec.patterns) {
-			if regex.regex_match(spec.patterns[i].re, path) {
+			if pathspec.pattern_matches(&spec.patterns[i], path, is_dir) {
 				matched = !spec.patterns[i].negate
 			}
 		}
@@ -1340,15 +1342,15 @@ stack_match_once :: proc(stack: ^[dynamic]^pathspec.Path_Spec, path: string) -> 
 }
 
 stack_match_file :: proc(stack: ^[dynamic]^pathspec.Path_Spec, rel: string) -> bool {
-	return stack_match_once(stack, rel)
+	return stack_match_once(stack, rel, false)
 }
 
 stack_match_dir :: proc(stack: ^[dynamic]^pathspec.Path_Spec, rel: string, a: runtime.Allocator) -> bool {
-	if stack_match_once(stack, rel) {
+	if stack_match_once(stack, rel, true) {
 		return true
 	}
 	with_slash := strings.concatenate({rel, "/"}, a)
-	return stack_match_once(stack, with_slash)
+	return stack_match_once(stack, with_slash, true)
 }
 
 // ---------------------------------------------------------------------------
