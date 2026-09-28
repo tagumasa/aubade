@@ -6,6 +6,7 @@
 // gitignore-aware project walk with the symbol crawl.
 package svc
 
+import "core:bytes"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -665,6 +666,22 @@ file_read :: proc(
 	// Allocated by the editor's allocator (worker threads do not inherit
 	// it as context.allocator), so the free names it explicitly.
 	defer delete(contents, ed.allocator)
+
+	// Binary guard: this is a line-based text reader, and a NUL byte in
+	// the decoded content marks non-text data — answering its raw bytes
+	// as `content` would be wrong-class output, so refuse instead. The
+	// gate sits after the read (buffer and disk answers both pass here)
+	// and before any line slicing, so a binary file is refused whole.
+	if nul := bytes.index_byte(transmute([]u8)contents, 0); nul >= 0 {
+		return {}, wrapped_err(
+			.Invalid,
+			strings.concatenate(
+				{"file read: ", rel, " is binary (NUL byte at offset ", util.int_to_dec(nul, a), ")"},
+				a,
+			),
+			a,
+		)
+	}
 
 	// The editor strips CR only when CRLF pairs are present; normalize any
 	// surviving lone CR to LF (read_text_normalise_cr also folds a pair,

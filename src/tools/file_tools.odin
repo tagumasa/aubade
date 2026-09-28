@@ -101,7 +101,7 @@ FILE_MOVE_PARAMS :: []Param_Desc{
 file_read :: Tool_Desc{
 	name        = "file_read",
 	title       = "Read file",
-	description = "Read a file within the project directory. Content is capped by max_answer_chars; a read-ask warning prefixes files whose names look sensitive.",
+	description = "Read a text file within the project directory; binary files (a NUL byte in the content) are refused. Content is capped by max_answer_chars; a read-ask warning prefixes files whose names look sensitive.",
 	can_edit    = false,
 	optional    = false,
 	category    = .File,
