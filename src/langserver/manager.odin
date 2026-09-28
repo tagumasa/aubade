@@ -95,6 +95,15 @@ Running_Client :: struct {
 	client:      ^lsp.Client,
 }
 
+// Fail_Note is one language's most recent start failure: when it happened,
+// and why. The cooldown gate replays `msg` (the not-installed install hint
+// or the spawn failure) so a cooldown refusal never hides the reason the
+// operator could act on. `msg` bytes are owned by the manager's allocator.
+Fail_Note :: struct {
+	at_ms: i64,
+	msg:   string,
+}
+
 Manager :: struct {
 	reg:              ^Registry,
 	root:             string, // owned
@@ -135,10 +144,11 @@ Manager :: struct {
 	// live server's language_id (factory-cloned into m.allocator) — every
 	// retire path delete_keys the entry BEFORE server_destroy frees those
 	// bytes, and a restart deletes before inserting so the stored key is
-	// always the live server's. `last_fail_ms` and `last_use_ms` clone on
+	// always the live server's. `last_fail` and `last_use_ms` clone on
 	// first insert (mark_failure / last_use_note) because their entries
-	// outlive servers, and the clones are freed when the tables are
-	// cleared (manager_reset's cooldown wipe, manager_destroy). Lookups
+	// outlive servers, and the clones — the failure notes' messages
+	// included — are freed when the tables are cleared (manager_reset's
+	// cooldown wipe, manager_destroy). Lookups
 	// may use any content-equal string, but inserting under a caller's
 	// string (an RPC request arena, say) leaves a key that rots once that
 	// request ends — every later keyed lookup misses and every keyed
@@ -150,7 +160,7 @@ Manager :: struct {
 	cond:             sync.Cond, // broadcast when a starting marker clears
 	servers:          map[string]^Server,
 	retiring:         [dynamic]^Server, // unlinked; destroyed once inflight reaches zero
-	last_fail_ms:     map[string]i64,
+	last_fail:        map[string]Fail_Note,
 	last_use_ms:      map[string]i64,
 	is_stopped:       bool,
 	// Destroy-time cancellation (nil = none): latched by manager_destroy
@@ -196,7 +206,7 @@ manager_init :: proc(
 	m.servers = make(map[string]^Server, 4, a)
 	m.options = make(map[string]string, 4, a)
 	m.retiring = make([dynamic]^Server, 0, 4, a)
-	m.last_fail_ms = make(map[string]i64, 4, a)
+	m.last_fail = make(map[string]Fail_Note, 4, a)
 	m.last_use_ms = make(map[string]i64, 4, a)
 	m.idle_timeout_ms = MANAGER_IDLE_TIMEOUT_MS
 	m.idle_interval_ms = MANAGER_IDLE_TICK_MS
@@ -236,8 +246,12 @@ manager_destroy :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) {
 	delete(m.starting)
 	delete(m.servers)
 	// The cooldown and last-use keys are manager-owned clones (see
-	// Manager); the servers' ids were freed by server_destroy above.
-	free_owned_string_keys(&m.last_fail_ms, m.allocator)
+	// Manager); the failure notes' messages are owned the same way, and
+	// the servers' ids were freed by server_destroy above.
+	for _, note in m.last_fail {
+		delete(note.msg, m.allocator)
+	}
+	free_owned_string_keys(&m.last_fail, m.allocator)
 	free_owned_string_keys(&m.last_use_ms, m.allocator)
 	delete(m.root, m.allocator)
 	delete(m.root_uri, m.allocator)
@@ -456,14 +470,26 @@ start_language :: proc(
 	// Presence (not > 0) carries "has failed": a virtual clock's epoch
 	// is zero, so a timestamp of 0 is a legitimate failure time. The map
 	// read takes the mutex: mark_failure inserts and manager_reset frees
-	// the map under it, and an unlocked read races both.
+	// the map under it, and an unlocked read races both. The reason is
+	// cloned under the mutex for the same cause — a reset between unlock
+	// and clone would free the stored bytes mid-copy.
 	sync.mutex_lock(&m.mu)
-	last, failed := m.last_fail_ms[language_id]
+	note, failed := m.last_fail[language_id]
+	reason := ""
+	if failed {
+		reason = strings.clone(note.msg, arena)
+	}
 	sync.mutex_unlock(&m.mu)
-	if failed && now - last < MANAGER_RESTART_COOLDOWN_MS {
+	if failed && now - note.at_ms < MANAGER_RESTART_COOLDOWN_MS {
+		// The refusal replays the original failure (the not-installed
+		// install hint or the spawn error); a bare cooldown notice would
+		// hide the one message the operator can act on.
 		return platform.Wrapped{
 			kind = .Retryable,
-			msg  = "language server failed recently; retrying after the cooldown",
+			msg  = strings.concatenate(
+				{reason, "; retrying after the failure cooldown"},
+				arena,
+			),
 		}
 	}
 
@@ -473,7 +499,7 @@ start_language :: proc(
 	}
 	argv, argv_err := resolve_start_argv(m, e, arena)
 	if argv_err != nil {
-		mark_failure(m, language_id)
+		mark_failure(m, language_id, argv_err)
 		return argv_err
 	}
 	folders := start_workspace(m, e, arena)
@@ -483,7 +509,7 @@ start_language :: proc(
 		m.factory.user, e, argv, env, folders, memory_limit_for(e), m.clock, m.allocator, token,
 	)
 	if err != nil {
-		mark_failure(m, language_id)
+		mark_failure(m, language_id, err)
 		return err
 	}
 	sync.mutex_lock(&m.mu)
@@ -532,7 +558,7 @@ start_workspace :: proc(m: ^Manager, e: ^Entry, arena: mem.Allocator) -> []Works
 	return folders
 }
 
-mark_failure :: proc(m: ^Manager, language_id: string) {
+mark_failure :: proc(m: ^Manager, language_id: string, err: platform.Err) {
 	sync.mutex_lock(&m.mu)
 	// A destroy that raced a still-running start zeroes the manager (the
 	// allocator included) after freeing its tables; recording a failure on
@@ -544,13 +570,23 @@ mark_failure :: proc(m: ^Manager, language_id: string) {
 		sync.mutex_unlock(&m.mu)
 		return
 	}
-	if _, ok := m.last_fail_ms[language_id]; !ok {
-		// First insert owns the key (a failure can be recorded with no
-		// server alive to borrow an id from); later failures only update
-		// the value through the content match.
-		m.last_fail_ms[strings.clone(language_id, m.allocator)] = platform.clock_now(m.clock)
+	// Rendered on the temp allocator and cloned: the reason outlives the
+	// caller's error (whose message bytes sit in its arena) through the
+	// cooldown window. err_message always answers non-empty text (a bare
+	// kind falls back to its kind_name).
+	note := Fail_Note{
+		at_ms = platform.clock_now(m.clock),
+		msg   = strings.clone(platform.err_message(err, context.temp_allocator), m.allocator),
+	}
+	if old, ok := m.last_fail[language_id]; ok {
+		// Later failures only update the value through the content match;
+		// the replaced message bytes die with the swap.
+		delete(old.msg, m.allocator)
+		m.last_fail[language_id] = note
 	} else {
-		m.last_fail_ms[language_id] = platform.clock_now(m.clock)
+		// First insert owns the key (a failure can be recorded with no
+		// server alive to borrow an id from).
+		m.last_fail[strings.clone(language_id, m.allocator)] = note
 	}
 	sync.mutex_unlock(&m.mu)
 }
@@ -836,15 +872,28 @@ manager_reset :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) -> int {
 		manager_sweep_retiring(m, token)
 	}
 	sync.mutex_lock(&m.mu)
-	old_fail := m.last_fail_ms
-	m.last_fail_ms = make(map[string]i64, 4, m.allocator)
+	old_fail := m.last_fail
+	m.last_fail = make(map[string]Fail_Note, 4, m.allocator)
 	sync.mutex_unlock(&m.mu)
-	// The cooldown keys are manager-owned clones (see Manager) — free them
-	// with the table, not just the table itself.
-	for k in old_fail {
-		delete(k, m.allocator)
+	// The cooldown keys and their failure messages are manager-owned (see
+	// Manager) — free both with the table, not just the table itself, in
+	// the collect-then-free order (freeing the current key mid-iteration
+	// is treated as map mutation; free_owned_string_keys' rule).
+	keys := make([dynamic]string, 0, len(old_fail), context.temp_allocator)
+	notes := make([dynamic]Fail_Note, 0, len(old_fail), context.temp_allocator)
+	for k, note in old_fail {
+		append(&keys, k)
+		append(&notes, note)
 	}
 	delete(old_fail)
+	for note in notes {
+		delete(note.msg, m.allocator)
+	}
+	delete(notes)
+	for k in keys {
+		delete(k, m.allocator)
+	}
+	delete(keys)
 	return stopped_count
 }
 
