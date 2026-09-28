@@ -122,6 +122,18 @@ svc_file_write_read_roundtrip :: proc(t: ^testing.T) {
 	env_ask, _ := json_bool_field(env_call.result, "read_ask")
 	testing.expect(t, env_ask)
 
+	// Binary content is refused whole with the Invalid kind
+	// (Invalid_Params on the wire): raw bytes are not a text answer.
+	svc_symbol_write_file(t, pair.tmp, "blob.bin", "PK\x00\x03\x04not text")
+	bin := svc.client_file_read(conn, "blob.bin", 0, 0, false, 0, alloc, deadline)
+	testing.expect_value(t, bin.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, bin.err_code, jsonrpc.Err_Code.Invalid_Params)
+
+	// Non-ASCII text without a NUL byte still reads unchanged.
+	svc_symbol_write_file(t, pair.tmp, "utf8.txt", "café — 東京\n")
+	utf8 := file_read_content(t, conn, "utf8.txt", 0, 0, false, alloc, deadline)
+	testing.expect_value(t, utf8, "café — 東京\n")
+
 	// Second write overwrites and reports it.
 	w2 := svc.client_file_write(conn, "docs/guide.md", "replaced\n", alloc, deadline)
 	testing.expect_value(t, w2.call_err, jsonrpc.Call_Err.None)
