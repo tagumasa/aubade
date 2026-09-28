@@ -134,6 +134,26 @@ svc_file_write_read_roundtrip :: proc(t: ^testing.T) {
 	utf8 := file_read_content(t, conn, "utf8.txt", 0, 0, false, alloc, deadline)
 	testing.expect_value(t, utf8, "café — 東京\n")
 
+	// A negative or inverted line range is refused as invalid input
+	// (Invalid_Params on the wire) instead of answering a silent empty
+	// body — the same refusal the line-edit family makes.
+	neg_start := svc.client_file_read(conn, "utf8.txt", -3, 0, false, 0, alloc, deadline)
+	testing.expect_value(t, neg_start.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, neg_start.err_code, jsonrpc.Err_Code.Invalid_Params)
+	testing.expect(t, strings.contains(neg_start.err_message, "start_line must be non-negative"))
+
+	neg_end := svc.client_file_read(conn, "utf8.txt", 0, -1, true, 0, alloc, deadline)
+	testing.expect_value(t, neg_end.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, neg_end.err_code, jsonrpc.Err_Code.Invalid_Params)
+
+	inverted := svc.client_file_read(conn, "utf8.txt", 2, 0, true, 0, alloc, deadline)
+	testing.expect_value(t, inverted.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, inverted.err_code, jsonrpc.Err_Code.Invalid_Params)
+
+	// A set end beyond EOF still clamps to the whole file.
+	clamped := file_read_content(t, conn, "utf8.txt", 0, 5000, true, alloc, deadline)
+	testing.expect_value(t, clamped, "café — 東京\n")
+
 	// Second write overwrites and reports it.
 	w2 := svc.client_file_write(conn, "docs/guide.md", "replaced\n", alloc, deadline)
 	testing.expect_value(t, w2.call_err, jsonrpc.Call_Err.None)
