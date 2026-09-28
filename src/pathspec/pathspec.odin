@@ -31,6 +31,15 @@ Pattern :: struct {
 	// not its subtree); otherwise the flavor is `^lit(/.*)?$`.
 	literal:    string,
 	lit_exact:  bool,
+	// dir_only marks a pattern that carried a trailing "/" — gitignore
+	// restricts it to directories. `re` still matches any entry kind
+	// (directory walks need the bare name); file-side checks take the
+	// subtree-only branch instead, so a regular file that spells the bare
+	// directory name does not match while paths inside a directory of
+	// that name do. file_re is that second matcher (`^core/.+$`), compiled
+	// only for dir_only patterns; nil otherwise.
+	dir_only: bool,
+	file_re:  ^regex.Regex,
 }
 
 // Path_Spec is immutable after construction; from_lines and
@@ -86,25 +95,16 @@ pathspec_destroy :: proc(ps: ^Path_Spec) {
 		if ps.patterns[i].literal != "" {
 			delete(ps.patterns[i].literal, ps.allocator)
 		}
+		if ps.patterns[i].file_re != nil {
+			regex.regex_destroy(ps.patterns[i].file_re)
+			free(ps.patterns[i].file_re, ps.allocator)
+		}
 		regex.regex_destroy(ps.patterns[i].re)
 		free(ps.patterns[i].re, ps.allocator)
 	}
 	delete(ps.patterns)
 	a := ps.allocator
 	free(ps, a)
-}
-
-// pathspec_match_file reports whether a path matches any pattern.
-// Last-match-wins: a later negation pattern (!) un-matches an earlier
-// positive pattern, and vice versa.
-pathspec_match_file :: proc(ps: ^Path_Spec, path: string) -> bool {
-	matched := false
-	for i in 0..<len(ps.patterns) {
-		if pattern_matches(&ps.patterns[i], path) {
-			matched = !ps.patterns[i].negate
-		}
-	}
-	return matched
 }
 
 // pattern_matches reports whether one pattern matches a path: the literal
@@ -114,7 +114,21 @@ pathspec_match_file :: proc(ps: ^Path_Spec, path: string) -> bool {
 // `^lit(/.*)?$` (subtree) — byte for byte on every valid UTF-8 path; a
 // path carrying invalid UTF-8 bytes matches the literal path where the
 // UTF-compiled regex no-matches.
-pattern_matches :: proc(p: ^Pattern, path: string) -> bool {
+//
+// is_dir selects the dir-only semantics: gitignore's trailing separator
+// restricts a pattern to directories, so a file check against such a
+// pattern takes the subtree branch only — a regular file that spells the
+// bare directory name does not match, while paths inside a directory of
+// that name do.
+pattern_matches :: proc(p: ^Pattern, path: string, is_dir: bool) -> bool {
+	if p.dir_only && !is_dir {
+		if p.literal != "" {
+			return len(path) > len(p.literal) &&
+				path[len(p.literal)] == '/' &&
+				strings.has_prefix(path, p.literal)
+		}
+		return regex.regex_match(p.file_re, path)
+	}
 	if p.literal == "" {
 		return regex.regex_match(p.re, path)
 	}
@@ -129,19 +143,27 @@ pattern_matches :: proc(p: ^Pattern, path: string) -> bool {
 		strings.has_prefix(path, p.literal)
 }
 
-// pathspec_match_path matches a relative path (file or directory) against
-// the spec; a nil spec matches nothing. There is deliberately no
-// trailing-slash retry: dir_only patterns already match the bare
-// directory through the `(/.*)?$` suffix, and a retry with "path/" is
-// exactly what made a trailing `**` pattern ("build/**") match the bare
-// directory — git leaves `build` itself unignored by that pattern, so
-// the directory stays walkable and a later negation ("!build/keep")
-// can re-include paths under it.
-pathspec_match_path :: proc(path: string, ps: ^Path_Spec) -> bool {
+// pathspec_match_path matches a relative path (file or directory — is_dir
+// selects the dir-only-pattern semantics) against the spec; a nil spec
+// matches nothing. Last-match-wins: a later negation pattern (!)
+// un-matches an earlier positive pattern, and vice versa. There is
+// deliberately no trailing-slash retry: dir_only patterns already match
+// the bare directory through the `(/.*)?$` suffix, and a retry with
+// "path/" is exactly what made a trailing `**` pattern ("build/**")
+// match the bare directory — git leaves `build` itself unignored by that
+// pattern, so the directory stays walkable and a later negation
+// ("!build/keep") can re-include paths under it.
+pathspec_match_path :: proc(path: string, ps: ^Path_Spec, is_dir: bool) -> bool {
 	if ps == nil {
 		return false
 	}
-	return pathspec_match_file(ps, path)
+	matched := false
+	for i in 0..<len(ps.patterns) {
+		if pattern_matches(&ps.patterns[i], path, is_dir) {
+			matched = !ps.patterns[i].negate
+		}
+	}
+	return matched
 }
 
 compile_pattern :: proc(pattern_in: string, a := context.allocator) -> (pat: Pattern, ok: bool) {
@@ -190,24 +212,62 @@ compile_pattern :: proc(pattern_in: string, a := context.allocator) -> (pat: Pat
 		}
 	}
 
+	// The file-side matcher for a dir-only pattern compiles the same
+	// translation with the mandatory-subtree suffix (see Pattern); it is
+	// allocated on the spec's allocator like the primary regex and freed
+	// alongside it.
+	file_re: ^regex.Regex
+	if dir_only {
+		compiled_file, ferr := regex.compile_utf_regex(
+			glob_to_regex(pattern, dir_only, true),
+			context.temp_allocator,
+		)
+		if ferr != nil {
+			if literal != "" {
+				delete(literal, a)
+			}
+			return {}, false
+		}
+		file_re = new(regex.Regex, a)
+		file_re^ = compiled_file
+	}
+
 	// UTF mode: `?` and bracket classes must match one character, not one
 	// byte — a `?` has to cover a CJK directory name.
-	compiled, cerr := regex.compile_utf_regex(glob_to_regex(pattern, dir_only), context.temp_allocator)
+	compiled, cerr := regex.compile_utf_regex(glob_to_regex(pattern, dir_only, false), context.temp_allocator)
 	if cerr != nil {
 		if literal != "" {
 			delete(literal, a)
+		}
+		if file_re != nil {
+			regex.regex_destroy(file_re)
+			free(file_re, a)
 		}
 		return {}, false
 	}
 	re := new(regex.Regex, a)
 	re^ = compiled
-	return {re = re, negate = negate, literal = literal, lit_exact = lit_exact}, true
+	return {
+		re        = re,
+		negate    = negate,
+		literal   = literal,
+		lit_exact = lit_exact,
+		dir_only  = dir_only,
+		file_re   = file_re,
+	}, true
 }
 
 // glob_to_regex translates a gitignore glob pattern into an anchored
 // regex. dir_only marks a pattern that carried a trailing "/" in the
-// original gitignore. The result is scratch (temp allocator).
-glob_to_regex :: proc(pattern_in: string, dir_only: bool, a := context.temp_allocator) -> string {
+// original gitignore; file_side requests the file-check variant of a
+// dir_only pattern, whose subtree branch is mandatory content — the bare
+// directory name must not match. The result is scratch (temp allocator).
+glob_to_regex :: proc(
+	pattern_in: string,
+	dir_only: bool,
+	file_side: bool,
+	a := context.temp_allocator,
+) -> string {
 	pattern := pattern_in // parameters are immutable; mutate a local copy
 	b := strings.builder_make(a)
 	strings.write_string(&b, "^")
@@ -254,6 +314,11 @@ glob_to_regex :: proc(pattern_in: string, dir_only: bool, a := context.temp_allo
 
 	if anchored && !dir_only {
 		strings.write_string(&b, "$")
+	} else if file_side {
+		// File-side variant of a dir-only pattern: the separator plus at
+		// least one non-empty remainder is required, so the bare directory
+		// name — a regular file of that spelling — does not match.
+		strings.write_string(&b, "/.+$")
 	} else {
 		strings.write_string(&b, "(/.*)?$")
 	}

@@ -242,7 +242,7 @@ path_ignored :: proc(project_root, rel_path: string, ignore: Ignore_Config, a :=
 			return true
 		}
 		child_rel := join_rel(cur_rel, name, scratch_alloc)
-		if pathspec.pathspec_match_path(child_rel, ignore.extra) {
+		if pathspec.pathspec_match_path(child_rel, ignore.extra, true) {
 			return true
 		}
 		if !ignore.no_gitignore && stack_match_dir(&stack, child_rel, scratch_alloc) {
@@ -262,10 +262,10 @@ path_ignored :: proc(project_root, rel_path: string, ignore: Ignore_Config, a :=
 	last := parts[len(parts) - 1]
 	if last_is_dir {
 		return config.default_ignored_dir(last) ||
-			pathspec.pathspec_match_path(rel, ignore.extra) ||
+			pathspec.pathspec_match_path(rel, ignore.extra, true) ||
 			(!ignore.no_gitignore && stack_match_dir(&stack, rel, scratch_alloc))
 	}
-	return pathspec.pathspec_match_path(rel, ignore.extra) ||
+	return pathspec.pathspec_match_path(rel, ignore.extra, false) ||
 		(!ignore.no_gitignore && stack_match_file(&stack, rel))
 }
 
@@ -423,7 +423,7 @@ file_walk_dir :: proc(
 		}
 		walk_buf_append(w.rel_buf, name)
 		child_rel := string(w.rel_buf^[:])
-		if pathspec.pathspec_match_path(child_rel, w.ignore.extra) {
+		if pathspec.pathspec_match_path(child_rel, w.ignore.extra, entries[i].type == .Directory) {
 			resize(w.rel_buf, rel_mark)
 			continue
 		}

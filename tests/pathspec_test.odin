@@ -32,11 +32,14 @@ pathspec_match_file_table :: proc(t: ^testing.T) {
 		{{"build/"}, "build/output/main", true},
 		{{"file?.go"}, "file1.go", true},
 		{{"file?.go"}, "file12.go", false},
+		// A dir-only pattern never matches a regular file that spells the
+		// bare directory name (git's trailing-separator rule).
+		{{"vendor/"}, "vendor", false},
 	}
 	for c in cases {
 		ps := pathspec.from_lines(c.patterns, context.allocator)
 		defer pathspec.pathspec_destroy(ps)
-		got := pathspec.pathspec_match_file(ps, c.path)
+		got := pathspec.pathspec_match_path(c.path, ps, false)
 		testing.expectf(t, got == c.want, "patterns=%v path=%s got=%v want=%v", c.patterns, c.path, got, c.want)
 	}
 }
@@ -45,9 +48,9 @@ pathspec_match_file_table :: proc(t: ^testing.T) {
 pathspec_match_file_dir_suffix :: proc(t: ^testing.T) {
 	ps := pathspec.from_lines({"build"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps)
-	testing.expect(t, pathspec.pathspec_match_file(ps, "build"))
-	testing.expect(t, pathspec.pathspec_match_file(ps, "build/"))
-	testing.expect(t, !pathspec.pathspec_match_file(ps, "buildtools"))
+	testing.expect(t, pathspec.pathspec_match_path("build", ps, false))
+	testing.expect(t, pathspec.pathspec_match_path("build/", ps, false))
+	testing.expect(t, !pathspec.pathspec_match_path("buildtools", ps, false))
 }
 
 // `?` and bracket classes match one character, not one byte — a CJK
@@ -57,20 +60,20 @@ pathspec_match_file_dir_suffix :: proc(t: ^testing.T) {
 pathspec_rune_wildcards :: proc(t: ^testing.T) {
 	ps := pathspec.from_lines({"src/?/x.go"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps)
-	testing.expect(t, pathspec.pathspec_match_file(ps, "src/日/x.go"))
-	testing.expect(t, !pathspec.pathspec_match_file(ps, "src/ab/x.go"))
+	testing.expect(t, pathspec.pathspec_match_path("src/日/x.go", ps, false))
+	testing.expect(t, !pathspec.pathspec_match_path("src/ab/x.go", ps, false))
 
 	ps2 := pathspec.from_lines({"file?.go"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps2)
-	testing.expect(t, pathspec.pathspec_match_file(ps2, "file日.go"))
+	testing.expect(t, pathspec.pathspec_match_path("file日.go", ps2, false))
 	// An invalid UTF-8 byte in the subject is a clean no-match.
 	bad_path := "file\xFF.go"
-	testing.expect(t, !pathspec.pathspec_match_file(ps2, bad_path))
+	testing.expect(t, !pathspec.pathspec_match_path(bad_path, ps2, false))
 
 	// `*` spans multi-byte characters on valid names.
 	ps3 := pathspec.from_lines({"*.go"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps3)
-	testing.expect(t, pathspec.pathspec_match_file(ps3, "日本語.go"))
+	testing.expect(t, pathspec.pathspec_match_path("日本語.go", ps3, false))
 }
 
 @(test)
@@ -78,14 +81,14 @@ pathspec_match_path :: proc(t: ^testing.T) {
 	ps := pathspec.from_lines({"*.go", "vendor/", "**/test"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps)
 
-	testing.expect(t, pathspec.pathspec_match_path("main.go", ps))
-	testing.expect(t, pathspec.pathspec_match_path("vendor/lib/foo.go", ps))
-	testing.expect(t, pathspec.pathspec_match_path("pkg/test/main.go", ps))
-	testing.expect(t, !pathspec.pathspec_match_path("main.py", ps))
-	testing.expect(t, !pathspec.pathspec_match_path("src/main.go", ps))
+	testing.expect(t, pathspec.pathspec_match_path("main.go", ps, false))
+	testing.expect(t, pathspec.pathspec_match_path("vendor/lib/foo.go", ps, false))
+	testing.expect(t, pathspec.pathspec_match_path("pkg/test/main.go", ps, false))
+	testing.expect(t, !pathspec.pathspec_match_path("main.py", ps, false))
+	testing.expect(t, !pathspec.pathspec_match_path("src/main.go", ps, false))
 
 	// A nil spec matches nothing.
-	testing.expect(t, !pathspec.pathspec_match_path("foo.go", nil))
+	testing.expect(t, !pathspec.pathspec_match_path("foo.go", nil, false))
 }
 
 @(test)
@@ -113,7 +116,7 @@ pathspec_glob_to_regex_table :: proc(t: ^testing.T) {
 		{"src/**/test", false, "src/a/test", true},
 	}
 	for c in cases {
-		re_src := pathspec.glob_to_regex(c.pattern, c.dir)
+		re_src := pathspec.glob_to_regex(c.pattern, c.dir, false)
 		re, err := regex.compile_regex(re_src, context.temp_allocator)
 		testing.expectf(t, err == nil, "compile %q: %v", re_src, err)
 		if err != nil {
@@ -124,15 +127,25 @@ pathspec_glob_to_regex_table :: proc(t: ^testing.T) {
 	}
 
 	// dirOnly non-anchored must not match unrelated prefixes.
-	re_src := pathspec.glob_to_regex("vendor", true)
+	re_src := pathspec.glob_to_regex("vendor", true, false)
 	re, err := regex.compile_regex(re_src, context.temp_allocator)
 	testing.expectf(t, err == nil, "compile %q: %v", re_src, err)
 	if err == nil {
 		testing.expect(t, !regex.regex_match(&re, "vendor_x"))
 	}
 
+	// The file-side variant of a dir-only pattern requires subtree content:
+	// the bare directory name no longer matches.
+	re_src = pathspec.glob_to_regex("vendor", true, true)
+	re, err = regex.compile_regex(re_src, context.temp_allocator)
+	testing.expectf(t, err == nil, "compile %q: %v", re_src, err)
+	if err == nil {
+		testing.expect(t, !regex.regex_match(&re, "vendor"))
+		testing.expect(t, regex.regex_match(&re, "vendor/foo.go"))
+	}
+
 	// ']' outside a character class compiles and matches literally.
-	re_src = pathspec.glob_to_regex("foo]bar", false)
+	re_src = pathspec.glob_to_regex("foo]bar", false, false)
 	re, err = regex.compile_regex(re_src, context.temp_allocator)
 	testing.expectf(t, err == nil, "compile %q: %v", re_src, err)
 	if err == nil {
@@ -192,20 +205,20 @@ pathspec_from_lines_with_errors :: proc(t: ^testing.T) {
 	ps, err := pathspec.from_lines_with_errors({"*.go", "vendor/", "# comment"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps)
 	testing.expectf(t, err == "", "unexpected error: %s", err)
-	testing.expect(t, pathspec.pathspec_match_file(ps, "main.go"))
-	testing.expect(t, pathspec.pathspec_match_file(ps, "vendor/lib"))
+	testing.expect(t, pathspec.pathspec_match_path("main.go", ps, false))
+	testing.expect(t, pathspec.pathspec_match_path("vendor/lib", ps, false))
 
 	ps2, err2 := pathspec.from_lines_with_errors({"*.go", "!"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps2)
 	testing.expect(t, err2 != "")
 	testing.expect(t, strings.contains(err2, "!"))
-	testing.expect(t, pathspec.pathspec_match_file(ps2, "main.go"))
+	testing.expect(t, pathspec.pathspec_match_path("main.go", ps2, false))
 
 	// from_lines skips invalid patterns without failing the valid ones.
 	ps3 := pathspec.from_lines({"*.go", "!", "vendor/"}, context.allocator)
 	defer pathspec.pathspec_destroy(ps3)
-	testing.expect(t, pathspec.pathspec_match_file(ps3, "main.go"))
-	testing.expect(t, pathspec.pathspec_match_file(ps3, "vendor/lib"))
+	testing.expect(t, pathspec.pathspec_match_path("main.go", ps3, false))
+	testing.expect(t, pathspec.pathspec_match_path("vendor/lib", ps3, false))
 }
 
 @(test)
@@ -294,8 +307,6 @@ pathspec_gitignore_depth_semantics :: proc(t: ^testing.T) {
 		{"a/b/x.log", true},
 		{"keep.log", false},
 		{"a/keep.log", false},
-		{"target", true},
-		{"sub/target", true},
 		{"sub/target/f", true},
 		{"rooted", true},
 		{"sub/rooted", false},
@@ -304,9 +315,15 @@ pathspec_gitignore_depth_semantics :: proc(t: ^testing.T) {
 		{"sub/mid/fix", false},
 	}
 	for c in root_cases {
-		got := pathspec.pathspec_match_path(c.path, ps)
+		got := pathspec.pathspec_match_path(c.path, ps, false)
 		testing.expectf(t, got == c.want, "root-spec path %s: got %v, want %v", c.path, got, c.want)
 	}
+
+	// The dir-only pattern "target/" matches the directories themselves —
+	// the file-kind table above cannot carry those rows (a regular file
+	// spelling the bare name stays visible).
+	testing.expect(t, pathspec.pathspec_match_path("target", ps, true))
+	testing.expect(t, pathspec.pathspec_match_path("sub/target", ps, true))
 
 	sub, err2 := pathspec.gitignore_patterns_from_content("*.tmp\ndeep/x.txt\n", "sub", context.allocator)
 	testing.expectf(t, err2 == "", "unexpected error: %s", err2)
@@ -331,7 +348,7 @@ pathspec_gitignore_depth_semantics :: proc(t: ^testing.T) {
 		{"deep/x.txt", false},
 	}
 	for c in sub_cases {
-		got := pathspec.pathspec_match_path(c.path, ps2)
+		got := pathspec.pathspec_match_path(c.path, ps2, false)
 		testing.expectf(t, got == c.want, "sub-spec path %s: got %v, want %v", c.path, got, c.want)
 	}
 }
@@ -379,7 +396,6 @@ pathspec_literal_fast_path_shapes :: proc(t: ^testing.T) {
 		{{"/build"}, "build", true},
 		{{"/build"}, "build/x", false},
 		{{"/build"}, "sub/build", false},
-		{{"/build/"}, "build", true},
 		{{"/build/"}, "build/x", true},
 		{{"pkg/gen"}, "pkg/gen", true},
 		{{"pkg/gen"}, "pkg/gen/y", true},
@@ -393,6 +409,15 @@ pathspec_literal_fast_path_shapes :: proc(t: ^testing.T) {
 		{{"node_modules/"}, "node_modulesx", false},
 		{{"*.tmp", "!keep.tmp"}, "keep.tmp", false},
 		{{"*.tmp", "!keep.tmp"}, "gone.tmp", true},
+		// Dir-only patterns (trailing slash) never match a regular file
+		// that spells the bare directory name — git's trailing-separator
+		// rule — while paths under a directory of that name still match:
+		// a single-path check that did not walk the parents keeps seeing
+		// files inside an ignored directory as ignored.
+		{{"include/"}, "include", false},
+		{{"include/"}, "include/header.h", true},
+		{{"bu*/"}, "build", false},
+		{{"bu*/"}, "build/x", true},
 		// Trailing `**` matches only paths INSIDE the directory — git
 		// leaves the bare directory unignored (verified against
 		// `git check-ignore`): the directory stays walkable and a later
@@ -409,10 +434,43 @@ pathspec_literal_fast_path_shapes :: proc(t: ^testing.T) {
 	for c in cases {
 		ps := pathspec.from_lines(c.patterns, context.temp_allocator)
 		defer pathspec.pathspec_destroy(ps)
-		got := pathspec.pathspec_match_path(c.path, ps)
+		got := pathspec.pathspec_match_path(c.path, ps, false)
 		testing.expectf(
 			t, got == c.match,
 			"patterns %v path %q: got %v, expected %v", c.patterns, c.path, got, c.match,
+		)
+	}
+}
+
+// Dir-kind matching: a dir-only pattern matches the directory itself (the
+// literal subtree flavor's bare-name branch), and directory walks rely on
+// that to prune descent — the file-kind rows above cannot carry it.
+@(test)
+pathspec_dir_kind_matches :: proc(t: ^testing.T) {
+	cases := []struct {
+		patterns: []string,
+		path:     string,
+		match:    bool,
+	}{
+		{{"include/"}, "include", true},
+		{{"include/"}, "include/header.h", true},
+		{{"/build/"}, "build", true},
+		{{"/build/"}, "build/x", true},
+		{{"vendor"}, "vendor", true},
+		{{"vendor"}, "vendor/x", true},
+		{{"bu*/"}, "build", true},
+		// A trailing ** leaves the bare directory unignored.
+		{{"build/**"}, "build", false},
+		// Negation re-includes a directory.
+		{{"target/", "!target/"}, "target", false},
+	}
+	for c in cases {
+		ps := pathspec.from_lines(c.patterns, context.temp_allocator)
+		defer pathspec.pathspec_destroy(ps)
+		got := pathspec.pathspec_match_path(c.path, ps, true)
+		testing.expectf(
+			t, got == c.match,
+			"patterns %v dir path %q: got %v, expected %v", c.patterns, c.path, got, c.match,
 		)
 	}
 }
