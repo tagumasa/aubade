@@ -659,6 +659,18 @@ file_read :: proc(
 	if derr, denied := sensitive_path_denied(ed, deny, rel, a); denied {
 		return {}, derr
 	}
+	// A negative or inverted range is invalid input, not an empty window:
+	// the sibling line-edit family refuses the same shapes, and silently
+	// clamping would hand back a confident empty body for a mis-specified
+	// range. Without an explicit end only start is meaningful, so the check
+	// passes the start as its own end.
+	range_end := end_line
+	if !end_set {
+		range_end = start_line
+	}
+	if rerr := validate_line_range(start_line, range_end, a); rerr != nil {
+		return {}, rerr
+	}
 	contents, rerr, rmsg := editor.editor_read_file(ed, rel)
 	if rerr != .None {
 		return {}, editor_err_map("file read", rerr, rmsg, a)
@@ -689,26 +701,18 @@ file_read :: proc(
 	text := read_text_normalise_cr(contents, a)
 
 	lines := strings.split(text, "\n", a)
-	start := start_line
-	if start < 0 {
-		start = 0
-	}
 	res: File_Read_Result
 	res.total_chars = len(text)
-	if start >= len(lines) {
+	// The range gate above guarantees start_line >= 0 and, when end is set,
+	// end_line >= start_line — only the beyond-EOF clamps remain here.
+	if start_line >= len(lines) {
 		return res, nil
 	}
 	end := len(lines)
 	if end_set && end_line < end {
 		end = end_line + 1
 	}
-	if end > len(lines) {
-		end = len(lines)
-	}
-	if end < start {
-		end = start
-	}
-	sliced, _ := strings.join(lines[start:end], "\n", a)
+	sliced, _ := strings.join(lines[start_line:end], "\n", a)
 	res.content = sliced
 	res.read_ask = safety.is_read_ask(rel)
 	if max_chars > 0 && len(sliced) > max_chars {
