@@ -2,7 +2,7 @@
 // string; nothing else may hardcode a version number.
 package version
 
-AUBADE_VERSION :: "1.0.6"
+AUBADE_VERSION :: "1.0.7"
 
 // The project's repository — the contact URL the honest user agent
 // cites, so site operators can identify the bot. Kept beside the version
