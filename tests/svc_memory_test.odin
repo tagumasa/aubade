@@ -7,6 +7,7 @@ package tests
 import "core:mem"
 import "core:encoding/json"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "src:jsonrpc"
@@ -107,6 +108,16 @@ svc_memory_traversal_and_bare_global_refused :: proc(t: ^testing.T) {
 		testing.expectf(t, false, "nested traversal must refuse")
 		return
 	}
+	// The refusal must leave nothing behind: containment judges before any
+	// directory is created, so an escaping name cannot build its own path
+	// outside the memories root on the way to the refusal.
+	if _, _, perr := svc.memory_path(box.mf, "../newsub/escape", a); perr == nil {
+		testing.expectf(t, false, "escaping resolve must refuse")
+		return
+	}
+	outside, _ := filepath.join({filepath.dir(box.mf.project_dir), "newsub"}, context.temp_allocator)
+	testing.expect(t, !os.exists(outside), "a refused resolve must not create directories outside the memories root")
+	delete(outside, context.temp_allocator)
 	if _, _, err := svc.memory_load(box.mf, "global", a); err == nil {
 		testing.expectf(t, false, "bare global must refuse")
 	}

@@ -252,13 +252,18 @@ memory_path :: proc(mf: ^Memory_Files, name: string, a: mem.Allocator) -> (abs: 
 	if jerr != nil {
 		return "", "", platform.Wrapped{kind = .Internal, msg = "memory path join failed"}
 	}
-	// Parent directories appear on demand — a failure is not fatal (the
-	// write itself reports it).
-	_ = os.make_directory_all(filepath.dir(joined), MEMORY_DIR_PERMS)
+	// Containment precedes creation: the check resolves every existing
+	// ancestor's symlinks and judges the lexical tail, so it can refuse
+	// before anything appears on disk — a symlinked component must not
+	// let a refused (or read-only) resolve build directories outside the
+	// root through make_directory_all.
 	if cerr := memory_check_containment(joined, root, norm, a); cerr != nil {
 		delete(joined, a)
 		return "", "", cerr
 	}
+	// Parent directories appear on demand — a failure is not fatal (the
+	// write itself reports it).
+	_ = os.make_directory_all(filepath.dir(joined), MEMORY_DIR_PERMS)
 	return joined, root, nil
 }
 
