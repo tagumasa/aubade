@@ -1,7 +1,7 @@
 // Tests for src/safety/urlguard: blocked IPs and their alternate encodings
-// (integer/hex/octal/mixed-notation/IPv4-mapped IPv6), link-local ranges,
-// host and URL-level patterns, validate errors, user patterns, and secret
-// detection through the facade.
+// (integer/hex/octal/mixed-notation IPv4, the inet_aton shorthand dotted
+// forms, IPv4-mapped IPv6), link-local ranges, host and URL-level patterns,
+// validate errors, user patterns, and secret detection through the facade.
 package tests
 
 import "core:strings"
@@ -62,7 +62,8 @@ urlguard_blocks_alternate_ip_encodings :: proc(t: ^testing.T) {
 	defer safety.urlguard_destroy(ug)
 
 	// 169.254.169.254 = 2852039166 = 0xa9fea9fe = 0o25177524776 (leading-zero octal)
-	encodings := [11]string{
+	// = 169.254.43262 (inet_aton shorthand, last part 16 bits) = 0xa9.0xfea9fe.
+	encodings := [13]string{
 		"http://2852039166/latest/meta-data/",
 		"http://0xa9fea9fe/latest/meta-data/",
 		"http://0XA9FEA9FE/latest/meta-data/",
@@ -70,6 +71,8 @@ urlguard_blocks_alternate_ip_encodings :: proc(t: ^testing.T) {
 		"http://0xA9.0xFE.169.254/latest/meta-data/",
 		"http://0251.0376.0251.0376/latest/meta-data/",
 		"http://[::ffff:169.254.169.254]/latest/meta-data/",
+		"http://169.254.43262/latest/meta-data/",
+		"http://0xa9.0xfea9fe/latest/meta-data/",
 		"http://metadata.google.internal:80/",
 		"http://user:pass@metadata.google.internal/",
 		"http://METADATA.GOOGLE.INTERNAL/",
