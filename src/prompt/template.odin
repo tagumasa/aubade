@@ -108,15 +108,28 @@ parse_nodes :: proc(
 	nodes = make([dynamic]Template_Node, 0, 16, a)
 	i := pos
 	for i < len(src) {
-		var_at := strings.index(src[i:], "{{")
-		tag_at := strings.index(src[i:], "{%")
-		if var_at < 0 && tag_at < 0 {
+		// One scan finds the next opener of either kind: probing for
+		// "{{" and "{%" separately rescans the whole remaining suffix
+		// whenever one kind is absent — quadratic on a var-dense
+		// template. A "{" that opens neither is skipped past, so the
+		// probe positions only ever move forward.
+		brace_at := strings.index(src[i:], "{")
+		for brace_at >= 0 {
+			after := i + brace_at + 1
+			if after < len(src) && (src[after] == '{' || src[after] == '%') {
+				break
+			}
+			probe := strings.index(src[after:], "{")
+			brace_at = probe < 0 ? -1 : after + probe - i
+		}
+		if brace_at < 0 {
 			append_text(&nodes, src[i:], a)
 			i = len(src)
 			break
 		}
-		if tag_at >= 0 && (var_at < 0 || tag_at < var_at) {
-			start := i + tag_at
+		is_tag := src[i + brace_at + 1] == '%'
+		if is_tag {
+			start := i + brace_at
 			append_text(&nodes, src[i:start], a)
 			end := strings.index(src[start:], "%}")
 			// The closer scan can land INSIDE the opener: in `{%}` the two
@@ -180,8 +193,12 @@ parse_nodes :: proc(
 				node.else_children = make([dynamic]Template_Node, 0, 0, a)
 				after = after2
 				if stop1 == .Else {
-					else_nodes, after3, _, ok2 := parse_nodes(src, after, .If, depth + 1, a)
-					if !ok2 {
+					else_nodes, after3, stop2, ok2 := parse_nodes(src, after, .If, depth + 1, a)
+					if !ok2 || stop2 != .Endif {
+						// The else branch closes only at endif: a second
+						// {% else %} would end this scan as ok and its
+						// following text would fold into the true-branch
+						// siblings, silently misrouted.
 						return nodes, after, .None, false
 					}
 					node.else_children = else_nodes
@@ -214,7 +231,7 @@ parse_nodes :: proc(
 			return nodes, after, .None, false // unknown tag
 		}
 		// A {{ var }} substitution.
-		start := i + var_at
+		start := i + brace_at
 		append_text(&nodes, src[i:start], a)
 		end := strings.index(src[start:], "}}")
 		if end < 0 {

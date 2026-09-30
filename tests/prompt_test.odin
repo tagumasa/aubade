@@ -377,3 +377,67 @@ prompt_condition_keys_name_registry_entries :: proc(t: ^testing.T) {
 		testing.expectf(t, known, "template marker condition %q is not a marker the registry produces", key)
 	}
 }
+
+// A second {% else %} must refuse the render: the else branch closes
+// only at endif, and a silent accept misroutes the text that follows
+// into the true-branch siblings (the nested form parses, the top-level
+// form only fails through its dangling endif).
+@(test)
+prompt_template_second_else_refuses :: proc(t: ^testing.T) {
+	vars: prompt.Template_Vars
+	prompt.template_vars_init(&vars, context.allocator)
+	defer prompt.template_vars_destroy(&vars)
+	prompt.template_set_bool(&vars, "flag", true)
+
+	bad := []string{
+		"{% if flag %}A{% else %}B{% else %}C{% endif %}",
+		"{% if flag %}{% if flag %}A{% else %}B{% else %}C{% endif %}D{% endif %}",
+	}
+	for src in bad {
+		_, ok := prompt.template_render(src, &vars, context.allocator)
+		testing.expectf(t, !ok, "a second else must fail the render, got ok for %s", src)
+	}
+}
+
+// A "{" that opens neither substitution nor tag is plain text: the
+// one-pass opener scan must skip it and still find the next real
+// opener (JSON-shaped literals ride inside templates).
+@(test)
+prompt_template_lone_brace_is_text :: proc(t: ^testing.T) {
+	vars: prompt.Template_Vars
+	prompt.template_vars_init(&vars, context.allocator)
+	defer prompt.template_vars_destroy(&vars)
+	prompt.template_set_str(&vars, "name", "x")
+
+	out, ok := prompt.template_render("a { b } {{ name }} c", &vars, context.allocator)
+	testing.expect(t, ok)
+	testing.expectf(t, out == "a { b } x c\n", "lone braces must pass through, got %s", out)
+	delete(out, context.allocator)
+}
+
+// The template name is a file name, not a path: a separator or a
+// dot-dot segment never reads outside the templates directory. The
+// probe file sits at the home root, exactly where the unguarded join
+// would land for "../escape".
+@(test)
+prompt_template_names_refuse_path_shapes :: proc(t: ^testing.T) {
+	home, herr := os.make_directory_temp("", "aubade-prompt-path-", context.allocator)
+	if herr != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(home)
+		delete(home, context.allocator)
+	}
+	escape := strings.concatenate({home, "/escape.tmpl"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(escape, "escaped body", os.Permissions{.Read_User, .Write_User}); werr != nil {
+		testing.expectf(t, false, "escape seed failed")
+		return
+	}
+
+	paths := []string{"../escape", "sub/escape", ".."}
+	for name in paths {
+		body, ok := prompt.template_by_name(home, name, context.allocator)
+		testing.expectf(t, !ok && body == "", "the path-shaped name %s answers not-found", name)
+	}
+}
