@@ -377,3 +377,24 @@ prompt_condition_keys_name_registry_entries :: proc(t: ^testing.T) {
 		testing.expectf(t, known, "template marker condition %q is not a marker the registry produces", key)
 	}
 }
+
+// A second {% else %} must refuse the render: the else branch closes
+// only at endif, and a silent accept misroutes the text that follows
+// into the true-branch siblings (the nested form parses, the top-level
+// form only fails through its dangling endif).
+@(test)
+prompt_template_second_else_refuses :: proc(t: ^testing.T) {
+	vars: prompt.Template_Vars
+	prompt.template_vars_init(&vars, context.allocator)
+	defer prompt.template_vars_destroy(&vars)
+	prompt.template_set_bool(&vars, "flag", true)
+
+	bad := []string{
+		"{% if flag %}A{% else %}B{% else %}C{% endif %}",
+		"{% if flag %}{% if flag %}A{% else %}B{% else %}C{% endif %}D{% endif %}",
+	}
+	for src in bad {
+		_, ok := prompt.template_render(src, &vars, context.allocator)
+		testing.expectf(t, !ok, "a second else must fail the render, got ok for %s", src)
+	}
+}

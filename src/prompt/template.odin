@@ -180,8 +180,12 @@ parse_nodes :: proc(
 				node.else_children = make([dynamic]Template_Node, 0, 0, a)
 				after = after2
 				if stop1 == .Else {
-					else_nodes, after3, _, ok2 := parse_nodes(src, after, .If, depth + 1, a)
-					if !ok2 {
+					else_nodes, after3, stop2, ok2 := parse_nodes(src, after, .If, depth + 1, a)
+					if !ok2 || stop2 != .Endif {
+						// The else branch closes only at endif: a second
+						// {% else %} would end this scan as ok and its
+						// following text would fold into the true-branch
+						// siblings, silently misrouted.
 						return nodes, after, .None, false
 					}
 					node.else_children = else_nodes
