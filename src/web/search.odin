@@ -360,9 +360,13 @@ retryable_status :: proc(status: int) -> bool {
 	return status == 429 || status == 401 || status == 403 || status >= 500
 }
 
+// truncate_for_error bounds a provider's error body before it rides an
+// error message. The cut backs off to a rune boundary: a multi-byte
+// sequence never splits mid-character into the message.
 truncate_for_error :: proc(s: string, a := context.allocator) -> string {
 	if len(s) > 200 {
-		return strings.concatenate({s[:200], "...(truncated)"}, a)
+		cut := util.utf8_cut_index(s, 200)
+		return strings.concatenate({s[:cut], "...(truncated)"}, a)
 	}
 	return strings.clone(s, a)
 }

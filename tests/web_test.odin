@@ -766,4 +766,14 @@ search_ddg_rows_pair_with_their_own_snippets :: proc(t: ^testing.T) {
 	// The href-less row is not emitted, and its snippet died with it.
 	testing.expect(t, !strings.contains(out, "Sponsored"), out)
 	testing.expect(t, !strings.contains(out, "sponsored snippet"), out)
+
+// The error preview cuts on a rune boundary: a multi-byte sequence never
+// splits mid-character into the message.
+@(test)
+search_error_preview_cuts_on_a_rune_boundary :: proc(t: ^testing.T) {
+	body := strings.repeat("\u65e5", 67, context.temp_allocator) // 201 bytes, 3 per rune
+	out := web.truncate_for_error(body, context.temp_allocator)
+	testing.expect(t, strings.contains(out, "...(truncated)"), out)
+	kept := len(out) - len("...(truncated)")
+	testing.expectf(t, kept <= 200 && kept % 3 == 0, "the kept prefix must be whole runes: %d bytes", kept)
 }

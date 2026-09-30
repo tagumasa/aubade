@@ -151,6 +151,20 @@ resolve_max_chars :: proc(requested, default_max: int) -> int {
 	return requested
 }
 
+// utf8_cut_index backs `n` off to the latest rune boundary at or
+// before it, so a byte-budget truncation never splits a rune — the
+// leading bytes of a multi-byte sequence never trail the cut.
+utf8_cut_index :: proc(s: string, n_in: int) -> int {
+	n := n_in
+	if n >= len(s) {
+		return len(s)
+	}
+	for n > 0 && s[n] & 0xC0 == 0x80 {
+		n -= 1
+	}
+	return n
+}
+
 // ascii_equal_ci compares strings ASCII-case-insensitively without
 // allocating (hot paths — header parsing, option matching — run it per
 // frame or per key and must not grow any allocator).
