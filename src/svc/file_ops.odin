@@ -769,6 +769,17 @@ file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allo
 	// dropping the marker here would silently re-sign the file. New files
 	// gain nothing, and save itself skips the prepend when the incoming
 	// content already starts with its own BOM.
+	// The per-file lock is the disk-write mutex for project files: without
+	// it a concurrent edit_file on the same path interleaves its
+	// read-modify-write with this save and one of the two writes is lost.
+	// The buffer drop shares the same critical section through the locked
+	// variant (editor_drop_buffer would re-acquire the mutex), and the BOM
+	// probe rides the lock too — outside it a concurrent writer could swap
+	// the head between the probe and the save.
+	h := editor.file_lock(ed, rel)
+	defer editor.file_release(ed, rel)
+	sync.mutex_lock(&h.mu)
+	defer sync.mutex_unlock(&h.mu)
 	had_bom := false
 	if overwrote {
 		if f, oerr := os.open(abs, {.Read}, os.Permissions{.Read_User}); oerr == nil {
@@ -778,15 +789,6 @@ file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allo
 			os.close(f)
 		}
 	}
-	// The per-file lock is the disk-write mutex for project files: without
-	// it a concurrent edit_file on the same path interleaves its
-	// read-modify-write with this save and one of the two writes is lost.
-	// The buffer drop shares the same critical section through the locked
-	// variant (editor_drop_buffer would re-acquire the mutex).
-	h := editor.file_lock(ed, rel)
-	defer editor.file_release(ed, rel)
-	sync.mutex_lock(&h.mu)
-	defer sync.mutex_unlock(&h.mu)
 	if werr, wmsg := editor.save(ed, rel, content, had_bom); werr != .None {
 		return false, editor_err_map("file write failed", werr, wmsg, a)
 	}
