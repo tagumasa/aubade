@@ -196,6 +196,27 @@ delete_lines_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, m
 	return edited_delete_between(ef, job.start_line, 0, job.end_line, 0)
 }
 
+// Insert_After_Job appends text below a definition. Inserting past the
+// last line of a file without a trailing newline resolves to the end of
+// content (position_offset's EOF admission): the step terminates that
+// last line first — unconditionally, because a separated kind's own
+// leading "\n" is consumed as the terminator and a conditional prepend
+// would silently drop the separation.
+Insert_After_Job :: struct {
+	line: int,
+	text: string, // borrowed for the call's duration
+}
+
+insert_after_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string) {
+	job := cast(^Insert_After_Job)user
+	text := job.text
+	ends_with_newline := len(ef.buf.contents) > 0 && ef.buf.contents[len(ef.buf.contents)-1] == '\n'
+	if job.line == len(ef.buf.lines) && !ends_with_newline {
+		text = strings.concatenate({"\n", text}, context.temp_allocator)
+	}
+	return edited_insert_text(ef, job.line, 0, text)
+}
+
 Replace_Body_Job :: struct {
 	sl, sc, el, ec: int,
 	body:           string, // normalised, borrowed for the call's duration
@@ -288,8 +309,8 @@ editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 	text = strings.trim_right(text, "\r\n")
 	text = strings.concatenate({text, "\n"}, context.temp_allocator)
 
-	job := Insert_Lines_Job{line = el + 1, text = text}
-	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
+	job := Insert_After_Job{line = el + 1, text = text}
+	return editor_edit_ctx(e, rel_path, {apply = insert_after_step, user = &job, source = source})
 }
 
 // editor_symbol_insert_before prepends `body` directly above the symbol.
