@@ -77,7 +77,7 @@ shadow_diff :: Tool_Desc{
 shadow_restore :: Tool_Desc{
 	name        = "shadow_restore",
 	title       = "Restore shadow snapshot",
-	description = "Restore the workspace to a previous shadow git snapshot. This will overwrite current files; every tracked path passes the same containment and write-denial gate as file writes, and the restore refuses (naming the paths) when any check fails.",
+	description = "Restore the workspace to a previous shadow git snapshot. This overwrites current files and deletes files the snapshot does not track (ignore-excluded files are spared); every tracked path passes the same containment and write-denial gate as file writes, and the restore refuses (naming the paths) when any check fails.",
 	can_edit    = true,
 	destructive = true,
 	optional    = true,
@@ -90,7 +90,7 @@ shadow_restore :: Tool_Desc{
 shadow_revert_file :: Tool_Desc{
 	name        = "shadow_revert_file",
 	title       = "Revert file to snapshot",
-	description = "Revert a single file to its state in a previous shadow git snapshot.",
+	description = "Revert a single file to its state in a previous shadow git snapshot; a file that did not exist in that snapshot is deleted instead.",
 	can_edit    = true,
 	destructive = true,
 	optional    = true,
