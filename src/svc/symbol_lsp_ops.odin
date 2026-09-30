@@ -707,11 +707,32 @@ symbol_lsp_find_declaration :: proc(
 
 Rename_Apply_Job :: struct {
 	edits: []lsp.Rename_Edit, // sorted descending by position by the caller
+	// The old name's leaf: every server edit range must still sit over an
+	// occurrence of it when the apply reads the buffer.
+	old_leaf: string,
 }
+
+// RENAME_MOVED_MSG names the refusal the apply answers with when a
+// server edit's range no longer covers the old name: the buffer changed
+// between the server's analysis and the splice, so the positions cannot
+// be trusted — the caller re-runs the rename.
+RENAME_MOVED_MSG :: "the file changed since the rename was computed; re-read and retry"
 
 rename_apply_step :: proc(ef: ^editor.Edited_File, user: rawptr) -> (err: editor.Editor_Err, msg: string) {
 	job := cast(^Rename_Apply_Job)user
 	for e in job.edits {
+		// The positions were computed against the server's document
+		// mirror; the buffer may have moved since (an out-of-band writer,
+		// a concurrent request on another file of this rename set). A
+		// splice at shifted positions edits the wrong bytes silently —
+		// the range must still cover the occurrence it names.
+		over, tok := editor.edited_text_between(
+			ef, int(e.range.start.line), int(e.range.start.character),
+			int(e.range.end.line), int(e.range.end.character),
+		)
+		if !tok || !strings.contains(over, job.old_leaf) {
+			return .Position, strings.concatenate({"the renamed occurrence ", RENAME_MOVED_MSG}, context.temp_allocator)
+		}
 		// Edits are expressed against the pre-edit document; applying
 		// from the last position back keeps every remaining position
 		// valid as the tail shifts.
@@ -854,7 +875,7 @@ symbol_lsp_rename :: proc(
 		// orders the stored list itself.
 		file_edits := by_file[f][:]
 		rename_edits_descending(file_edits)
-		job := Rename_Apply_Job{edits = file_edits}
+		job := Rename_Apply_Job{edits = file_edits, old_leaf = name_path_leaf(name_path)}
 		aerr, amsg := editor.editor_edit_ctx(ed, f, {apply = rename_apply_step, user = &job})
 		if aerr != .None {
 			if applied == 0 {

@@ -266,6 +266,20 @@ h_sym_rename_none :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 	return {result = v}, .Respond
 }
 
+// h_sym_rename_moved answers an edit whose range sits over "type" on the
+// declaration line — off the old name, the shape a server answers with
+// when the buffer moved between its analysis and the apply.
+h_sym_rename_moved :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: mem.Allocator) -> (jsonrpc.Reply, jsonrpc.Action) {
+	uri := sym_req_uri(env, arena)
+	body := strings.concatenate({
+		`{"documentChanges":[`,
+		`{"textDocument":{"uri":"`, uri, `"},"edits":[{"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":4}},"newText":"Gadget"}]}`,
+		`]}`,
+	}, arena)
+	v, _ := json.parse_string(body, spec = .JSON, parse_integers = true, allocator = arena)
+	return {result = v}, .Respond
+}
+
 // h_sym_hover answers a plaintext hover for any position.
 h_sym_hover :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: mem.Allocator) -> (jsonrpc.Reply, jsonrpc.Action) {
 	v, _ := json.parse_string(
@@ -538,6 +552,31 @@ symbol_lsp_rename_contract :: proc(t: ^testing.T) {
 	_, none_err := svc.symbol_lsp_rename(f.src, f.ed, "Widget", "a.go", "Other", a, nil)
 	testing.expect(t, none_err != nil)
 	testing.expect(t, strings.contains(platform.err_message(none_err, context.temp_allocator), "no rename edits"))
+}
+
+// The apply verifies every server range still covers the old name: a
+// splice at positions the buffer has moved under edits the wrong bytes
+// silently, so a range off the occurrence refuses and the file stands.
+@(test)
+symbol_lsp_rename_refuses_a_moved_range :: proc(t: ^testing.T) {
+	f := sym_fixture(t)
+	if f == nil {
+		return
+	}
+	defer sym_fixture_destroy(f)
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	a := mem.dynamic_arena_allocator(&arena)
+
+	jsonrpc.conn_register(f.pair.fake.conn, lsp.METHOD_RENAME, h_sym_rename_moved)
+	_, err := svc.symbol_lsp_rename(f.src, f.ed, "Widget", "a.go", "Gadget", a, nil)
+	testing.expect(t, err != nil, "a range off the old name must refuse")
+	testing.expect(t, strings.contains(platform.err_message(err, context.temp_allocator), "changed since the rename"))
+	a_after := sym_read_disk(f, "a.go")
+	testing.expect(t, strings.contains(a_after, "type Widget struct{}"), "a.go must stand unrenamed")
+	testing.expect(t, !strings.contains(a_after, "Gadget"), "no byte of a moved range may land")
 }
 
 @(test)

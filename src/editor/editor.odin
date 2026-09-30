@@ -626,6 +626,23 @@ edited_delete_between :: proc(ef: ^Edited_File, start_line, start_col, end_line,
 	return .None, ""
 }
 
+// edited_text_between returns the buffer bytes under one range, through
+// the same position math edited_delete_between splices by: a caller
+// verifying a server-supplied range reads exactly what a splice would
+// replace. ok=false names a position outside the file (or an inverted
+// range); the returned view borrows the buffer and dies with it.
+edited_text_between :: proc(ef: ^Edited_File, start_line, start_col, end_line, end_col: int) -> (text: string, ok: bool) {
+	start_off, sok := position_offset(ef.buf, start_line, start_col)
+	if !sok {
+		return "", false
+	}
+	end_off, eok := position_offset(ef.buf, end_line, end_col)
+	if !eok || end_off < start_off {
+		return "", false
+	}
+	return ef.buf.contents[start_off:end_off], true
+}
+
 // edited_blank_line reports a line carrying nothing but horizontal
 // whitespace (the buffer's line view already strips a CRLF terminator's
 // CR, so a blank CRLF line reads as "").
