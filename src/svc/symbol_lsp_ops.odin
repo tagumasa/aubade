@@ -875,8 +875,26 @@ symbol_lsp_rename :: proc(
 		// orders the stored list itself.
 		file_edits := by_file[f][:]
 		rename_edits_descending(file_edits)
+		// The rename edits' ranges belong to the server's mirror; the
+		// editor view read here lets the transaction refuse the splice
+		// when the buffer moved since the server computed them (advisory
+		// basis — strict mirror correspondence is outside the best-effort
+		// sync design). The per-iteration defer frees this file's clone
+		// when its apply returns.
+		basis, bserr, _ := editor.editor_read_file(ed, f)
+		if bserr != .None {
+			if applied == 0 {
+				return "", wrapped_err(.Internal, strings.concatenate({"rename apply: could not read ", f}, a), a)
+			}
+			return "", wrapped_err(
+				.Internal,
+				strings.concatenate({"rename apply: could not read ", f, " after ", util.int_to_dec(applied, a), " edits"}, a),
+				a,
+			)
+		}
+		defer delete(basis, ed.allocator)
 		job := Rename_Apply_Job{edits = file_edits, old_leaf = name_path_leaf(name_path)}
-		aerr, amsg := editor.editor_edit_ctx(ed, f, {apply = rename_apply_step, user = &job})
+		aerr, amsg := editor.editor_edit_ctx(ed, f, {apply = rename_apply_step, user = &job, source = basis})
 		if aerr != .None {
 			if applied == 0 {
 				return "", wrapped_err(
@@ -981,7 +999,17 @@ symbol_lsp_delete :: proc(
 		return refusal, nil
 	}
 
-	if derr, dmsg := editor.editor_symbol_delete(ed, rel, match, include_comments, language_id); derr != .None {
+	// The LSP mirror's ranges have no byte basis of their own: read the
+	// editor's view here so the editor transaction can refuse the splice
+	// when the buffer moves again before it runs (advisory — strict
+	// mirror-to-buffer correspondence is outside the best-effort sync
+	// design).
+	source, bserr, _ := editor.editor_read_file(ed, rel)
+	if bserr != .None {
+		return "", wrapped_err(.Internal, "symbol delete: could not read the file to edit", a)
+	}
+	defer delete(source, ed.allocator)
+	if derr, dmsg := editor.editor_symbol_delete(ed, rel, match, source, include_comments, language_id); derr != .None {
 		return "", wrapped_err(.Internal, dmsg, a)
 	}
 	return "", nil

@@ -1,9 +1,12 @@
 // Symbol-level editing on top of the snapshot buffer: body replacement,
 // insert before/after a definition, docstring insert/delete/replace, and
 // the cross-file symbol move. Positions come from the caller's freshly
-// parsed outline (the Symbol ranges, UTF-16 line/col like the wire); the
-// caller also supplies the language names it resolved from the file
-// extensions, keeping this package free of the grammar registry.
+// parsed outline (the Symbol ranges, UTF-16 line/col like the wire), and
+// `source` is the bytes that outline was parsed from — the transaction
+// refuses when the buffer no longer matches them, so a splice planned
+// against other bytes never lands at stale offsets; the caller also
+// supplies the language names it resolved from the file extensions,
+// keeping this package free of the grammar registry.
 //
 // Odin proc literals do not capture, so multi-step transactions use
 // Edit_Job: a plain procedure paired with a `user` pointer to a
@@ -52,9 +55,18 @@ move_mode_string :: proc(m: Move_Mode) -> string {
 }
 
 Edit_Job :: struct {
-	apply:   proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string),
+	apply: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string),
 	user: rawptr,
+	// The bytes the job's positions were resolved against (borrowed for the
+	// call's duration). The transaction refuses when the live buffer
+	// differs. "" marks a job without a positional basis (the cosmetic
+	// seam collapse) that skips the guard.
+	source: string,
 }
+
+// The moved-source refusal: the ranges were planned against other bytes,
+// so splicing them here would corrupt the file instead of editing it.
+SYMBOL_MOVED_MSG :: "the file changed since the symbol was resolved; re-read and retry"
 
 // editor_edit_ctx is the multi-step edit transaction: it takes the file
 // lock, snapshots the buffer, runs the job against the edited file, and
@@ -77,6 +89,9 @@ editor_edit_ctx :: proc(e: ^Editor, rel_path: string, job: Edit_Job) -> (err: Ed
 	buf, aerr, amsg := buffer_acquire(e, rel_path)
 	if aerr != .None {
 		return aerr, amsg
+	}
+	if job.source != "" && buf.contents != job.source {
+		return .Position, SYMBOL_MOVED_MSG
 	}
 	snapshot := strings.clone(buf.contents, e.allocator)
 	defer delete(snapshot, e.allocator)
@@ -156,6 +171,31 @@ count_trailing_newlines :: proc(text: string) -> int {
 // replace_body
 // ---------------------------------------------------------------------------
 
+// Insert_Lines_Job inserts whole lines at a line index — the ctx form of
+// the single-action insert the before/above edits used to go through
+// edit_file for, so they share the moved-source guard.
+Insert_Lines_Job :: struct {
+	line: int,
+	text: string, // borrowed for the call's duration
+}
+
+insert_lines_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string) {
+	job := cast(^Insert_Lines_Job)user
+	return edited_insert_text(ef, job.line, 0, job.text)
+}
+
+// Delete_Lines_Job removes whole lines [start_line, end_line) — the ctx
+// form of the cross-file move's source-side delete.
+Delete_Lines_Job :: struct {
+	start_line: int,
+	end_line:   int,
+}
+
+delete_lines_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, msg: string) {
+	job := cast(^Delete_Lines_Job)user
+	return edited_delete_between(ef, job.start_line, 0, job.end_line, 0)
+}
+
 Replace_Body_Job :: struct {
 	sl, sc, el, ec: int,
 	body:           string, // normalised, borrowed for the call's duration
@@ -196,8 +236,9 @@ replace_body_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, m
 }
 
 // editor_symbol_replace_body swaps the symbol's full range content for
-// `body`.
-editor_symbol_replace_body :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, body: string) -> (err: Editor_Err, msg: string) {
+// `body`. `source` is the bytes the symbol's positions were resolved
+// against; the transaction refuses when the buffer moved since.
+editor_symbol_replace_body :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
 	sl, sc, el, ec, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body start position not available"
@@ -205,7 +246,7 @@ editor_symbol_replace_body :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 	trimmed := strings.trim_space(body)
 	normalised := normalise_line_endings(e, trimmed, context.temp_allocator)
 	job := Replace_Body_Job{sl = sl, sc = sc, el = el, ec = ec, body = normalised}
-	return editor_edit_ctx(e, rel_path, {apply = replace_body_step, user = &job})
+	return editor_edit_ctx(e, rel_path, {apply = replace_body_step, user = &job, source = source})
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +254,10 @@ editor_symbol_replace_body :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 // ---------------------------------------------------------------------------
 
 // editor_symbol_insert_after appends `body` directly below the symbol,
-// normalising surrounding empty lines.
-editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, body: string) -> (err: Editor_Err, msg: string) {
+// normalising surrounding empty lines. `source` is the bytes the symbol's
+// positions were resolved against; the transaction refuses when the
+// buffer moved since.
+editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
 	if s.has_body && s.body == s.name {
 		return .Invalid_Symbol, strings.concatenate({
 			"cannot insert after this symbol (not a function, class or method): ",
@@ -245,12 +288,14 @@ editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 	text = strings.trim_right(text, "\r\n")
 	text = strings.concatenate({text, "\n"}, context.temp_allocator)
 
-	action := Edit_Action{kind = .Insert, start_line = el + 1, start_col = 0, text = text}
-	return edit_file(e, rel_path, action)
+	job := Insert_Lines_Job{line = el + 1, text = text}
+	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
 }
 
 // editor_symbol_insert_before prepends `body` directly above the symbol.
-editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, body: string) -> (err: Editor_Err, msg: string) {
+// `source` is the bytes the symbol's positions were resolved against; the
+// transaction refuses when the buffer moved since.
+editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
 	sl, _, _, _, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body start position not available"
@@ -273,8 +318,8 @@ editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Sym
 		text = strings.concatenate({text, suffix}, context.temp_allocator)
 	}
 
-	action := Edit_Action{kind = .Insert, start_line = sl, start_col = 0, text = text}
-	return edit_file(e, rel_path, action)
+	job := Insert_Lines_Job{line = sl, text = text}
+	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +355,7 @@ delete_docstring_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Er
 // refusal message.
 DOCSTRING_UNMARKED_MSG :: "comment text is written verbatim and carries no comment marker for this file (include the language's marker, e.g. // or #)"
 
-editor_symbol_insert_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, lang: string, comment: string) -> (err: Editor_Err, msg: string) {
+editor_symbol_insert_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, lang: string, comment: string) -> (err: Editor_Err, msg: string) {
 	sl, _, _, _, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body start position not available"
@@ -325,19 +370,19 @@ editor_symbol_insert_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.
 	if !strings.has_suffix(text, "\n") {
 		text = strings.concatenate({text, "\n"}, context.temp_allocator)
 	}
-	action := Edit_Action{kind = .Insert, start_line = sl, start_col = 0, text = text}
-	return edit_file(e, rel_path, action)
+	job := Insert_Lines_Job{line = sl, text = text}
+	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
 }
 
 // editor_symbol_delete_docstring removes any docstring or comment block
 // immediately preceding the definition, leaving the symbol intact.
-editor_symbol_delete_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, lang: string) -> (err: Editor_Err, msg: string) {
+editor_symbol_delete_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, lang: string) -> (err: Editor_Err, msg: string) {
 	sl, _, _, _, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body start position not available"
 	}
 	job := Delete_Docstring_Job{sl = sl, lang = lang}
-	return editor_edit_ctx(e, rel_path, {apply = delete_docstring_step, user = &job})
+	return editor_edit_ctx(e, rel_path, {apply = delete_docstring_step, user = &job, source = source})
 }
 
 Replace_Docstring_Job :: struct {
@@ -368,7 +413,7 @@ replace_docstring_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_E
 
 // editor_symbol_replace_docstring swaps the preceding comment block for
 // `comment` (an empty comment only deletes).
-editor_symbol_replace_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, lang: string, comment: string) -> (err: Editor_Err, msg: string) {
+editor_symbol_replace_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, lang: string, comment: string) -> (err: Editor_Err, msg: string) {
 	sl, _, _, _, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body start position not available"
@@ -377,7 +422,7 @@ editor_symbol_replace_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol
 		return .Invalid, DOCSTRING_UNMARKED_MSG
 	}
 	job := Replace_Docstring_Job{sl = sl, lang = lang, comment = comment}
-	return editor_edit_ctx(e, rel_path, {apply = replace_docstring_step, user = &job})
+	return editor_edit_ctx(e, rel_path, {apply = replace_docstring_step, user = &job, source = source})
 }
 
 // ---------------------------------------------------------------------------
@@ -422,7 +467,9 @@ delete_symbol_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, 
 // removes an immediately preceding docstring/comment block. The plain form
 // deletes the exact body range (the trailing newline stays),
 // the comment form deletes whole lines through the line after the body.
-editor_symbol_delete :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, include_comments: bool, lang: string) -> (err: Editor_Err, msg: string) {
+// `source` is the bytes the symbol's positions were resolved against; the
+// transaction refuses when the buffer moved since.
+editor_symbol_delete :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, include_comments: bool, lang: string) -> (err: Editor_Err, msg: string) {
 	sl, sc, el, ec, ok := symbol_positions(s)
 	if !ok {
 		return .Position, "body positions not available"
@@ -438,7 +485,7 @@ editor_symbol_delete :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, in
 		with_comments = include_comments,
 		lang = lang,
 	}
-	return editor_edit_ctx(e, rel_path, {apply = delete_symbol_step, user = &job})
+	return editor_edit_ctx(e, rel_path, {apply = delete_symbol_step, user = &job, source = source})
 }
 
 detect_line_indent :: proc(content: string, line_num: int) -> string {
@@ -529,10 +576,12 @@ collapse_seam_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Err, 
 // into the target file at the given anchor: `position` is "end" or a
 // name path already resolved to `target` (nil only allowed for "end").
 // `source_contents`/`target_contents` are buffer-aware reads the caller
-// took (they die with the caller's allocator). Returns the operation
-// summary and error strings through the temp allocator. The mode arrives
-// parsed (Move_Mode): the wire spelling is resolved once, by the svc
-// boundary, through move_mode_parse.
+// took (they die with the caller's allocator) and double as the
+// moved-source guard basis: each per-file transaction refuses when the
+// buffer no longer matches the read it was planned against. Returns the
+// operation summary and error strings through the temp allocator. The
+// mode arrives parsed (Move_Mode): the wire spelling is resolved once, by
+// the svc boundary, through move_mode_parse.
 editor_symbol_move :: proc(
 	e: ^Editor,
 	name_path: string,
@@ -613,7 +662,7 @@ editor_symbol_move :: proc(
 			del_start    = comment_start,
 			del_end      = body_end + 1,
 		}
-		if werr, wmsg := editor_edit_ctx(e, target_rel, {apply = move_step, user = &job}); werr != .None {
+		if werr, wmsg := editor_edit_ctx(e, target_rel, {apply = move_step, user = &job, source = source_contents}); werr != .None {
 			return "", werr, wmsg
 		}
 	} else {
@@ -621,18 +670,20 @@ editor_symbol_move :: proc(
 		// atomic with rollback): a failed source
 		// delete after a successful insert leaves the symbol in both files,
 		// as the error below reports.
-		insert := Edit_Action{kind = .Insert, start_line = insert_line, start_col = 0, text = extracted}
-		if werr, wmsg := edit_file(e, target_rel, insert); werr != .None {
+		ijob := Insert_Lines_Job{line = insert_line, text = extracted}
+		if werr, wmsg := editor_edit_ctx(e, target_rel, {apply = insert_lines_step, user = &ijob, source = target_contents}); werr != .None {
 			return "", werr, strings.concatenate({"insert into target: ", wmsg}, context.temp_allocator)
 		}
 		if mode == .Move {
-			del := Edit_Action{kind = .Delete, start_line = comment_start, start_col = 0, end_line = body_end + 1, end_col = 0}
-			if derr, dmsg := edit_file(e, source_rel, del); derr != .None {
+			djob := Delete_Lines_Job{start_line = comment_start, end_line = body_end + 1}
+			if derr, dmsg := editor_edit_ctx(e, source_rel, {apply = delete_lines_step, user = &djob, source = source_contents}); derr != .None {
 				return "", derr, strings.concatenate({"delete from source (symbol exists in both files): ", dmsg}, context.temp_allocator)
 			}
 			// The vacated source seam collapses like an in-file delete. The
 			// delete already succeeded, so the cosmetic pass cannot fail
-			// the move — its error, if any, is dropped.
+			// the move — its error, if any, is dropped. It carries no
+			// positional basis: the seam index came from bytes the delete
+			// above already rewrote.
 			cjob := Collapse_Job{seam = comment_start, residue = 0}
 			_, _ = editor_edit_ctx(e, source_rel, {apply = collapse_seam_step, user = &cjob})
 		}

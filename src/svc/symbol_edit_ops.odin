@@ -52,13 +52,17 @@ lang_for_file :: proc(src: ^TS_Source, rel: string) -> string {
 // resolve_symbol resolves `pattern` to a unique symbol in `rel`. The
 // forest is allocated in `a` — the request arena in every handler — and
 // is never individually freed: arena-interior pointers must not be
-// delete()d (the arena dies wholesale at request end). Source order
-// mirrors the read side: the tree-sitter pass first, and when it yields
-// no outline at all (no grammar, tags query declines) the LSP producer's
-// document symbols for the same file. `lsp_lang` is non-empty only when
-// the resolution came from that fallback — the server's language id
-// cloned into `a`, for callers that need comment syntax; every other
-// caller deletes it.
+// delete()d (the arena dies wholesale at request end). `source` is the
+// parse basis: the exact bytes the returned ranges were resolved against
+// (the sourced TS arm), or "" when the resolution came from the LSP
+// fallback — those ranges belong to the server's mirror, and the caller
+// reads an advisory basis from the editor instead (edit_basis). Source
+// order mirrors the read side: the tree-sitter pass first, and when it
+// yields no outline at all (no grammar, tags query declines) the LSP
+// producer's document symbols for the same file. `lsp_lang` is non-empty
+// only when the resolution came from that fallback — the server's
+// language id cloned into `a`, for callers that need comment syntax;
+// every other caller deletes it.
 resolve_symbol :: proc(
 	src: ^TS_Source,
 	lsp_src: ^LSP_Source,
@@ -66,10 +70,10 @@ resolve_symbol :: proc(
 	rel: string,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
-) -> (match: ^symbol.Symbol, roots: []^symbol.Symbol, lsp_lang: string, err: platform.Err) {
-	forest, ferr := ts_source_file_symbols(src, rel, a)
+) -> (match: ^symbol.Symbol, roots: []^symbol.Symbol, source: string, lsp_lang: string, err: platform.Err) {
+	forest, basis, ferr := ts_source_file_symbols_sourced(src, rel, a)
 	if ferr != nil {
-		return nil, nil, "", ferr
+		return nil, nil, "", "", ferr
 	}
 	if len(forest) == 0 && lsp_src != nil {
 		// The edit ops need only the symbol's range — no follow-up
@@ -79,7 +83,7 @@ resolve_symbol :: proc(
 		// answer, install hint included.
 		l_roots, client, uri, lang_id, lerr := lsp_document_symbols(lsp_src, rel, a, token, true)
 		if lerr != nil {
-			return nil, nil, "", lerr
+			return nil, nil, "", "", lerr
 		}
 		lsp_source_release(lsp_src, client, uri)
 		if uri != "" {
@@ -87,6 +91,9 @@ resolve_symbol :: proc(
 		}
 		forest = l_roots
 		lsp_lang = lang_id
+		// The mirror's ranges have no byte basis here; edit_basis supplies
+		// the advisory editor view. The TS basis dies with the arena.
+		basis = ""
 	}
 	found, find_err, find_msg := symbol.symbol_find_unique(forest, pattern)
 	if find_err != .None {
@@ -97,14 +104,35 @@ resolve_symbol :: proc(
 		if find_err == .No_Match {
 			kind = .NotFound
 		}
-		return nil, nil, "", wrapped_err(kind, find_msg, a)
+		return nil, nil, "", "", wrapped_err(kind, find_msg, a)
 	}
-	return found, forest, lsp_lang, nil
+	return found, forest, basis, lsp_lang, nil
+}
+
+// edit_basis supplies the editor guard's basis for one resolved symbol:
+// the TS arm's exact parse bytes when it produced them, otherwise — the
+// LSP fallback arm — the editor's view read now. The fallback basis is
+// advisory: the LSP ranges come from the server's mirror, whose strict
+// correspondence with the buffer is outside the best-effort sync design;
+// the guard still refuses any buffer change between this read and the
+// splice. `owned_fallback` marks the one case where the caller frees the
+// basis (the editor-allocator clone) after the edit consumed it — the
+// TS basis rides the request arena and dies wholesale.
+edit_basis :: proc(ed: ^editor.Editor, rel: string, source: string, a := context.allocator) -> (basis: string, owned_fallback: bool, err: platform.Err) {
+	if source != "" {
+		return source, false, nil
+	}
+	read, rerr, _ := editor.editor_read_file(ed, rel)
+	if rerr != .None {
+		return "", false, wrapped_err(.Internal, "edit basis: could not read the file to edit", a)
+	}
+	return read, true, nil
 }
 
 // Symbol_String_Edit is the editor face the range-only string edits
-// share: apply one string payload to the resolved symbol.
-Symbol_String_Edit :: proc(e: ^editor.Editor, rel: string, s: ^symbol.Symbol, value: string) -> (editor.Editor_Err, string)
+// share: apply one string payload to the resolved symbol against its
+// parse basis.
+Symbol_String_Edit :: proc(e: ^editor.Editor, rel: string, s: ^symbol.Symbol, source: string, value: string) -> (editor.Editor_Err, string)
 
 // symbol_docstring_lang picks the comment-syntax language for one
 // docstring op — the grammar's, or the fallback's for a grammar-less
@@ -142,14 +170,21 @@ symbol_edit_string_op :: proc(
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
 	}
-	match, _, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
+	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
 		return rerr
 	}
 	if lsp_lang != "" {
 		delete(lsp_lang, a) // range-only op: the fallback's language clone is unused
 	}
-	eerr, emsg := edit(ed, rel_n, match, value)
+	basis, owned, berr := edit_basis(ed, rel_n, source, a)
+	if berr != nil {
+		return berr
+	}
+	defer if owned {
+		delete(basis, ed.allocator)
+	}
+	eerr, emsg := edit(ed, rel_n, match, basis, value)
 	if eerr != .None {
 		return editor_err_map(op_name, eerr, emsg, a)
 	}
@@ -209,12 +244,24 @@ symbol_edit_insert_docstring :: proc(
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
 	}
-	match, _, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
+	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
 		return rerr
 	}
 	lang, owns := symbol_docstring_lang(src, rel_n, lsp_lang, a)
-	eerr, emsg := editor.editor_symbol_insert_docstring(ed, rel_n, match, lang, comment)
+	basis, owns_basis, berr := edit_basis(ed, rel_n, source, a)
+	if berr != nil {
+		if owns && lsp_lang != "" {
+			delete(lsp_lang, a)
+		}
+		return berr
+	}
+	// The fallback basis is ed-allocator-owned; the editor job consumes it
+	// synchronously, and the deferred delete covers every return path.
+	defer if owns_basis {
+		delete(basis, ed.allocator)
+	}
+	eerr, emsg := editor.editor_symbol_insert_docstring(ed, rel_n, match, basis, lang, comment)
 	if owns && lsp_lang != "" {
 		delete(lsp_lang, a) // the editor job consumed the language synchronously
 	}
@@ -237,12 +284,22 @@ symbol_edit_delete_docstring :: proc(
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
 	}
-	match, _, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
+	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
 		return rerr
 	}
 	lang, owns := symbol_docstring_lang(src, rel_n, lsp_lang, a)
-	eerr, emsg := editor.editor_symbol_delete_docstring(ed, rel_n, match, lang)
+	basis, owns_basis, berr := edit_basis(ed, rel_n, source, a)
+	if berr != nil {
+		if owns && lsp_lang != "" {
+			delete(lsp_lang, a)
+		}
+		return berr
+	}
+	defer if owns_basis {
+		delete(basis, ed.allocator) // the editor job consumed the basis synchronously
+	}
+	eerr, emsg := editor.editor_symbol_delete_docstring(ed, rel_n, match, basis, lang)
 	if owns && lsp_lang != "" {
 		delete(lsp_lang, a) // the editor job consumed the language synchronously
 	}
@@ -266,12 +323,22 @@ symbol_edit_replace_docstring :: proc(
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
 	}
-	match, _, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
+	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
 		return rerr
 	}
 	lang, owns := symbol_docstring_lang(src, rel_n, lsp_lang, a)
-	eerr, emsg := editor.editor_symbol_replace_docstring(ed, rel_n, match, lang, comment)
+	basis, owns_basis, berr := edit_basis(ed, rel_n, source, a)
+	if berr != nil {
+		if owns && lsp_lang != "" {
+			delete(lsp_lang, a)
+		}
+		return berr
+	}
+	defer if owns_basis {
+		delete(basis, ed.allocator) // the editor job consumed the basis synchronously
+	}
+	eerr, emsg := editor.editor_symbol_replace_docstring(ed, rel_n, match, basis, lang, comment)
 	if owns && lsp_lang != "" {
 		delete(lsp_lang, a) // the editor job consumed the language synchronously
 	}
@@ -318,16 +385,15 @@ symbol_edit_move :: proc(
 		return "", wrapped_err(.Invalid, strings.concatenate({"unsupported file type: ", target_rel}, context.temp_allocator), a)
 	}
 
-	sym, _, _, rerr := resolve_symbol(src, nil, name_path, src_rel, a, token)
+	sym, _, source_contents, _, rerr := resolve_symbol(src, nil, name_path, src_rel, a, token)
 	if rerr != nil {
 		return "", rerr
 	}
-
-	source_contents, srerr, srmsg := editor.editor_read_file(ed, src_rel)
-	if srerr != .None {
-		return "", editor_err_map("move", srerr, srmsg, a)
-	}
-	defer delete(source_contents, ed.allocator)
+	// The resolve basis doubles as the move's source bytes: the extract
+	// slices the very parse the ranges came from, and the per-file guard
+	// refuses the splice when the buffer moved since. It rides the request
+	// arena (no delete); the target read below stays an
+	// editor-allocator clone the defer returns.
 	target_contents, trerr, trmsg := editor.editor_read_file(ed, dst_rel)
 	if trerr != .None {
 		return "", editor_err_map("move", trerr, trmsg, a)
