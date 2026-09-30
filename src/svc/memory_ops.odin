@@ -500,13 +500,20 @@ memory_rename :: proc(
 			}
 		}
 		// Cross-device fallback: copy the bytes, then drop the original.
-		data, read_err := os.read_entire_file_from_path(old_abs, context.temp_allocator)
-		if read_err != nil {
+		// The bounded read re-decides the cap against the bytes as they
+		// are read — the stat above approved a size the file could outgrow
+		// in the window before the read.
+		data, outcome, _ := util.read_bounded_file(old_abs, memory.MAX_MEMORY_READ_BYTES, context.temp_allocator)
+		if outcome != .Ok {
 			return false, 0, platform.Wrapped{
 				kind = .Invalid,
-				msg  = strings.concatenate({"rename memory ", old_name, " to ", new_name, " failed"}, a),
+				msg = strings.concatenate(
+					{"rename memory ", old_name, " to ", new_name, " failed: the source exceeded the read cap while copying"},
+					a,
+				),
 			}
 		}
+		defer delete(data, context.temp_allocator)
 		if werr := memory_write_atomic(new_abs, string(data)); werr != nil {
 			return false, 0, werr
 		}
