@@ -1,7 +1,8 @@
 // urlguard: blocks dangerous URLs — cloud metadata endpoints and known
 // exfiltration services. The hostname is extracted and canonicalised
 // (single-integer/hex/octal IPv4, mixed-notation dotted forms, IPv4-mapped
-// IPv6) so blocked-IP lookups cannot be bypassed by alternate encodings,
+// and IPv4-compatible IPv6) so blocked-IP lookups cannot be bypassed by
+// alternate encodings,
 // and the link-local unicast/multicast ranges are blocked entirely because
 // the major cloud metadata services live in 169.254.0.0/16.
 package safety
@@ -381,8 +382,9 @@ Host_Addr :: struct {
 }
 
 // parse_host_addr recognizes the strict address forms net.ParseIP accepts:
-// all IPv6 spellings (with IPv4-mapped collapsing to v4) and plain decimal
-// dotted-quad IPv4. Lenient encodings are canonicalised separately below.
+// all IPv6 spellings (with IPv4-mapped and IPv4-compatible collapsing to
+// v4) and plain decimal dotted-quad IPv4. Lenient encodings are
+// canonicalised separately below.
 parse_host_addr :: proc(host: string) -> (addr: Host_Addr, ok: bool) {
 	if addr6, ok6 := net.parse_ip6_address(host); ok6 {
 		pieces := cast([8]u16be)addr6
@@ -398,6 +400,15 @@ parse_host_addr :: proc(host: string) -> (addr: Host_Addr, ok: bool) {
 			}
 		}
 		if mapped && addr.bytes[10] == 0xFF && addr.bytes[11] == 0xFF {
+			addr.is_v4 = true
+			for i in 0..<4 {
+				addr.b4[i] = addr.bytes[12+i]
+			}
+		} else if mapped && addr.bytes[10] == 0 && addr.bytes[11] == 0 {
+			// IPv4-compatible (::/96, the deprecated embedding): the v4
+			// table judges the embedded address. :: and ::1 land on
+			// 0.0.0.0 and 0.0.0.1 — neither blocked nor link-local as v4,
+			// so their verdicts match the v6 rows they came from.
 			addr.is_v4 = true
 			for i in 0..<4 {
 				addr.b4[i] = addr.bytes[12+i]

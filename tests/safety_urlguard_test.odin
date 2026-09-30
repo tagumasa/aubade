@@ -62,7 +62,8 @@ urlguard_blocks_alternate_ip_encodings :: proc(t: ^testing.T) {
 	defer safety.urlguard_destroy(ug)
 
 	// 169.254.169.254 = 2852039166 = 0xa9fea9fe = 0o25177524776 (leading-zero octal)
-	encodings := [11]string{
+	// = [::169.254.169.254] (IPv4-compatible v6, the deprecated ::/96 embedding).
+	encodings := [12]string{
 		"http://2852039166/latest/meta-data/",
 		"http://0xa9fea9fe/latest/meta-data/",
 		"http://0XA9FEA9FE/latest/meta-data/",
@@ -70,6 +71,7 @@ urlguard_blocks_alternate_ip_encodings :: proc(t: ^testing.T) {
 		"http://0xA9.0xFE.169.254/latest/meta-data/",
 		"http://0251.0376.0251.0376/latest/meta-data/",
 		"http://[::ffff:169.254.169.254]/latest/meta-data/",
+		"http://[::169.254.169.254]/latest/meta-data/",
 		"http://metadata.google.internal:80/",
 		"http://user:pass@metadata.google.internal/",
 		"http://METADATA.GOOGLE.INTERNAL/",
@@ -82,13 +84,15 @@ urlguard_blocks_alternate_ip_encodings :: proc(t: ^testing.T) {
 	}
 
 	// Non-blocked plain hosts and private-but-not-link-local addresses stay
-	// reachable; the v4-compatible IPv6 form is not link-local.
-	allowed := [5]string{
+	// reachable; the v4-compatible IPv6 form of a public address is judged
+	// by the embedded v4 and stays reachable too.
+	allowed := [6]string{
 		"http://192.168.1.1/",
 		"http://10.0.0.1/",
 		"http://[::1]/",
 		"http://[fe00::1]/",
 		"http://example.com/",
+		"http://[::8.8.8.8]/",
 	}
 	for i in 0..<len(allowed) {
 		blocked, _ := safety.urlguard_is_blocked(ug, allowed[i])
