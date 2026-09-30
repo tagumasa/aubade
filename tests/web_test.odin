@@ -766,6 +766,7 @@ search_ddg_rows_pair_with_their_own_snippets :: proc(t: ^testing.T) {
 	// The href-less row is not emitted, and its snippet died with it.
 	testing.expect(t, !strings.contains(out, "Sponsored"), out)
 	testing.expect(t, !strings.contains(out, "sponsored snippet"), out)
+}
 
 // The error preview cuts on a rune boundary: a multi-byte sequence never
 // splits mid-character into the message.
