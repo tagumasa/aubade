@@ -137,13 +137,13 @@ shadow_repo_init :: proc(s: ^Shadow_Git, a := context.allocator) -> platform.Err
 			return err_new(.Internal, "shadowgit init: mkdir failed")
 		}
 	}
-	if out, gerr := git(s, nil, nil, context.temp_allocator, "init"); gerr != nil {
+	if out, gerr := git(s, nil, "", nil, context.temp_allocator, "init"); gerr != nil {
 		return err_new(.Internal, err_with_output("shadowgit init", out, a))
 	}
-	if out, gerr := git(s, nil, nil, context.temp_allocator, "config", "user.email", AUTHOR_EMAIL); gerr != nil {
+	if out, gerr := git(s, nil, "", nil, context.temp_allocator, "config", "user.email", AUTHOR_EMAIL); gerr != nil {
 		return err_new(.Internal, err_with_output("shadowgit config", out, a))
 	}
-	if out, gerr := git(s, nil, nil, context.temp_allocator, "config", "user.name", AUTHOR_NAME); gerr != nil {
+	if out, gerr := git(s, nil, "", nil, context.temp_allocator, "config", "user.name", AUTHOR_NAME); gerr != nil {
 		return err_new(.Internal, err_with_output("shadowgit config", out, a))
 	}
 	// The daemon's own project state (the managed directory: the SQLite
@@ -173,6 +173,24 @@ shadow_repo_init :: proc(s: ^Shadow_Git, a := context.allocator) -> platform.Err
 	return nil
 }
 
+// snapshot_stage_all stages the whole workspace for the snapshot commit:
+// a force-add, because the workspace's own .gitignore would otherwise
+// leave exactly the risky files (.env, build outputs) outside every
+// snapshot, and a revert of such a file would take the not-in-snapshot
+// removal branch and delete it. -f overrides ignore rules, so the
+// managed directory moves out of info/exclude's protection for this call
+// alone — the pathspec excludes it instead (the same resolved spelling
+// repo_init wrote to info/exclude). The workspace's own .git is never
+// walked, -f or not.
+snapshot_stage_all :: proc(s: ^Shadow_Git, token: ^platform.Cancel_Token = nil) -> (string, platform.Err) {
+	exclude_entry := platform.MANAGED_DIR_NAME
+	if s.managed_exclude != "" {
+		exclude_entry = s.managed_exclude
+	}
+	managed_exclude := strings.concatenate({":(exclude)", exclude_entry, "/"}, context.temp_allocator)
+	return git_at_root(s, token, "add", "--all", "-f", "--", ".", managed_exclude)
+}
+
 // shadow_snapshot records the workspace state as a commit and returns the
 // commit hash. An unchanged workspace returns the current HEAD without
 // creating an empty commit.
@@ -184,7 +202,7 @@ shadow_snapshot :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 	if msg == "" {
 		msg = "snapshot"
 	}
-	if out, gerr := git_work_tree(s, token, "add", "--all"); gerr != nil {
+	if out, gerr := snapshot_stage_all(s, token); gerr != nil {
 		return "", git_fail_with_output(gerr, "shadowgit snapshot add", out, a)
 	}
 
@@ -195,7 +213,7 @@ shadow_snapshot :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 	// HEAD (the flag stays false and the initial path runs); a cancelled
 	// or timed-out probe propagates instead of guessing.
 	if !s.has_head {
-		vout, verr := git(s, nil, token, a, "rev-parse", "--verify", "--quiet", "HEAD")
+		vout, verr := git(s, nil, "", token, a, "rev-parse", "--verify", "--quiet", "HEAD")
 		delete(vout, a)
 		if verr != nil {
 			if platform.err_kind(verr) != .Internal {
@@ -216,7 +234,7 @@ shadow_snapshot :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 	}
 	// diff --cached --quiet exits zero when nothing is staged: the
 	// workspace matches HEAD, so HEAD is the snapshot.
-	qout, qerr := git(s, nil, token, a, "diff", "--cached", "--quiet")
+	qout, qerr := git(s, nil, "", token, a, "diff", "--cached", "--quiet")
 	delete(qout, a)
 	if qerr == nil {
 		return head_hash(s, token, a)
@@ -229,7 +247,7 @@ snapshot_commit :: proc(s: ^Shadow_Git, message: string, token: ^platform.Cancel
 	if initial {
 		prefix = "shadowgit snapshot initial commit"
 	}
-	out, gerr := git(s, nil, token, a, "commit", "--allow-empty", "-m", message)
+	out, gerr := git(s, nil, "", token, a, "commit", "--allow-empty", "-m", message)
 	if gerr != nil {
 		defer delete(out, a) // the error text excerpts it; both paths release it
 		return "", git_fail_with_output(gerr, prefix, out, a)
@@ -252,7 +270,7 @@ shadow_patch :: proc(s: ^Shadow_Git, from, to: string, token: ^platform.Cancel_T
 	// -z like shadow_files_at: quotePath C-escapes non-ASCII and special
 	// characters in the default --name-only output, and paths containing
 	// newlines would split wrong.
-	out, gerr := git(s, nil, token, a, "diff", "--name-only", "-z", from, to)
+	out, gerr := git(s, nil, "", token, a, "diff", "--name-only", "-z", from, to)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return nil, git_fail(gerr, "shadowgit patch: git diff --name-only failed")
@@ -271,7 +289,7 @@ shadow_diff :: proc(s: ^Shadow_Git, from, to: string, token: ^platform.Cancel_To
 	sync.mutex_lock(&s.mu)
 	defer sync.mutex_unlock(&s.mu)
 
-	out, gerr := git(s, nil, token, a, "diff", from, to)
+	out, gerr := git(s, nil, "", token, a, "diff", from, to)
 	if gerr != nil {
 		delete(out, a)
 		return "", git_fail(gerr, "shadowgit diff: git diff failed")
@@ -297,7 +315,7 @@ shadow_files_at :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_To
 // files_at_unlocked is shadow_files_at without the mutex — shadow_restore
 // calls it under the lock it already holds.
 files_at_unlocked :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_Token, a := context.allocator) -> ([]string, platform.Err) {
-	out, gerr := git(s, nil, token, a, "ls-tree", "-r", "--name-only", "-z", hash)
+	out, gerr := git(s, nil, "", token, a, "ls-tree", "-r", "--name-only", "-z", hash)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return nil, git_fail(gerr, "shadowgit files-at: ls-tree failed")
@@ -375,7 +393,7 @@ shadow_restore :: proc(s: ^Shadow_Git, hash: string, token: ^platform.Cancel_Tok
 	}
 	delete(offenders)
 
-	rt_out, rt_err := git(s, nil, token, a, "read-tree", "--reset", hash)
+	rt_out, rt_err := git(s, nil, "", token, a, "read-tree", "--reset", hash)
 	if rt_err != nil {
 		defer delete(rt_out, a)
 		return git_fail_with_output(rt_err, "shadowgit restore read-tree", rt_out, a)
@@ -431,7 +449,7 @@ shadow_revert_file :: proc(s: ^Shadow_Git, hash, file_path: string, token: ^plat
 	// listing: without that resolution, a case-variant spelling of a
 	// tracked file takes the not-in-snapshot removal below and DELETEs the
 	// very file the revert was asked to restore.
-	out, gerr := git(s, nil, token, a, "ls-tree", hash, "--", git_rel)
+	out, gerr := git(s, nil, "", token, a, "ls-tree", hash, "--", git_rel)
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return git_fail(gerr, "shadowgit revert-file ls-tree failed")
@@ -495,7 +513,7 @@ shadow_log :: proc(s: ^Shadow_Git, n: int, token: ^platform.Cancel_Token = nil, 
 	// that is exactly HEAD's — and, unlike a bare `git log -N`, exits zero
 	// with empty output on a repository with no commits yet ("does not
 	// have any commits yet" is a listable state, not a failure).
-	out, gerr := git(s, nil, token, a, "log", "--all", log_limit_flag(count, context.temp_allocator), "--format=%H")
+	out, gerr := git(s, nil, "", token, a, "log", "--all", log_limit_flag(count, context.temp_allocator), "--format=%H")
 	if gerr != nil {
 		defer delete(out, a) // git() hands back its output on error paths too
 		return nil, git_fail(gerr, "shadowgit log: git log failed")
@@ -506,7 +524,7 @@ shadow_log :: proc(s: ^Shadow_Git, n: int, token: ^platform.Cancel_Token = nil, 
 // --- internals ---------------------------------------------------------------
 
 head_hash :: proc(s: ^Shadow_Git, token: ^platform.Cancel_Token, a := context.allocator) -> (string, platform.Err) {
-	out, gerr := git(s, nil, token, a, "rev-parse", "HEAD")
+	out, gerr := git(s, nil, "", token, a, "rev-parse", "HEAD")
 	if gerr != nil {
 		delete(out, a)
 		return "", git_fail(gerr, "shadowgit snapshot rev-parse failed")
@@ -523,11 +541,13 @@ log_limit_flag :: proc(n: int, a := context.allocator) -> string {
 	return flag
 }
 
-// git runs one git command in the repository directory; `extra_env`
-// entries are appended to the inherited environment. The combined output
-// (stdout, then stderr when present) is allocated from `a` and owned by
-// the caller — the request arena in the daemon, freed when it dies.
-git :: proc(s: ^Shadow_Git, extra_env: []string, token: ^platform.Cancel_Token = nil, a := context.allocator, args: ..string) -> (string, platform.Err) {
+// git runs one git command in the repository directory (working_dir
+// overrides the cwd — the snapshot's force-add runs from the workspace
+// root); `extra_env` entries are appended to the inherited environment.
+// The combined output (stdout, then stderr when present) is allocated
+// from `a` and owned by the caller — the request arena in the daemon,
+// freed when it dies.
+git :: proc(s: ^Shadow_Git, extra_env: []string, working_dir: string = "", token: ^platform.Cancel_Token = nil, a := context.allocator, args: ..string) -> (string, platform.Err) {
 	// The token is the cancellation checkpoint: a fired token refuses
 	// before the child spawns, and a deadline derives a tighter procrun
 	// timeout than the 60 s safety cap.
@@ -569,7 +589,7 @@ git :: proc(s: ^Shadow_Git, extra_env: []string, token: ^platform.Cancel_Token =
 
 	res, err := platform.procrun(platform.Procrun_Opts {
 		command          = command[:],
-		working_dir      = s.repo_dir,
+		working_dir      = working_dir != "" ? working_dir : s.repo_dir,
 		env              = env[:],
 		capture_stderr   = true,
 		max_stream_bytes = MAX_GIT_OUTPUT_BYTES,
@@ -610,7 +630,21 @@ git :: proc(s: ^Shadow_Git, extra_env: []string, token: ^platform.Cancel_Token =
 git_work_tree :: proc(s: ^Shadow_Git, token: ^platform.Cancel_Token = nil, args: ..string) -> (string, platform.Err) {
 	// The work-tree export and the captured output are both scratch:
 	// callers only read them inside their own frame for error text.
-	return git(s, work_tree_env(s, context.temp_allocator), token, context.temp_allocator, ..args)
+	return git(s, work_tree_env(s, context.temp_allocator), "", token, context.temp_allocator, ..args)
+}
+
+// git_at_root runs one git command with the workspace root as the working
+// directory and both repository variables exported: the explicit GIT_DIR
+// keeps repo discovery from finding the workspace's own repository, and
+// the root cwd makes pathspecs workspace-relative — the snapshot's
+// force-add needs both to spell its managed-directory exclusion as a
+// plain relative pathspec. Scratch like git_work_tree.
+git_at_root :: proc(s: ^Shadow_Git, token: ^platform.Cancel_Token = nil, args: ..string) -> (string, platform.Err) {
+	env := make([dynamic]string, 0, 2, context.temp_allocator)
+	gd, _ := filepath.join({s.repo_dir, ".git"}, context.temp_allocator)
+	append(&env, strings.concatenate({"GIT_DIR=", gd}, context.temp_allocator))
+	append(&env, strings.concatenate({"GIT_WORK_TREE=", s.workspace_dir}, context.temp_allocator))
+	return git(s, env[:], s.workspace_dir, token, context.temp_allocator, ..args)
 }
 
 work_tree_env :: proc(s: ^Shadow_Git, a := context.allocator) -> []string {
