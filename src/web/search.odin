@@ -360,9 +360,13 @@ retryable_status :: proc(status: int) -> bool {
 	return status == 429 || status == 401 || status == 403 || status >= 500
 }
 
+// truncate_for_error bounds a provider's error body before it rides an
+// error message. The cut backs off to a rune boundary: a multi-byte
+// sequence never splits mid-character into the message.
 truncate_for_error :: proc(s: string, a := context.allocator) -> string {
 	if len(s) > 200 {
-		return strings.concatenate({s[:200], "...(truncated)"}, a)
+		cut := util.utf8_cut_index(s, 200)
+		return strings.concatenate({s[:cut], "...(truncated)"}, a)
 	}
 	return strings.clone(s, a)
 }
@@ -794,7 +798,8 @@ duckduckgo_search :: proc(s: ^Searcher, query: string, count: int, range_code: s
 }
 
 // extract_ddg_results scrapes the result anchors and snippets out of the
-// DuckDuckGo HTML endpoint.
+// DuckDuckGo HTML endpoint. Rows and snippets pair in one pass, so a
+// dropped attribute cannot shift a snippet onto the wrong result.
 extract_ddg_results :: proc(body: string, count: int, query: string, a := context.allocator) -> string {
 	links := ddg_result_links(body, count + 5, a)
 	if len(links) == 0 {
@@ -802,7 +807,6 @@ extract_ddg_results :: proc(body: string, count: int, query: string, a := contex
 			"No results found or extraction failed. Query: ", query,
 		}, a)
 	}
-	snippets := ddg_snippets(body, count + 5, a)
 	out := make([dynamic]string, 0, count + 1, a)
 	defer delete(out)
 	append(&out, strings.concatenate({"Results for: ", query, " (via DuckDuckGo)"}, a))
@@ -811,65 +815,67 @@ extract_ddg_results :: proc(body: string, count: int, query: string, a := contex
 		max_items = count
 	}
 	for i := 0; i < max_items; i += 1 {
-		url_str := links[i].url
-		if idx := strings.index(url_str, "uddg="); idx >= 0 {
-			target := url_str[idx + 5:]
-			// The redirect wrapper appends its own params after the target
-			// (&rut=...): cut at the first raw separator, then unescape
-			// only the target — unescaping the whole URL first would fuse
-			// the wrapper's separators into the target.
-			if amp := strings.index_byte(target, '&'); amp >= 0 {
-				target = target[:amp]
-			}
-			url_str = util.percent_decode(target, context.temp_allocator, plus_to_space = true)
-		}
+		url_str := ddg_unwrap_wrapper(links[i].url)
 		append(&out, strings.concatenate({
 			util.int_to_dec(i + 1, a), ". ", links[i].title, "\n   ", url_str,
 		}, a))
-		// Snippet anchors align with result anchors by document order;
-		// an empty snippet adds no line.
-		if i < len(snippets) && snippets[i] != "" {
-			append(&out, strings.concatenate({"   ", snippets[i]}, a))
+		// An empty snippet adds no line.
+		if links[i].snippet != "" {
+			append(&out, strings.concatenate({"   ", links[i].snippet}, a))
 		}
 	}
 	joined, _ := strings.join(out[:], "\n", a)
 	return joined
 }
 
-// ddg_snippets collects the result__snippet anchor texts in document
-// order — index-aligned with ddg_result_links' output, as the
-// reference's two scans are.
-ddg_snippets :: proc(body: string, limit: int, a := context.allocator) -> []string {
-	out := make([dynamic]string, 0, limit, a)
-	i := 0
-	for i < len(body) && len(out) < limit {
-		idx := strings.index(body[i:], "<a class=\"result__snippet")
-		if idx < 0 {
-			break
+// The redirect endpoint's spellings: the wrapper's own query carries the
+// target in its uddg parameter. A foreign URL that merely contains
+// "uddg=" in its own query is not a wrapper and stays whole.
+DDG_WRAPPER_PREFIXES :: []string{
+	"//duckduckgo.com/l/?uddg=",
+	"https://duckduckgo.com/l/?uddg=",
+	"http://duckduckgo.com/l/?uddg=",
+}
+
+// ddg_unwrap_wrapper answers a wrapper href's target URL: cut at the
+// first raw separator (the wrapper appends its own params — &rut=... —
+// after the target; unescaping the whole href first would fuse the
+// wrapper's separators into the target), then unescape only the target.
+// The answer borrows either the input or the thread's temp allocator;
+// every caller concatenates it into its own memory immediately.
+ddg_unwrap_wrapper :: proc(href: string) -> string {
+	for prefix in DDG_WRAPPER_PREFIXES {
+		if !strings.has_prefix(href, prefix) {
+			continue
 		}
-		tag_start := i + idx
-		tag_end := strings.index(body[tag_start:], "</a>")
-		if tag_end < 0 {
-			break
+		target := href[len(prefix):]
+		if amp := strings.index_byte(target, '&'); amp >= 0 {
+			target = target[:amp]
 		}
-		tag_end += tag_start
-		text := ddg_inner_text(body[tag_start:tag_end], a)
-		append(&out, strings.trim_space(text))
-		i = tag_end + 4
+		return util.percent_decode(target, context.temp_allocator, plus_to_space = true)
 	}
-	return out[:]
+	return href
 }
 
 DDG_Link :: struct {
-	url:   string,
-	title: string,
+	url:     string,
+	title:   string,
+	snippet: string,
 }
 
-// ddg_result_links finds result anchors: <a class="result__a" href="...">.
+// ddg_result_links walks the document once: a result__a anchor opens a
+// row, and the next result__snippet anchor before the following row is
+// that row's snippet — pairing by position, never two index lists that
+// can drift apart. A row without an href still consumes its snippet and
+// is simply not emitted. Acceptance is a class-value token match, so a
+// foreign attribute or text carrying the marker as a substring is not a
+// row.
 ddg_result_links :: proc(body: string, limit: int, a := context.allocator) -> []DDG_Link {
 	out := make([dynamic]DDG_Link, 0, limit, a)
+	pending: DDG_Link
+	has_pending := false
 	i := 0
-	for i < len(body) && len(out) < limit {
+	for i < len(body) {
 		idx := strings.index(body[i:], "<a ")
 		if idx < 0 {
 			break
@@ -881,19 +887,51 @@ ddg_result_links :: proc(body: string, limit: int, a := context.allocator) -> []
 		}
 		tag_end += tag_start
 		tag := body[tag_start:tag_end]
-		if strings.contains(tag, "result__a") {
-			href := ddg_attr(tag, "href", a)
-			if href != "" {
-				title := ddg_inner_text(tag, a)
-				link: DDG_Link
-				link.url = href
-				link.title = title
-				append(&out, link)
+		if ddg_class_has_token(tag, "result__a") {
+			if has_pending && len(out) < limit && pending.url != "" {
+				append(&out, pending)
 			}
+			pending = {}
+			has_pending = true
+			pending.url = ddg_attr(tag, "href", a)
+			pending.title = ddg_inner_text(tag, a)
+		} else if has_pending && pending.snippet == "" && ddg_class_has_token(tag, "result__snippet") {
+			pending.snippet = ddg_inner_text(tag, a)
 		}
 		i = tag_end + 4
 	}
+	if has_pending && len(out) < limit && pending.url != "" {
+		append(&out, pending)
+	}
 	return out[:]
+}
+
+// ddg_class_has_token reports whether the anchor's class attribute
+// carries marker as one of its space-separated values.
+ddg_class_has_token :: proc(tag: string, marker: string) -> bool {
+	needle := "class=\""
+	ci := strings.index(tag, needle)
+	if ci < 0 {
+		return false
+	}
+	value := tag[ci + len(needle):]
+	if end := strings.index_byte(value, '"'); end >= 0 {
+		value = value[:end]
+	}
+	for len(value) > 0 {
+		for len(value) > 0 && (value[0] == ' ' || value[0] == '\t') {
+			value = value[1:]
+		}
+		n := 0
+		for n < len(value) && value[n] != ' ' && value[n] != '\t' {
+			n += 1
+		}
+		if n == len(marker) && value[:n] == marker {
+			return true
+		}
+		value = value[n:]
+	}
+	return false
 }
 
 ddg_attr :: proc(tag: string, key: string, a := context.allocator) -> string {

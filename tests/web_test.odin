@@ -720,3 +720,61 @@ web_honest_user_agent_cites_the_project :: proc(t: ^testing.T) {
 		"the honest user agent must cite this repository's remote",
 	)
 }
+
+// The ddg extraction unwraps the redirect wrapper's uddg target: the cut
+// happens at the first raw separator before unescaping, so the wrapper's
+// own params (&rut=...) never fuse into the target URL.
+@(test)
+search_ddg_snippets_extract_wrapper_targets :: proc(t: ^testing.T) {
+	body := strings.concatenate({
+		"<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa\">First</a>",
+		"<a class=\"result__snippet\" href=\"#\">  The <b>first</b> result </a>",
+		"<a class=\"result__a\" href=\"https://example.com/b\">Second</a>",
+		// The redirect wrapper always appends its own params after the
+		// uddg target — the extracted URL must stop at the separator.
+		"<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fc%3Fx%3D1&rut=12345\">Third</a>",
+	}, context.temp_allocator)
+	out := web.extract_ddg_results(body, 5, "q", context.temp_allocator)
+	testing.expect(t, strings.contains(out, "1. First"), out)
+	testing.expect(t, strings.contains(out, "The first result"), out)
+	testing.expect(t, strings.contains(out, "2. Second"), out)
+	testing.expect(t, strings.contains(out, "https://example.com/c?x=1"), out)
+	testing.expect(t, !strings.contains(out, "rut="), out)
+	testing.expect(t, !strings.contains(out, "<b>"), out)
+}
+
+// A result anchor without an href still consumes its snippet position
+// and is not emitted: the rows after it keep their own snippets (two
+// index lists would shift every later snippet onto the wrong row).
+@(test)
+search_ddg_rows_pair_with_their_own_snippets :: proc(t: ^testing.T) {
+	body := strings.concatenate({
+		"<a class=\"result__a\" href=\"https://example.com/one\">First</a>",
+		"<a class=\"result__snippet\" href=\"#\">first snippet</a>",
+		"<a class=\"result__a\">Sponsored row without a link</a>",
+		"<a class=\"result__snippet\" href=\"#\">sponsored snippet</a>",
+		"<a class=\"result__a\" href=\"https://example.com/two\">Second</a>",
+		"<a class=\"result__snippet\" href=\"#\">second snippet</a>",
+	}, context.temp_allocator)
+	out := web.extract_ddg_results(body, 5, "q", context.temp_allocator)
+	testing.expect(t, strings.contains(out, "1. First"), out)
+	testing.expect(t, strings.contains(out, "https://example.com/one"), out)
+	testing.expect(t, strings.contains(out, "first snippet"), out)
+	testing.expect(t, strings.contains(out, "2. Second"), out)
+	testing.expect(t, strings.contains(out, "https://example.com/two"), out)
+	testing.expect(t, strings.contains(out, "second snippet"), out)
+	// The href-less row is not emitted, and its snippet died with it.
+	testing.expect(t, !strings.contains(out, "Sponsored"), out)
+	testing.expect(t, !strings.contains(out, "sponsored snippet"), out)
+}
+
+// The error preview cuts on a rune boundary: a multi-byte sequence never
+// splits mid-character into the message.
+@(test)
+search_error_preview_cuts_on_a_rune_boundary :: proc(t: ^testing.T) {
+	body := strings.repeat("\u65e5", 67, context.temp_allocator) // 201 bytes, 3 per rune
+	out := web.truncate_for_error(body, context.temp_allocator)
+	testing.expect(t, strings.contains(out, "...(truncated)"), out)
+	kept := len(out) - len("...(truncated)")
+	testing.expectf(t, kept <= 200 && kept % 3 == 0, "the kept prefix must be whole runes: %d bytes", kept)
+}
