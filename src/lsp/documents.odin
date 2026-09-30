@@ -76,7 +76,11 @@ doc_open :: proc(cl: ^Client, uri, language_id, text: string) -> bool {
 
 // doc_change_full replaces the mirrored content and tells the server with
 // a single full-replacement change event. Version increments come from the
-// mirror, so concurrent callers cannot emit a duplicate version.
+// mirror, so concurrent callers cannot emit a duplicate version. The
+// return is mirror openness, not send success: a failed pipe write on a
+// dying conn still reports true — the mirror is updated, and a fallback
+// doc_open from a false-reading caller would bump the shared-open
+// refcount on an entry that never sees its didClose.
 doc_change_full :: proc(cl: ^Client, uri, text: string) -> bool {
 	// Same doc_mu discipline as open/close: the change event reaches
 	// the wire in the mirror's order.
@@ -111,7 +115,8 @@ doc_change_full :: proc(cl: ^Client, uri, text: string) -> bool {
 		"contentChanges",
 		jsonutil.json_array({json.Value(json.Object(change))}, context.temp_allocator),
 	)
-	return client_notify(cl, METHOD_DID_CHANGE, json.Value(json.Object(params)))
+	_ = client_notify(cl, METHOD_DID_CHANGE, json.Value(json.Object(params)))
+	return true
 }
 
 // doc_close drops one opener and tells the server when the last one
