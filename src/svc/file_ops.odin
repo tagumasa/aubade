@@ -39,6 +39,10 @@ FILE_WALK_MAX_FILES :: 5000 // walk file budget: bounds list/find/search work
 FILE_LIST_MAX_ENTRIES :: 20000 // combined dirs+files bound for one listing
 FILE_SEARCH_MAX_MATCHES_PER_FILE :: 10000
 BINARY_SNIFF_LEN :: 4096
+// The line-count read cap: a listing must never stream a multi-gigabyte
+// file to count it — files past the cap carry no count, and the walk's
+// cancel checks fire between entries, never inside a visit.
+MAX_LINE_COUNT_BYTES :: 32 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // Gitignore-aware project walk
@@ -769,6 +773,17 @@ file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allo
 	// dropping the marker here would silently re-sign the file. New files
 	// gain nothing, and save itself skips the prepend when the incoming
 	// content already starts with its own BOM.
+	// The per-file lock is the disk-write mutex for project files: without
+	// it a concurrent edit_file on the same path interleaves its
+	// read-modify-write with this save and one of the two writes is lost.
+	// The buffer drop shares the same critical section through the locked
+	// variant (editor_drop_buffer would re-acquire the mutex), and the BOM
+	// probe rides the lock too — outside it a concurrent writer could swap
+	// the head between the probe and the save.
+	h := editor.file_lock(ed, rel)
+	defer editor.file_release(ed, rel)
+	sync.mutex_lock(&h.mu)
+	defer sync.mutex_unlock(&h.mu)
 	had_bom := false
 	if overwrote {
 		if f, oerr := os.open(abs, {.Read}, os.Permissions{.Read_User}); oerr == nil {
@@ -778,15 +793,6 @@ file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allo
 			os.close(f)
 		}
 	}
-	// The per-file lock is the disk-write mutex for project files: without
-	// it a concurrent edit_file on the same path interleaves its
-	// read-modify-write with this save and one of the two writes is lost.
-	// The buffer drop shares the same critical section through the locked
-	// variant (editor_drop_buffer would re-acquire the mutex).
-	h := editor.file_lock(ed, rel)
-	defer editor.file_release(ed, rel)
-	sync.mutex_lock(&h.mu)
-	defer sync.mutex_unlock(&h.mu)
 	if werr, wmsg := editor.save(ed, rel, content, had_bom); werr != .None {
 		return false, editor_err_map("file write failed", werr, wmsg, a)
 	}
@@ -1030,10 +1036,17 @@ list_dir_visit :: proc(data: rawptr, kind: File_Walk_Kind, rel: string, abs: str
 	}
 	entry := File_List_Entry{name = strings.clone(rel, c.allocator)}
 	if c.include_line_counts {
-		lines, binary := count_file_lines(abs)
-		entry.lines = lines
-		entry.binary = binary
-		entry.has_lines = true
+		// The count is display metadata: files the stat cannot vouch
+		// regular-and-under-cap carry none (the tool renders them as plain
+		// names) — an uncapped counting read of a huge file would stall the
+		// whole walk, whose cancel checkpoints only fire between entries.
+		kind, size, sok := util.stat_kind_size(abs)
+		if sok && kind == .Regular && size <= MAX_LINE_COUNT_BYTES {
+			lines, binary := count_file_lines(abs)
+			entry.lines = lines
+			entry.binary = binary
+			entry.has_lines = true
+		}
 	}
 	append(&c.entries, entry)
 	return .Continue
@@ -1089,8 +1102,11 @@ file_list_dir :: proc(
 	}
 	ctx.dirs = make([dynamic]string, 0, 16, a)
 	ctx.entries = make([dynamic]File_List_Entry, 0, 16, a)
-	file_walk(abs, normalize_rel(scope, a), recursive, skip_ignored && !ignore.no_gitignore, ignore, deny, list_dir_visit, &ctx, token, ed.allocator)
-	return {dirs = ctx.dirs[:], files = ctx.entries[:], truncated = ctx.truncated}, nil
+	stopped := file_walk(abs, normalize_rel(scope, a), recursive, skip_ignored && !ignore.no_gitignore, ignore, deny, list_dir_visit, &ctx, token, ed.allocator)
+	// A stopped walk is a partial answer: the token fired (the entry cap
+	// tripped the visitor's own truncated flag) — either way the listing
+	// must not present itself as complete.
+	return {dirs = ctx.dirs[:], files = ctx.entries[:], truncated = ctx.truncated || stopped}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,8 +1249,10 @@ file_find :: proc(
 
 	ctx := Find_Walk_Ctx{allocator = a, matcher = &matcher}
 	ctx.files = make([dynamic]string, 0, 16, a)
-	file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, find_visit, &ctx, token, ed.allocator)
-	return ctx.files[:], ctx.truncated, nil
+	stopped := file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, find_visit, &ctx, token, ed.allocator)
+	// A stopped walk (fired token) is a partial answer: the find must not
+	// present itself as complete.
+	return ctx.files[:], ctx.truncated || stopped, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,6 +1565,7 @@ file_search :: proc(
 	}
 	ctx.matches = make([dynamic]File_Search_Match, 0, 16, a)
 
+	stopped := false
 	if kind == .Regular {
 		// The single-file scope faces the same sensitive-path gate as
 		// file_read/file_outline — the walk branch gates every visited
@@ -1557,7 +1576,7 @@ file_search :: proc(
 		}
 		file_search_content(&ctx, normalize_rel(scope, a))
 	} else if kind == .Directory {
-		file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, search_visit, &ctx, token, ed.allocator)
+		stopped = file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, search_visit, &ctx, token, ed.allocator)
 	} else {
 		return nil, 0, false, wrapped_err(
 			.Invalid,
@@ -1566,12 +1585,15 @@ file_search :: proc(
 		)
 	}
 	// The match budget protects the worker from pathological backtracking;
-	// a hit means the pattern ate its budget on at least one file, so the
-	// (partial) match list would be silently wrong — fail typed instead.
-	if re.limit_hit {
+	// a hit means the pattern — or one of the filter globs, which compile
+	// through the same budget — ate its budget on at least one path, so
+	// the (partial) match list would be silently wrong: fail typed
+	// instead. The filter checks read the ctx copies: the walk matched
+	// through those, and a Regex's limit_hit lands where it matched.
+	if re.limit_hit || (ctx.has_include && ctx.include.limit_hit) || (ctx.has_exclude && ctx.exclude.limit_hit) {
 		return nil, 0, false, wrapped_err(
 			.Invalid,
-			"regex match limit exceeded: the pattern's backtracking ran out of budget; simplify the pattern (e.g. drop nested unbounded quantifiers)",
+			"regex match limit exceeded: the pattern's or a filter glob's backtracking ran out of budget; simplify it (e.g. drop nested unbounded quantifiers)",
 			a,
 		)
 	}
@@ -1595,7 +1617,7 @@ file_search :: proc(
 	if req.limit > 0 && len(kept) > req.limit {
 		kept = kept[:req.limit]
 	}
-	return kept, total, ctx.truncated, nil
+	return kept, total, ctx.truncated || stopped, nil
 }
 
 // Sorted_Matches is the paging sort harness: pages are cut over the
