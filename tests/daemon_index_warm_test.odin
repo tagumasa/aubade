@@ -156,3 +156,22 @@ index_warm_skips_without_ts_source :: proc(t: ^testing.T) {
 	crawled := daemon.index_warm_run(f.d)
 	testing.expect(t, !crawled, "no TS source means no warm-up attempt")
 }
+
+@(test)
+index_warm_skips_when_walk_in_flight :: proc(t: ^testing.T) {
+	f := index_warm_fixture(t)
+	defer index_warm_teardown(f)
+
+	// An on-miss walk already holding the single-walk claim: the warm-up
+	// must refuse rather than crawl beside it, and a refused warm-up stamps
+	// no marker — the next daemon generation re-decides.
+	testing.expect(t, daemon.index_refresh_claim(f.d), "test holds the single-walk claim")
+	testing.expect(t, !daemon.index_warm_run(f.d), "warm-up must refuse while a walk is in flight")
+	_, found, gerr := store.kv_get(f.d.db, daemon.INDEX_WARM_KEY, context.temp_allocator)
+	testing.expect(t, gerr == nil, "kv read failed")
+	testing.expect(t, !found, "a refused warm-up must not stamp the crawl marker")
+	daemon.index_refresh_release(f.d)
+
+	testing.expect(t, daemon.index_warm_run(f.d), "warm-up crawls once the claim is free")
+	testing.expect(t, index_warm_find(t, f, "Warm_Target") == 1, "the refused-then-run warm-up indexed the file")
+}

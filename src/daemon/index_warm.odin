@@ -24,11 +24,20 @@ index_warm_thread_entry :: proc(data: rawptr) {
 }
 
 // index_warm_run is the one-shot warm-up step, directly callable from tests.
-// Returns whether a crawl attempt ran.
+// Returns whether a crawl attempt ran. The crawl takes the single-walk claim
+// the refresh loop and symbol_find's on-miss hook share: a fresh store is
+// exactly when find answers empty and the on-miss hook claims a walk, and
+// without the claim the warm-up would run a second whole-project crawl
+// beside it. Refused means no crawl and no marker — the next daemon
+// generation re-decides.
 index_warm_run :: proc(d: ^Daemon) -> (crawled: bool) {
 	if !index_warm_needed(d) {
 		return false
 	}
+	if !index_refresh_claim(d) {
+		return false
+	}
+	defer index_refresh_release(d)
 	index_warm_crawl(d)
 	return true
 }
