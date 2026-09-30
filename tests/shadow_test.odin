@@ -114,6 +114,56 @@ shadow_err_text :: proc(e: platform.Err) -> string {
 	return platform.err_message(e, context.temp_allocator)
 }
 
+// The snapshot stages with a force-add: the workspace's own .gitignore
+// must not keep files out of it — an ignored file that missed the
+// snapshot would silently keep its later content across a restore (and a
+// revert to a hash without it would take the removal branch and delete
+// it).
+@(test)
+test_shadow_snapshot_force_add_past_gitignore :: proc(t: ^testing.T) {
+	env := shadow_setup(t, "aubade-shadow-f-")
+	if env.sg == nil {
+		return
+	}
+	defer shadow_teardown(&env)
+	a := mem.dynamic_arena_allocator(env.arena)
+
+	gi := strings.concatenate({env.workspace, "/.gitignore"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(gi, ".env\n"); werr != nil {
+		testing.expectf(t, false, "gitignore seed failed")
+		return
+	}
+	env_path := strings.concatenate({env.workspace, "/.env"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(env_path, "key=first\n"); werr != nil {
+		testing.expectf(t, false, "env seed failed")
+		return
+	}
+	h1, err := shadow.shadow_snapshot(env.sg, "first", nil, a)
+	if err != nil {
+		testing.expectf(t, false, "snapshot 1: %s", shadow_err_text(err))
+		return
+	}
+	if werr := os.write_entire_file_from_string(env_path, "key=second\n"); werr != nil {
+		testing.expectf(t, false, "env rewrite failed")
+		return
+	}
+	if _, err2 := shadow.shadow_snapshot(env.sg, "second", nil, a); err2 != nil {
+		testing.expectf(t, false, "snapshot 2: %s", shadow_err_text(err2))
+		return
+	}
+	if rerr := shadow.shadow_restore(env.sg, h1, nil, a); rerr != nil {
+		testing.expectf(t, false, "restore: %s", shadow_err_text(rerr))
+		return
+	}
+	data, rerr2 := os.read_entire_file_from_path(env_path, context.temp_allocator)
+	if rerr2 != nil {
+		testing.expectf(t, false, "restored .env unreadable")
+		return
+	}
+	testing.expectf(t, string(data) == "key=first\n", "ignored file not restored from the snapshot: %s", string(data))
+	delete(data, context.temp_allocator)
+}
+
 // shadow_patch must report exact path spellings: plain --name-only output
 // C-quotes non-ASCII and special characters (core.quotePath is on by
 // default), so the listing rides -z and splits on NUL.

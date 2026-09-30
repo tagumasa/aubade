@@ -1269,6 +1269,39 @@ lsp_document_sync_full_events :: proc(t: ^testing.T) {
 	testing.expect_value(t, lsp.doc_version(p.client, "file:///a.go"), 1)
 }
 
+// A change on a mirrored document reports true even when the send cannot
+// leave the wire (a dead conn): the return carries mirror openness, not
+// send success. The editor sync's re-open fallback reads this value — a
+// false on a dropped didChange would send it through doc_open's
+// shared-open path and ratchet the opener count, so the last real close
+// would never reach zero openers and the didClose (with its diagnostics
+// clear) would never run.
+@(test)
+lsp_doc_change_reports_mirror_openness :: proc(t: ^testing.T) {
+	p := lsp_pair_init(t)
+	if p == nil {
+		testing.expectf(t, false, "pair init failed")
+		return
+	}
+	defer lsp_pair_shutdown(p)
+
+	uri := "file:///a.go"
+	testing.expect(t, lsp.doc_open(p.client, uri, "go", "package main\n"))
+	fake_note_wait(p.fake, lsp.METHOD_DID_OPEN, 1)
+
+	// The client's conn dies (teardown race, wedged server): the change
+	// cannot reach the wire, but the mirror holds the document.
+	jsonrpc.conn_close(p.conn)
+	testing.expect(t, lsp.doc_change_full(p.client, uri, "package main\n// x\n"))
+	testing.expect_value(t, lsp.doc_version(p.client, uri), 2)
+
+	// One close ends the open epoch — nothing ratcheted to unwind. The
+	// didClose send fails on the same dead conn; the mirror state is the
+	// oracle.
+	_ = lsp.doc_close(p.client, uri)
+	testing.expect_value(t, lsp.doc_version(p.client, uri), 0)
+}
+
 // The cross-file-reference readiness wait: the first publishDiagnostics —
 // even an empty set (the server processed the file) — latches Diagnostics,
 // and the once-latch serves every later call from the cache.
