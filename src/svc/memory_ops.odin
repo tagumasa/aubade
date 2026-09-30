@@ -252,13 +252,18 @@ memory_path :: proc(mf: ^Memory_Files, name: string, a: mem.Allocator) -> (abs: 
 	if jerr != nil {
 		return "", "", platform.Wrapped{kind = .Internal, msg = "memory path join failed"}
 	}
-	// Parent directories appear on demand — a failure is not fatal (the
-	// write itself reports it).
-	_ = os.make_directory_all(filepath.dir(joined), MEMORY_DIR_PERMS)
+	// Containment precedes creation: the check resolves every existing
+	// ancestor's symlinks and judges the lexical tail, so it can refuse
+	// before anything appears on disk — a symlinked component must not
+	// let a refused (or read-only) resolve build directories outside the
+	// root through make_directory_all.
 	if cerr := memory_check_containment(joined, root, norm, a); cerr != nil {
 		delete(joined, a)
 		return "", "", cerr
 	}
+	// Parent directories appear on demand — a failure is not fatal (the
+	// write itself reports it).
+	_ = os.make_directory_all(filepath.dir(joined), MEMORY_DIR_PERMS)
 	return joined, root, nil
 }
 
@@ -495,13 +500,20 @@ memory_rename :: proc(
 			}
 		}
 		// Cross-device fallback: copy the bytes, then drop the original.
-		data, read_err := os.read_entire_file_from_path(old_abs, context.temp_allocator)
-		if read_err != nil {
+		// The bounded read re-decides the cap against the bytes as they
+		// are read — the stat above approved a size the file could outgrow
+		// in the window before the read.
+		data, outcome, _ := util.read_bounded_file(old_abs, memory.MAX_MEMORY_READ_BYTES, context.temp_allocator)
+		if outcome != .Ok {
 			return false, 0, platform.Wrapped{
 				kind = .Invalid,
-				msg  = strings.concatenate({"rename memory ", old_name, " to ", new_name, " failed"}, a),
+				msg = strings.concatenate(
+					{"rename memory ", old_name, " to ", new_name, " failed: the source exceeded the read cap while copying"},
+					a,
+				),
 			}
 		}
+		defer delete(data, context.temp_allocator)
 		if werr := memory_write_atomic(new_abs, string(data)); werr != nil {
 			return false, 0, werr
 		}
