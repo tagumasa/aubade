@@ -533,7 +533,7 @@ handle_symbol_find :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value
 	// producers (a running language server at most — find never starts
 	// one), and the seed query re-runs once so renamed-away and
 	// renamed-into names both settle.
-	if symbol_find_heal_stale(d, rows, missing, ctx.allocator) {
+	if symbol_find_heal_stale(d, rows, missing, ctx.allocator, ctx.token) {
 		rerun, rerr := symbol_find_seed_rows(d, innermost, ctx.allocator)
 		if rerr != nil {
 			return nil, rerr
@@ -656,11 +656,14 @@ symbol_find_seed_rows :: proc(d: ^Daemon, innermost: string, a: mem.Allocator) -
 // matches. Returns true when any path was re-indexed (the caller re-runs
 // the seed query once). Unreadable or unverifiable paths keep their rows:
 // the honest answer until a crawl or a later heal, never a silent purge.
+// A fired token stops the pass at the next path — what healed so far is
+// idempotent, and the request the answer belongs to is dying anyway.
 symbol_find_heal_stale :: proc(
 	d: ^Daemon,
 	rows: []store.Symbol_Name_Row_With_File,
 	missing: map[string]bool,
 	a: mem.Allocator,
+	token: ^platform.Cancel_Token,
 ) -> bool {
 	// The minimal handler fixtures build no ts source: with nothing to
 	// re-index through, the heal is a no-op and the rows answer as seeded.
@@ -681,6 +684,11 @@ symbol_find_heal_stale :: proc(
 	}
 	healed := false
 	for path, indexed_hash in row_hash {
+		if token != nil {
+			if _, fired := platform.token_check(token); fired {
+				break
+			}
+		}
 		abs, _ := filepath.join({d.cfg.project_root, path}, context.temp_allocator)
 		kind, size, mtime_ns, sok := util.stat_kind_size_mtime(abs)
 		if !sok || kind == .Directory {
@@ -701,13 +709,19 @@ symbol_find_heal_stale :: proc(
 			continue
 		}
 		current := editor.content_hash_hex(contents, a)
+		// The flag IS the ownership (read_source_contents): the editor
+		// clone frees through the editor's allocator, the disk read
+		// through `a` — a pass over many stale paths must not park every
+		// file's bytes in the request arena until request end.
 		if from_editor {
 			delete(contents, d.ed.allocator)
+		} else {
+			delete(contents, a)
 		}
 		if current == indexed_hash {
 			continue
 		}
-		if svc.index_heal_file(d.ts, d.lsp_src, path, a) {
+		if svc.index_heal_file(d.ts, d.lsp_src, path, a, token) {
 			healed = true
 		}
 	}
