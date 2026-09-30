@@ -414,3 +414,30 @@ prompt_template_lone_brace_is_text :: proc(t: ^testing.T) {
 	testing.expectf(t, out == "a { b } x c\n", "lone braces must pass through, got %s", out)
 	delete(out, context.allocator)
 }
+
+// The template name is a file name, not a path: a separator or a
+// dot-dot segment never reads outside the templates directory. The
+// probe file sits at the home root, exactly where the unguarded join
+// would land for "../escape".
+@(test)
+prompt_template_names_refuse_path_shapes :: proc(t: ^testing.T) {
+	home, herr := os.make_directory_temp("", "aubade-prompt-path-", context.allocator)
+	if herr != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(home)
+		delete(home, context.allocator)
+	}
+	escape := strings.concatenate({home, "/escape.tmpl"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(escape, "escaped body", os.Permissions{.Read_User, .Write_User}); werr != nil {
+		testing.expectf(t, false, "escape seed failed")
+		return
+	}
+
+	paths := []string{"../escape", "sub/escape", ".."}
+	for name in paths {
+		body, ok := prompt.template_by_name(home, name, context.allocator)
+		testing.expectf(t, !ok && body == "", "the path-shaped name %s answers not-found", name)
+	}
+}

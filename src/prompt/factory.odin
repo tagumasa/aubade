@@ -37,12 +37,22 @@ template_builtin :: proc(name: string) -> (string, bool) {
 // embedded default. A missing, non-regular, oversized, or unreadable user
 // file falls back to the embedded default. The body is allocated from `a`.
 template_by_name :: proc(home, name: string, a := context.allocator) -> (string, bool) {
-	parts := []string{home, PROMPT_TEMPLATES_DIR, strings.concatenate({name, ".tmpl"}, context.temp_allocator)}
-	path, _ := filepath.join(parts, a)
-	delete(parts[len(parts) - 1], context.temp_allocator)
-	defer delete(path, a)
-	if util.read_gate(path, MAX_TEMPLATE_BYTES) == .Ok {
-		if data, err := os.read_entire_file_from_path(path, a); err == nil {
+	// The name is a file name, not a path: the join normalises lexically,
+	// so a separator or a dot-dot segment resolves outside the templates
+	// directory ("../x" lands a level up). A non-name-shaped name never
+	// reads the user directory — the builtin lookup decides its answer.
+	name_shaped := name != "" &&
+		!strings.contains(name, "/") &&
+		!strings.contains(name, "\\") &&
+		!strings.contains(name, "..")
+	if name_shaped {
+		parts := []string{home, PROMPT_TEMPLATES_DIR, strings.concatenate({name, ".tmpl"}, context.temp_allocator)}
+		path, _ := filepath.join(parts, a)
+		delete(parts[len(parts) - 1], context.temp_allocator)
+		defer delete(path, a)
+		// The byte budget holds while reading, not just at a stat before it:
+		// a template grown past the cap falls back rather than ballooning.
+		if data, outcome, _ := util.read_bounded_file(path, MAX_TEMPLATE_BYTES, a); outcome == .Ok {
 			return string(data), true
 		}
 	}
