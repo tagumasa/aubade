@@ -398,3 +398,19 @@ prompt_template_second_else_refuses :: proc(t: ^testing.T) {
 		testing.expectf(t, !ok, "a second else must fail the render, got ok for %s", src)
 	}
 }
+
+// A "{" that opens neither substitution nor tag is plain text: the
+// one-pass opener scan must skip it and still find the next real
+// opener (JSON-shaped literals ride inside templates).
+@(test)
+prompt_template_lone_brace_is_text :: proc(t: ^testing.T) {
+	vars: prompt.Template_Vars
+	prompt.template_vars_init(&vars, context.allocator)
+	defer prompt.template_vars_destroy(&vars)
+	prompt.template_set_str(&vars, "name", "x")
+
+	out, ok := prompt.template_render("a { b } {{ name }} c", &vars, context.allocator)
+	testing.expect(t, ok)
+	testing.expectf(t, out == "a { b } x c\n", "lone braces must pass through, got %s", out)
+	delete(out, context.allocator)
+}
