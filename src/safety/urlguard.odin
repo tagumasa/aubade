@@ -1,7 +1,8 @@
 // urlguard: blocks dangerous URLs — cloud metadata endpoints and known
 // exfiltration services. The hostname is extracted and canonicalised
-// (single-integer/hex/octal IPv4, mixed-notation dotted forms, IPv4-mapped
-// IPv6) so blocked-IP lookups cannot be bypassed by alternate encodings,
+// (single-integer/hex/octal IPv4, the inet_aton shorthand dotted forms,
+// IPv4-mapped IPv6) so blocked-IP lookups cannot be bypassed by alternate
+// encodings,
 // and the link-local unicast/multicast ranges are blocked entirely because
 // the major cloud metadata services live in 169.254.0.0/16.
 package safety
@@ -515,8 +516,14 @@ canonicalize_integer_ip :: proc(host: string) -> string {
 	return v4_to_string(b, context.temp_allocator)
 }
 
-// canonicalize_dotted_ip resolves four-component forms where individual
-// components may use hex (0xA9) or octal (0251) notation.
+// canonicalize_dotted_ip resolves the inet_aton dotted forms: two to
+// four components, each component in decimal/hex/octal, where the final
+// component of a short form fills the remaining bits — 127.1 is
+// 127.0.0.1 and 169.254.43262 is 169.254.169.254, the spellings
+// getaddrinfo accepts for loopback and metadata targets. The
+// single-component integer encodings belong to canonicalize_integer_ip.
+// A component over its width is not an address: the guard judges it as
+// a hostname, the same rule the four-part out-of-range cases follow.
 canonicalize_dotted_ip :: proc(host: string) -> string {
 	parts: [4]string
 	start := 0
@@ -531,17 +538,27 @@ canonicalize_dotted_ip :: proc(host: string) -> string {
 			start = i + 1
 		}
 	}
-	if part != 4 {
+	if part < 2 {
 		return ""
 	}
-	b: [4]u8
-	for i in 0..<4 {
-		val, ok := parse_ip_component(parts[i])
-		if !ok || val > 255 {
+	// The leading components are single bytes; the final component of an
+	// n-part form is 8*(5-n) bits wide (the inet_aton shorthand rule).
+	last_bits := u64(8 * (5 - part))
+	last_max := (u64(1) << last_bits) - 1
+	v: u64 = 0
+	for i in 0..<part-1 {
+		c, ok := parse_ip_component(parts[i])
+		if !ok || c > 255 {
 			return ""
 		}
-		b[i] = u8(val)
+		v = (v << 8) | c
 	}
+	last, ok := parse_ip_component(parts[part-1])
+	if !ok || last > last_max {
+		return ""
+	}
+	v = (v << last_bits) | last
+	b := [4]u8{u8(v >> 24), u8(v >> 16), u8(v >> 8), u8(v)}
 	return v4_to_string(b, context.temp_allocator)
 }
 
