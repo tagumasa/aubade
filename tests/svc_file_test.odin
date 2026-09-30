@@ -1528,3 +1528,60 @@ svc_file_list_line_counts_skip_oversize_files :: proc(t: ^testing.T) {
 		testing.expect_value(t, small_entry.lines, 2)
 	}
 }
+
+// A walk the token fires under is a partial answer, and the interrupted
+// tool call's result still settles in the transcript — so the partial
+// answer must say so: all three walk faces fold the walk's stopped flag
+// into truncated.
+@(test)
+svc_walks_answer_truncated_when_cancelled :: proc(t: ^testing.T) {
+	root, rerr := os.make_directory_temp("", "aubade-wk-", context.allocator)
+	if rerr != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(root)
+		delete(root, context.allocator)
+	}
+	if merr := os.make_directory_all(strings.concatenate({root, "/src"}, context.temp_allocator), os.Permissions{.Read_User, .Write_User, .Execute_User}); merr != nil {
+		testing.expectf(t, false, "src dir failed")
+		return
+	}
+	walk_seeds := []string{"src/one.go", "src/two.go"}
+	for name in walk_seeds {
+		p := strings.concatenate({root, "/", name}, context.temp_allocator)
+		_ = os.write_entire_file_from_string(p, "package x\n", os.Permissions{.Read_User, .Write_User})
+	}
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	a := mem.dynamic_arena_allocator(&arena)
+
+	e := new(editor.Editor, context.allocator)
+	editor.editor_init(e, root, .Lf, "", svc.editor_file_io_port(), context.allocator)
+	defer {
+		editor.editor_destroy(e)
+		free(e, context.allocator)
+	}
+
+	fired: platform.Cancel_Token
+	platform.token_init_root(&fired)
+	platform.token_fire(&fired, .Cancelled)
+
+	listed, lerr := svc.file_list_dir(e, "src", true, false, false, {}, nil, a, &fired)
+	testing.expectf(t, lerr == nil, "list dir failed")
+	testing.expectf(t, listed.truncated, "a cancelled listing reports truncated")
+
+	_, find_trunc, ferr := svc.file_find(e, "*.go", "src", {}, nil, a, &fired)
+	testing.expectf(t, ferr == nil, "find failed")
+	testing.expectf(t, find_trunc, "a cancelled find reports truncated")
+
+	_, _, search_trunc, serr := svc.file_search(
+		e,
+		{pattern = "package", scope_rel = "src"},
+		{}, nil, a, &fired,
+	)
+	testing.expectf(t, serr == nil, "search failed")
+	testing.expectf(t, search_trunc, "a cancelled search reports truncated")
+}

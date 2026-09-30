@@ -1102,8 +1102,11 @@ file_list_dir :: proc(
 	}
 	ctx.dirs = make([dynamic]string, 0, 16, a)
 	ctx.entries = make([dynamic]File_List_Entry, 0, 16, a)
-	file_walk(abs, normalize_rel(scope, a), recursive, skip_ignored && !ignore.no_gitignore, ignore, deny, list_dir_visit, &ctx, token, ed.allocator)
-	return {dirs = ctx.dirs[:], files = ctx.entries[:], truncated = ctx.truncated}, nil
+	stopped := file_walk(abs, normalize_rel(scope, a), recursive, skip_ignored && !ignore.no_gitignore, ignore, deny, list_dir_visit, &ctx, token, ed.allocator)
+	// A stopped walk is a partial answer: the token fired (the entry cap
+	// tripped the visitor's own truncated flag) — either way the listing
+	// must not present itself as complete.
+	return {dirs = ctx.dirs[:], files = ctx.entries[:], truncated = ctx.truncated || stopped}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,8 +1249,10 @@ file_find :: proc(
 
 	ctx := Find_Walk_Ctx{allocator = a, matcher = &matcher}
 	ctx.files = make([dynamic]string, 0, 16, a)
-	file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, find_visit, &ctx, token, ed.allocator)
-	return ctx.files[:], ctx.truncated, nil
+	stopped := file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, find_visit, &ctx, token, ed.allocator)
+	// A stopped walk (fired token) is a partial answer: the find must not
+	// present itself as complete.
+	return ctx.files[:], ctx.truncated || stopped, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1560,6 +1565,7 @@ file_search :: proc(
 	}
 	ctx.matches = make([dynamic]File_Search_Match, 0, 16, a)
 
+	stopped := false
 	if kind == .Regular {
 		// The single-file scope faces the same sensitive-path gate as
 		// file_read/file_outline — the walk branch gates every visited
@@ -1570,7 +1576,7 @@ file_search :: proc(
 		}
 		file_search_content(&ctx, normalize_rel(scope, a))
 	} else if kind == .Directory {
-		file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, search_visit, &ctx, token, ed.allocator)
+		stopped = file_walk(abs, normalize_rel(scope, a), true, !ignore.no_gitignore, ignore, deny, search_visit, &ctx, token, ed.allocator)
 	} else {
 		return nil, 0, false, wrapped_err(
 			.Invalid,
@@ -1579,12 +1585,15 @@ file_search :: proc(
 		)
 	}
 	// The match budget protects the worker from pathological backtracking;
-	// a hit means the pattern ate its budget on at least one file, so the
-	// (partial) match list would be silently wrong — fail typed instead.
-	if re.limit_hit {
+	// a hit means the pattern — or one of the filter globs, which compile
+	// through the same budget — ate its budget on at least one path, so
+	// the (partial) match list would be silently wrong: fail typed
+	// instead. The filter checks read the ctx copies: the walk matched
+	// through those, and a Regex's limit_hit lands where it matched.
+	if re.limit_hit || (ctx.has_include && ctx.include.limit_hit) || (ctx.has_exclude && ctx.exclude.limit_hit) {
 		return nil, 0, false, wrapped_err(
 			.Invalid,
-			"regex match limit exceeded: the pattern's backtracking ran out of budget; simplify the pattern (e.g. drop nested unbounded quantifiers)",
+			"regex match limit exceeded: the pattern's or a filter glob's backtracking ran out of budget; simplify it (e.g. drop nested unbounded quantifiers)",
 			a,
 		)
 	}
@@ -1608,7 +1617,7 @@ file_search :: proc(
 	if req.limit > 0 && len(kept) > req.limit {
 		kept = kept[:req.limit]
 	}
-	return kept, total, ctx.truncated, nil
+	return kept, total, ctx.truncated || stopped, nil
 }
 
 // Sorted_Matches is the paging sort harness: pages are cut over the
