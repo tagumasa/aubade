@@ -73,18 +73,34 @@ shadow_init :: proc(
 		s.managed_exclude = strings.clone(rel, a)
 	}
 	// The env snapshot (see Shadow_Git.env_base): os.environ's clones are
-	// taken over verbatim, the guard variable appended as its own clone
-	// (a bare literal would be static data — freeing it later would be a
-	// bad free).
+	// taken over, minus every GIT_* variable — the child libc resolves
+	// duplicate keys by first match, so an inherited GIT_DIR or
+	// GIT_CONFIG_PARAMETERS would win over the shadow's own exports and
+	// point every command at a foreign repository. The guard variable is
+	// appended as its own clone (a bare literal would be static data —
+	// freeing it later would be a bad free).
 	env_out, _ := os.environ(a)
-	base := make([]string, len(env_out) + 1, a)
-	for i in 0..<len(env_out) {
-		base[i] = env_out[i]
+	base := make([dynamic]string, 0, len(env_out) + 1, a)
+	for i := 0; i < len(env_out); i += 1 {
+		if strings.has_prefix(env_key(env_out[i]), "GIT_") {
+			delete(env_out[i], a)
+			continue
+		}
+		append(&base, env_out[i])
 	}
-	base[len(env_out)] = strings.clone("GIT_CONFIG_NOSYSTEM=1", a)
-	s.env_base = base
+	append(&base, strings.clone("GIT_CONFIG_NOSYSTEM=1", a))
+	s.env_base = base[:]
 	delete(env_out, a)
 	return nil
+}
+
+// env_key is the KEY side of a KEY=VALUE environment entry; an entry
+// without '=' has no key and matches no prefix.
+env_key :: proc(entry: string) -> string {
+	if i := strings.index_byte(entry, '='); i >= 0 {
+		return entry[:i]
+	}
+	return ""
 }
 
 shadow_destroy :: proc(s: ^Shadow_Git, a := context.allocator) {

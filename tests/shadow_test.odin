@@ -164,6 +164,35 @@ test_shadow_snapshot_force_add_past_gitignore :: proc(t: ^testing.T) {
 	delete(data, context.temp_allocator)
 }
 
+// An inherited GIT_* variable must never reach the snapshot's git
+// children: the child libc resolves duplicate environment keys by first
+// match, so an inherited GIT_DIR would win over the shadow's own exports
+// and point every command at a foreign repository.
+@(test)
+test_shadow_scrubs_inherited_git_env :: proc(t: ^testing.T) {
+	old, had := os.lookup_env_alloc("GIT_DIR", context.temp_allocator)
+	os.set_env("GIT_DIR", "/nonexistent/foreign/shadow-repo")
+	defer if had {
+		os.set_env("GIT_DIR", old)
+	} else {
+		os.unset_env("GIT_DIR")
+	}
+
+	env := shadow_setup(t, "aubade-shadow-e-")
+	if env.sg == nil {
+		return
+	}
+	defer shadow_teardown(&env)
+	a := mem.dynamic_arena_allocator(env.arena)
+
+	h1, err := shadow.shadow_snapshot(env.sg, "first", nil, a)
+	if err != nil {
+		testing.expectf(t, false, "snapshot under inherited GIT_DIR: %s", shadow_err_text(err))
+		return
+	}
+	testing.expect(t, len(h1) > 0, "snapshot must answer a hash")
+}
+
 // shadow_patch must report exact path spellings: plain --name-only output
 // C-quotes non-ASCII and special characters (core.quotePath is on by
 // default), so the listing rides -z and splits on NUL.
