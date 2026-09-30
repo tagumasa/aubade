@@ -39,6 +39,10 @@ FILE_WALK_MAX_FILES :: 5000 // walk file budget: bounds list/find/search work
 FILE_LIST_MAX_ENTRIES :: 20000 // combined dirs+files bound for one listing
 FILE_SEARCH_MAX_MATCHES_PER_FILE :: 10000
 BINARY_SNIFF_LEN :: 4096
+// The line-count read cap: a listing must never stream a multi-gigabyte
+// file to count it — files past the cap carry no count, and the walk's
+// cancel checks fire between entries, never inside a visit.
+MAX_LINE_COUNT_BYTES :: 32 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // Gitignore-aware project walk
@@ -1032,10 +1036,17 @@ list_dir_visit :: proc(data: rawptr, kind: File_Walk_Kind, rel: string, abs: str
 	}
 	entry := File_List_Entry{name = strings.clone(rel, c.allocator)}
 	if c.include_line_counts {
-		lines, binary := count_file_lines(abs)
-		entry.lines = lines
-		entry.binary = binary
-		entry.has_lines = true
+		// The count is display metadata: files the stat cannot vouch
+		// regular-and-under-cap carry none (the tool renders them as plain
+		// names) — an uncapped counting read of a huge file would stall the
+		// whole walk, whose cancel checkpoints only fire between entries.
+		kind, size, sok := util.stat_kind_size(abs)
+		if sok && kind == .Regular && size <= MAX_LINE_COUNT_BYTES {
+			lines, binary := count_file_lines(abs)
+			entry.lines = lines
+			entry.binary = binary
+			entry.has_lines = true
+		}
 	}
 	append(&c.entries, entry)
 	return .Continue

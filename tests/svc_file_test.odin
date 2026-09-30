@@ -1477,3 +1477,54 @@ svc_read_text_normalise_cr_folds_pairs :: proc(t: ^testing.T) {
 	plain := "a\nb\n"
 	testing.expect(t, svc.read_text_normalise_cr(plain, context.temp_allocator) == plain)
 }
+
+// The line count is display metadata under a read cap: a file past the
+// cap carries no count instead of stalling the whole walk streaming it.
+@(test)
+svc_file_list_line_counts_skip_oversize_files :: proc(t: ^testing.T) {
+	root, rerr := os.make_directory_temp("", "aubade-lc-", context.allocator)
+	if rerr != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(root)
+		delete(root, context.allocator)
+	}
+
+	small := strings.concatenate({root, "/small.txt"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(small, "one\ntwo\n", os.Permissions{.Read_User, .Write_User}); werr != nil {
+		testing.expectf(t, false, "small seed failed")
+		return
+	}
+	// 34 MiB of text: past the line-count read cap, so the listing must
+	// answer without streaming it.
+	big := strings.concatenate({root, "/huge.txt"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(big, strings.repeat("x\n", 17 * 1024 * 1024, context.temp_allocator), os.Permissions{.Read_User, .Write_User}); werr != nil {
+		testing.expectf(t, false, "huge seed failed")
+		return
+	}
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	a := mem.dynamic_arena_allocator(&arena)
+
+	e := new(editor.Editor, context.allocator)
+	editor.editor_init(e, root, .Lf, "", svc.editor_file_io_port(), context.allocator)
+	defer {
+		editor.editor_destroy(e)
+		free(e, context.allocator)
+	}
+	res, lerr := svc.file_list_dir(e, "", false, false, true, {}, nil, a, nil)
+	testing.expectf(t, lerr == nil, "list dir failed")
+	testing.expect_value(t, len(res.files), 2)
+	if len(res.files) == 2 {
+		huge := res.files[0] // walk order is sorted: huge before small
+		testing.expect_value(t, huge.name, "huge.txt")
+		testing.expectf(t, !huge.has_lines, "a file past the line-count cap carries no count")
+		small_entry := res.files[1]
+		testing.expect_value(t, small_entry.name, "small.txt")
+		testing.expectf(t, small_entry.has_lines, "an under-cap file carries its count")
+		testing.expect_value(t, small_entry.lines, 2)
+	}
+}
