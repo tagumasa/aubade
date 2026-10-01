@@ -211,9 +211,17 @@ fingerprint_map_destroy :: proc(fm: ^Fingerprint_Map) {
 }
 
 // fp_load bulk-loads the mirror in one statement (one consistent read
-// transaction under WAL). Errors leave the map unloaded — every consumer
-// fails toward work.
+// transaction under WAL). The whole read span sits under tx_mu, like every
+// other whole-span store access: an unlocked read steps through the shared
+// connection and joins another thread's open BEGIN..COMMIT, adopting its
+// uncommitted rows — after that span's rollback the mirror would serve
+// phantom fingerprints forever (loaded stays true for the connection's
+// life). Lock order tx_mu -> fp.mu is the order fp_touch already follows
+// from inside the batch write spans. Errors leave the map unloaded — every
+// consumer fails toward work.
 fp_load :: proc(db: ^DB) -> platform.Err {
+	sync.mutex_lock(&db.tx_mu)
+	defer sync.mutex_unlock(&db.tx_mu)
 	sync.mutex_lock(&db.fp.mu)
 	defer sync.mutex_unlock(&db.fp.mu)
 	if db.fp.loaded {
