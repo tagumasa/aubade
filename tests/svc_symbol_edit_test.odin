@@ -18,6 +18,8 @@ svc_symbol_edit_replace_body :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -50,6 +52,8 @@ svc_symbol_edit_insert_before_after :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -89,6 +93,8 @@ svc_symbol_edit_docstrings :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -144,6 +150,8 @@ svc_symbol_edit_move_cross_file :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -201,6 +209,8 @@ svc_symbol_edit_move_same_file :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -246,6 +256,8 @@ svc_symbol_edit_move_rejections :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -288,6 +300,8 @@ svc_symbol_edit_move_duplicate_rejected :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -325,6 +339,8 @@ svc_symbol_edit_move_path_spelling_normalized :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -355,6 +371,8 @@ svc_symbol_edit_replace_body_indented :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
