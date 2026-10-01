@@ -35,7 +35,7 @@ structure_outline_json :: proc(t: ^testing.T) {
 
 	text, truncated := ts.structure_outline(ts.parse_root(&pr), STRUCTURE_JSON_FIXTURE, {}, a)
 	testing.expect(t, !truncated)
-	testing.expect_value(t, text, "{} (L0-L7)\n"+
+	testing.expect(t, text == "{} (L0-L7)\n"+
 		"  name: \"demo\" (L1)\n"+
 		"  ver: 2 (L2)\n"+
 		"  arr: [3] (L3)\n"+
@@ -43,7 +43,7 @@ structure_outline_json :: proc(t: ^testing.T) {
 		"    [1]: 1 (L3)\n"+
 		"    [2]: null (L3)\n"+
 		"  nest: {} (L4-L6)\n"+
-		"    k: \"v\" (L5)\n")
+		"    k: \"v\" (L5)\n", "pretty JSON outline")
 }
 
 @(test)
@@ -64,12 +64,12 @@ structure_outline_minified_json :: proc(t: ^testing.T) {
 	text, _ := ts.structure_outline(ts.parse_root(&pr), code, {}, a)
 	// Everything sits on L0 — discovery still works; extraction covers
 	// values (line numbers are useless on one-line files by nature).
-	testing.expect_value(t, text, "{} (L0)\n"+
+	testing.expect(t, text == "{} (L0)\n"+
 		"  a: {} (L0)\n"+
 		"    b: [2] (L0)\n"+
 		"      [0]: 1 (L0)\n"+
 		"      [1]: 2 (L0)\n"+
-		"    c: \"x\" (L0)\n")
+		"    c: \"x\" (L0)\n", "minified JSON outline")
 }
 
 @(test)
@@ -99,7 +99,7 @@ structure_outline_yaml :: proc(t: ^testing.T) {
 	// Container values report the span of their content (the nested
 	// mapping's first line through its last), not the key line that
 	// introduces them — that line belongs to the parent pair.
-	testing.expect_value(t, text, "{} (L0-L8)\n"+
+	testing.expect(t, text == "{} (L0-L8)\n"+
 		"  name: x (L0)\n"+
 		"  jobs: {} (L2-L5)\n"+
 		"    build: {} (L3-L5)\n"+
@@ -110,7 +110,7 @@ structure_outline_yaml :: proc(t: ^testing.T) {
 		"          run: make test (L5)\n" +
 		"  anchored: {} (L7) &base\n" +
 		"    key: val (L7)\n" +
-		"  ref: *base (alias) (L8)\n")
+		"  ref: *base (alias) (L8)\n", "YAML outline with content spans")
 }
 
 @(test)
@@ -134,9 +134,9 @@ structure_outline_json5_comments :: proc(t: ^testing.T) {
 	defer ts.parse_release(&pr)
 
 	text, _ := ts.structure_outline(ts.parse_root(&pr), code, {}, a)
-	testing.expect_value(t, text, "{} (L0-L4)\n"+
+	testing.expect(t, text == "{} (L0-L4)\n"+
 		"  quoted key: \"v\" (L2)\n"+
-		"  bare: 1 (L3)\n")
+		"  bare: 1 (L3)\n", "json5 outline")
 }
 
 @(test)
@@ -267,7 +267,7 @@ structure_path_value_modes :: proc(t: ^testing.T) {
 	// Container values return their exact source slice.
 	res, err = ts.structure_resolve_path(root, STRUCTURE_JSON_FIXTURE, ".nest", 0, a)
 	testing.expectf(t, err == "", "nest: %s", err)
-	testing.expect_value(t, res.content, "{\n    \"k\": \"v\"\n  }")
+	testing.expect(t, res.content == "{\n    \"k\": \"v\"\n  }", "container values return their exact source slice")
 
 	// keys lists an object's keys with their lines.
 	res, err = ts.structure_resolve_path(root, STRUCTURE_JSON_FIXTURE, ". | keys", 0, a)

@@ -182,7 +182,7 @@ stream_jsonl_root :: proc(t: ^testing.T) {
 
 	res, err := ts.structure_stream_resolve_path(src, "[1]", 0, a)
 	testing.expectf(t, err == "", "index: %s", err)
-	testing.expect_value(t, res.content, "{\"lvl\": \"warn\", \"msg\": \"two\"}")
+	testing.expect(t, res.content == "{\"lvl\": \"warn\", \"msg\": \"two\"}", "second stream record")
 	testing.expect_value(t, res.start_line, 1)
 	testing.expect_value(t, res.end_line, 1)
 

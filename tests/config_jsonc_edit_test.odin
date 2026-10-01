@@ -286,7 +286,7 @@ jsonc_edit_remove_middle_last_and_only_members :: proc(t: ^testing.T) {
 	// newline after the closing brace survives)
 	out3, removed3, ok3 := config.edit_remove_member(out2, {}, "model", context.temp_allocator)
 	testing.expect(t, ok3 && removed3)
-	testing.expect_value(t, string(out3), "{\n}\n")
+	testing.expect(t, string(out3) == "{\n}\n", "emptied object keeps its trailing newline")
 }
 
 @(test)
@@ -351,8 +351,8 @@ jsonc_edit_remove_inline_members :: proc(t: ^testing.T) {
 	src := jsonc_of("{\"a\": 1, \"b\": 2}")
 	out, removed, ok := config.edit_remove_member(src, {}, "a", context.temp_allocator)
 	testing.expect(t, ok && removed)
-	testing.expect_value(t, string(out), "{ \"b\": 2}")
+	testing.expect(t, string(out) == "{ \"b\": 2}", "inline removal of the first member")
 	out2, removed2, ok2 := config.edit_remove_member(src, {}, "b", context.temp_allocator)
 	testing.expect(t, ok2 && removed2)
-	testing.expect_value(t, string(out2), "{\"a\": 1}")
+	testing.expect(t, string(out2) == "{\"a\": 1}", "inline removal of the last member")
 }

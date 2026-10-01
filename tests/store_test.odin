@@ -335,7 +335,7 @@ store_events_batch_payload_fetch :: proc(t: ^testing.T) {
 	testing.expectf(t, ferr == nil, "batch fetch: %v", ferr)
 	testing.expect_value(t, len(payloads), total)
 	if p, ok := payloads[uids[0]]; ok {
-		testing.expect_value(t, p, "{\"n\":0}")
+		testing.expect(t, p == "{\"n\":0}", "batch payload of the first uid")
 	} else {
 		testing.expectf(t, false, "first uid missing from batch result")
 	}
@@ -358,7 +358,7 @@ store_events_batch_payload_fetch :: proc(t: ^testing.T) {
 	testing.expectf(t, serr == nil, "subset fetch: %v", serr)
 	testing.expect_value(t, len(sub), 2)
 	if p, ok := sub[uids[77]]; ok {
-		testing.expect_value(t, p, "{\"n\":77}")
+		testing.expect(t, p == "{\"n\":77}", "subset payload of uid 77")
 	} else {
 		testing.expectf(t, false, "subset misses uid 77")
 	}
@@ -375,7 +375,7 @@ store_events_batch_payload_fetch :: proc(t: ^testing.T) {
 	one, found, perr := store.event_payload_by_uid(db, uids[42], context.allocator)
 	testing.expectf(t, perr == nil, "single fetch: %v", perr)
 	testing.expect(t, found)
-	testing.expect_value(t, one, "{\"n\":42}")
+	testing.expect(t, one == "{\"n\":42}", "single-uid payload")
 	delete(one, context.allocator)
 
 	// An empty request is a no-op, not an error.
