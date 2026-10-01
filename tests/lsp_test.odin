@@ -377,6 +377,10 @@ lsp_pair_init :: proc(t: ^testing.T, virtual_clock := false) -> ^Lsp_Pair {
 
 	p.freader = thread.create_and_start_with_data(fake.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-fake-reader")
 	if p.freader == nil {
+		// Unwind the pair exactly the way the second failure path below
+		// does — the half-built pair owns conns, pipes, and the client,
+		// and shutdown nil-checks both readers.
+		lsp_pair_shutdown(p)
 		return nil
 	}
 	p.creader = thread.create_and_start_with_data(p.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-client-reader")
@@ -931,7 +935,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw, ok := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok)
 	if ok {
-		testing.expect_value(t, raw, `[{"message":"v5"}]`)
+		testing.expect(t, raw == `[{"message":"v5"}]`, "watermark keeps the fresh set")
 		delete(raw, context.temp_allocator)
 	}
 
@@ -941,7 +945,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw2, ok2 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok2)
 	if ok2 {
-		testing.expect_value(t, raw2, `[{"message":"untagged"}]`)
+		testing.expect(t, raw2 == `[{"message":"untagged"}]`, "untagged publication applies")
 		delete(raw2, context.temp_allocator)
 	}
 	lsp.diagnostics_store_set(&s, uri, `[{"message":"stale"}]`, 4)
@@ -949,7 +953,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw3, ok3 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok3)
 	if ok3 {
-		testing.expect_value(t, raw3, `[{"message":"untagged"}]`)
+		testing.expect(t, raw3 == `[{"message":"untagged"}]`, "stale tagged set loses to the untagged one")
 		delete(raw3, context.temp_allocator)
 	}
 
@@ -960,7 +964,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw4, ok4 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok4)
 	if ok4 {
-		testing.expect_value(t, raw4, `[{"message":"v6"}]`)
+		testing.expect(t, raw4 == `[{"message":"v6"}]`, "fresh version applies over the stale clear")
 		delete(raw4, context.temp_allocator)
 	}
 
@@ -979,7 +983,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw5, ok5 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok5)
 	if ok5 {
-		testing.expect_value(t, raw5, `[{"message":"late-untagged"}]`)
+		testing.expect(t, raw5 == `[{"message":"late-untagged"}]`, "late untagged publication applies past the cleared watermark")
 		delete(raw5, context.temp_allocator)
 	}
 	lsp.diagnostics_store_set(&s, uri, `[{"message":"late-stale-2"}]`, 6)
@@ -987,7 +991,7 @@ lsp_diagnostics_store_version_watermark :: proc(t: ^testing.T) {
 	raw6, ok6 := lsp.diagnostics_store_get(&s, uri, context.temp_allocator)
 	testing.expect(t, ok6)
 	if ok6 {
-		testing.expect_value(t, raw6, `[{"message":"late-untagged"}]`)
+		testing.expect(t, raw6 == `[{"message":"late-untagged"}]`, "late stale set stays dropped")
 		delete(raw6, context.temp_allocator)
 	}
 }
@@ -1016,7 +1020,7 @@ lsp_diagnostics_store_keys_survive_caller_memory :: proc(t: ^testing.T) {
 	testing.expect_value(t, lsp.diagnostics_store_count(&s), 1)
 	raw, ok := lsp.diagnostics_store_get(&s, again, context.temp_allocator)
 	testing.expect(t, ok)
-	testing.expect_value(t, raw, `[{"message":"b"}]`)
+	testing.expect(t, raw == `[{"message":"b"}]`, "overwrite wins under the equal URI")
 	delete(raw, context.temp_allocator)
 
 	// The clear path must remove the entry, not silently miss the key.
@@ -1042,7 +1046,7 @@ lsp_diagnostics_store_canonicalizes_server_uris :: proc(t: ^testing.T) {
 	raw, ok := lsp.diagnostics_store_get(&s, local, context.temp_allocator)
 	testing.expectf(t, ok, "local form %s missed the server-spelled entry", local)
 	if ok {
-		testing.expect_value(t, raw, `[{"message":"a"}]`)
+	testing.expect(t, raw == `[{"message":"a"}]`, "server-spelled entry reads by the local form")
 	}
 
 	// A different server spelling of the same file overwrites the entry
@@ -1052,7 +1056,7 @@ lsp_diagnostics_store_canonicalizes_server_uris :: proc(t: ^testing.T) {
 	raw2, ok2 := lsp.diagnostics_store_get(&s, local, context.temp_allocator)
 	testing.expect(t, ok2)
 	if ok2 {
-		testing.expect_value(t, raw2, `[{"message":"b"}]`)
+	testing.expect(t, raw2 == `[{"message":"b"}]`, "case-insensitive spelling overwrites")
 	}
 }
 
@@ -1827,7 +1831,12 @@ lsp_crossref_wait_diag_during_fallback_upgrades_outcome :: proc(t: ^testing.T) {
 	}
 	defer lsp_pair_shutdown(p)
 
-	p.client.crossref_event_timeout_ms = 5000
+	// No event window: with nothing to expire, the signal can only be
+	// answered by the fallback's re-lock upgrade — the exact branch under
+	// test — whether or not the waiter has parked when it lands. Nothing
+	// advances the virtual clock before the signal, so a parked waiter
+	// cannot leave the fallback early either.
+	p.client.crossref_event_timeout_ms = 0
 	p.client.crossref_fallback_ms = 1000
 
 	Wait_Job :: struct {
@@ -1852,12 +1861,22 @@ lsp_crossref_wait_diag_during_fallback_upgrades_outcome :: proc(t: ^testing.T) {
 	}
 	thr := thread.create_and_start_with_data(w, wait_worker, self_cleanup = false)
 
-	// Pass the event window, then give the waiter a few real cond slices
-	// (25 ms each) to park inside the fallback settle wait before the
-	// signal lands — that unlocked sleep is exactly the window the fix
-	// re-evaluates on wake.
-	platform.clock_advance(p.clock, 6000)
-	time.sleep(150 * time.Millisecond)
+	// Bounded settle so the mid-park arrival is the common case; if the
+	// waiter ever completes first, the check below fails the test loudly
+	// instead of silently exercising the once-latch path.
+	for _ in 0..<25 {
+		sync.mutex_lock(&w.mu)
+		done := w.done
+		sync.mutex_unlock(&w.mu)
+		if done {
+			break
+		}
+		time.sleep(2 * time.Millisecond)
+	}
+	sync.mutex_lock(&w.mu)
+	still_waiting := !w.done
+	sync.mutex_unlock(&w.mu)
+	testing.expect(t, still_waiting, "waiter completed before the mid-fallback signal; the upgrade path never ran")
 
 	diag_params := jsonutil.json_object(2, context.temp_allocator)
 	jsonutil.obj_set(&diag_params, "uri", jsonutil.json_string("file:///a.go"))
