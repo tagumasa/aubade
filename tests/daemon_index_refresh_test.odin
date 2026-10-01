@@ -92,7 +92,11 @@ index_refresh_teardown :: proc(f: ^Index_Refresh_Fixture) {
 refresh_write_external :: proc(t: ^testing.T, f: ^Index_Refresh_Fixture, rel: string, body: string) {
 	abs, _ := filepath.join([]string{f.root, rel}, context.temp_allocator)
 	if werr := os.write_entire_file_from_bytes(abs, transmute([]u8)body); werr != nil {
-		testing.fail_now(t, "external write failed")
+		// No fail_now: it fires past the caller's defers, and callers run
+		// with the looper thread live — record the failure, return, and let
+		// the caller's assertions fail with the teardown intact.
+		testing.expectf(t, false, "external write of %s failed: %v", rel, werr)
+		return
 	}
 }
 
