@@ -71,6 +71,8 @@ svc_file_write_read_roundtrip :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -189,6 +191,8 @@ svc_file_write_preserves_bom :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -270,6 +274,8 @@ svc_file_edit_ops :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -896,6 +902,8 @@ svc_file_delete_move :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	arena: mem.Dynamic_Arena
@@ -951,6 +959,8 @@ svc_file_rejects_bad_targets :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 
 	svc_symbol_write_file(t, pair.tmp, "plain.txt", "x\n")
@@ -992,6 +1002,8 @@ read_only_daemon_refuses_mutating_file_methods :: proc(t: ^testing.T) {
 	if pair == nil {
 		return
 	}
+	old, had := set_aubade_home(pair.home)
+	defer restore_aubade_home(old, had)
 	defer pair_shutdown(pair)
 	pair.daemon.cfg.read_only = true
 
