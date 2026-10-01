@@ -9,6 +9,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:testing"
@@ -102,31 +103,52 @@ procrun_timeout_kills_runaway_child :: proc(t: ^testing.T) {
 }
 
 // A fired cancel token kills the child mid-run at the next poll — the
-// checkpoint discipline every blocking wait follows (real-time by design,
-// like the timeout test above; the helper thread plays the canceller).
+// checkpoint discipline every blocking wait follows. The canceller waits
+// for the child's readiness marker before firing, so the kill provably
+// lands mid-run even on a loaded runner: a fire that beats the spawn
+// would exercise the refuse-at-first-checkpoint path instead.
 @(test)
 procrun_token_kills_mid_run :: proc(t: ^testing.T) {
 	when ODIN_OS == .Windows {
 		return
 	}
+	tmp, terr := os.make_directory_temp("", "aubade-token-", context.allocator)
+	if terr != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(tmp)
+		delete(tmp)
+	}
+
 	root := new(platform.Cancel_Token, context.allocator)
 	platform.token_init_root(root)
 	defer platform.token_destroy(root, context.allocator)
 
-	Token_Box :: struct {tok: ^platform.Cancel_Token}
+	ready, _ := filepath.join([]string{tmp, "ready"}, context.temp_allocator)
+	Token_Box :: struct {tok: ^platform.Cancel_Token, ready: string}
 	box := new(Token_Box, context.allocator)
 	defer free(box, context.allocator)
-	box^ = {tok = root}
-	fire_later :: proc(data: rawptr) {
+	box^ = {tok = root, ready = ready}
+	fire_when_ready :: proc(data: rawptr) {
 		b := cast(^Token_Box)data
-		time.sleep(250 * time.Millisecond)
+		// Bounded poll: on expiry the token fires anyway and the test's
+		// own assertions report the failure.
+		deadline := platform.mono_ms() + 2000
+		for platform.mono_ms() < deadline {
+			if _, serr := os.stat(b.ready, context.temp_allocator); serr == nil {
+				break
+			}
+			time.sleep(2 * time.Millisecond)
+		}
 		platform.token_fire(b.tok, .Cancelled)
 	}
-	canceller := thread.create_and_start_with_data(box, fire_later, self_cleanup = false)
+	canceller := thread.create_and_start_with_data(box, fire_when_ready, self_cleanup = false)
 
+	payload, _ := strings.concatenate({"touch ", ready, "; sleep 5"}, context.temp_allocator)
 	started := platform.mono_ms()
 	res, err := platform.procrun(platform.Procrun_Opts{
-		command        = {"sh", "-c", "sleep 5"},
+		command        = {"sh", "-c", payload},
 		capture_stderr = false,
 		timeout_ms     = 30_000,
 		token          = root,
