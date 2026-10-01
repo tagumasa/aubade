@@ -159,8 +159,21 @@ Crawl_Stats :: struct {
 // same pass. Files without tree-sitter outline data return empty roots and
 // no error — the caller routes those to another source.
 ts_source_file_symbols :: proc(src: ^TS_Source, rel_path: string, a := context.allocator) -> (roots: []^symbol.Symbol, err: platform.Err) {
-	roots, _, err = ts_source_file_symbols_detailed(src, rel_path, a)
+	// want_source=false: the read path pays no basis clone.
+	roots, _, _, err = ts_source_file_symbols_detailed(src, rel_path, a, false)
 	return roots, err
+}
+
+// ts_source_file_symbols_sourced is ts_source_file_symbols with the parse
+// basis: `source` is a clone (in `a`) of the exact contents the returned
+// outline was resolved against — exact for every arm, since the L1 payload
+// probe is keyed by the hash of the bytes just read, the L2 tree
+// byte-compares, and a miss parses those bytes. The edit ops hand it to
+// the editor transaction, which refuses a splice whose buffer no longer
+// matches it. "" when the file is not served or the outline errors.
+ts_source_file_symbols_sourced :: proc(src: ^TS_Source, rel_path: string, a := context.allocator) -> (roots: []^symbol.Symbol, source: string, err: platform.Err) {
+	roots, _, source, err = ts_source_file_symbols_detailed(src, rel_path, a, true)
+	return roots, source, err
 }
 
 // ts_source_file_symbols_detailed is ts_source_file_symbols with the
@@ -168,7 +181,9 @@ ts_source_file_symbols :: proc(src: ^TS_Source, rel_path: string, a := context.a
 // no grammar or outline query serves the file (the LSP producer may),
 // while served=true with empty roots means the file parses to an empty
 // outline — its indexed rows describe bytes it no longer carries.
-ts_source_file_symbols_detailed :: proc(src: ^TS_Source, rel_path: string, a := context.allocator) -> (roots: []^symbol.Symbol, served: bool, err: platform.Err) {
+// want_source additionally returns the parse basis cloned into `a`
+// (skippable: the read-side callers would only delete it again).
+ts_source_file_symbols_detailed :: proc(src: ^TS_Source, rel_path: string, a := context.allocator, want_source: bool) -> (roots: []^symbol.Symbol, served: bool, source: string, err: platform.Err) {
 	// Per-call scratch arena: nothing here is shared mutable state (the
 	// parser and query cursor are per-call; the db serializes its own
 	// writes), so symbol lookups no longer wait behind a crawl.
@@ -179,18 +194,18 @@ ts_source_file_symbols_detailed :: proc(src: ^TS_Source, rel_path: string, a := 
 
 	rel := normalize_rel(rel_path, scratch)
 	if rel == "" {
-		return nil, false, wrapped_err(.Invalid, "ts source: empty relative path", a)
+		return nil, false, "", wrapped_err(.Invalid, "ts source: empty relative path", a)
 	}
 	abs, perr := safety.pathguard_validate_contained(src.project_root, rel, scratch)
 	if perr.reason != "" {
-		return nil, false, wrapped_err(.Invalid, strings.concatenate({"ts source: invalid path: ", perr.reason}, scratch), a)
+		return nil, false, "", wrapped_err(.Invalid, strings.concatenate({"ts source: invalid path: ", perr.reason}, scratch), a)
 	}
 	kind, size, sok := util.stat_kind_size(abs, scratch)
 	if !sok {
-		return nil, false, wrapped_err(.NotFound, strings.concatenate({"ts source: path not found: ", rel}, scratch), a)
+		return nil, false, "", wrapped_err(.NotFound, strings.concatenate({"ts source: path not found: ", rel}, scratch), a)
 	}
 	if kind == .Directory {
-		return nil, false, wrapped_err(.Invalid, "ts source: path is a directory (crawl it instead)", a)
+		return nil, false, "", wrapped_err(.Invalid, "ts source: path is a directory (crawl it instead)", a)
 	}
 
 	// The contents to parse: the editor's view when it holds one for
@@ -232,27 +247,30 @@ ts_source_file_symbols_detailed :: proc(src: ^TS_Source, rel_path: string, a := 
 			}
 		}
 		if !ok {
-			return nil, false, nil
+			return nil, false, "", nil
 		}
 	}
 	table := ts.GRAMMARS
 	lang := table[idx].name
 	o := outliner_for(src, lang)
 	if o == nil {
-		return nil, false, nil
+		return nil, false, "", nil
 	}
 
 	if !from_editor {
 		disk, rerr := read_source_file(abs, scratch)
 		if rerr != "" {
-			return nil, true, wrapped_err(.Internal, strings.concatenate({"ts source: ", rerr, ": ", rel}, scratch), a)
+			return nil, true, "", wrapped_err(.Internal, strings.concatenate({"ts source: ", rerr, ": ", rel}, scratch), a)
 		}
 		contents = disk
 	}
 
 	oerr: platform.Err
 	roots, oerr = ts_source_outline_for_contents(src, o, lang, contents, abs, rel, a, scratch)
-	return roots, true, oerr
+	if want_source && oerr == nil {
+		source = strings.clone(contents, a)
+	}
+	return roots, true, source, oerr
 }
 
 // ts_source_outline_for_contents is the shared resolution tail: serve one
@@ -402,7 +420,7 @@ index_heal_file :: proc(
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
 ) -> bool {
-	roots, served, err := ts_source_file_symbols_detailed(src, rel, a)
+	roots, served, _, err := ts_source_file_symbols_detailed(src, rel, a, false)
 	if err != nil {
 		return false
 	}

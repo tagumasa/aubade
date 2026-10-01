@@ -1367,6 +1367,9 @@ editor_no_bom_stays_bomless :: proc(t: ^testing.T) {
 
 // delete_middle writes the fixture, drops any cached buffer so the edit
 // reads the fresh bytes, deletes `name`, and returns the disk contents.
+// The guard basis is the editor's view of the written bytes (a CRLF
+// fixture folds to LF in the buffer — the raw `src` string is not what
+// the transaction will see).
 delete_middle :: proc(
 	t: ^testing.T,
 	f: ^Editor_Fixture,
@@ -1383,7 +1386,9 @@ delete_middle :: proc(
 	if s == nil {
 		return ""
 	}
-	derr, dmsg := editor.editor_symbol_delete(f.e, "t.go", s, with_comments, "go")
+	basis, _, _ := editor.editor_read_file(f.e, "t.go")
+	defer delete(basis, f.e.allocator)
+	derr, dmsg := editor.editor_symbol_delete(f.e, "t.go", s, basis, with_comments, "go")
 	testing.expectf(t, derr == .None, "delete %s: %s", name, dmsg)
 	return read_fixture_file(f^, "t.go")
 }
@@ -1442,6 +1447,113 @@ editor_symbol_delete_seam_crlf :: proc(t: ^testing.T) {
 		after == "package a\r\n\r\ntype First struct{}\r\n\r\ntype Third struct{}\r\n",
 		after,
 	)
+}
+
+// A symbol edit whose parse basis no longer matches the buffer refuses
+// instead of splicing at stale offsets, and the buffer's bytes survive
+// untouched on disk.
+@(test)
+editor_symbol_replace_body_refuses_shifted_source :: proc(t: ^testing.T) {
+	f := editor_fixture(t, .Lf)
+	defer editor_fixture_destroy(f)
+
+	src := "package a\n\ntype A struct{ X int }\n"
+	write_fixture_file(f, "t.go", src)
+	editor.editor_drop_buffer(f.e, "t.go")
+	roots := build_go_symbols(t, src)
+	defer symbol.symbol_forest_destroy(roots, context.allocator)
+	s := find_symbol_named(roots, "A")
+	testing.expectf(t, s != nil, "A not found")
+	if s == nil {
+		return
+	}
+
+	// The file moved after the parse: the resolved range is stale.
+	shifted := "package a\n\n// shifted\ntype A struct{ Y int }\n"
+	write_fixture_file(f, "t.go", shifted)
+	editor.editor_drop_buffer(f.e, "t.go")
+
+	eerr, emsg := editor.editor_symbol_replace_body(f.e, "t.go", s, src, "type A struct{ Z int }")
+	testing.expectf(t, eerr == .Position, "refuse: %s", emsg)
+	disk := read_fixture_file(f, "t.go")
+	defer delete(disk, context.allocator)
+	testing.expect_value(t, disk, shifted)
+}
+
+@(test)
+editor_symbol_delete_refuses_shifted_source :: proc(t: ^testing.T) {
+	f := editor_fixture(t, .Lf)
+	defer editor_fixture_destroy(f)
+
+	src := "package a\n\ntype A struct{ X int }\n\ntype B struct{ Y int }\n"
+	write_fixture_file(f, "t.go", src)
+	editor.editor_drop_buffer(f.e, "t.go")
+	roots := build_go_symbols(t, src)
+	defer symbol.symbol_forest_destroy(roots, context.allocator)
+	s := find_symbol_named(roots, "A")
+	testing.expectf(t, s != nil, "A not found")
+	if s == nil {
+		return
+	}
+
+	shifted := "package a\n\n// moved\ntype A struct{ X int }\n\ntype B struct{ Y int }\n"
+	write_fixture_file(f, "t.go", shifted)
+	editor.editor_drop_buffer(f.e, "t.go")
+
+	derr, dmsg := editor.editor_symbol_delete(f.e, "t.go", s, src, false, "go")
+	testing.expectf(t, derr == .Position, "refuse: %s", dmsg)
+	disk := read_fixture_file(f, "t.go")
+	defer delete(disk, context.allocator)
+	testing.expect_value(t, disk, shifted)
+}
+
+// An insert below a definition that ends a no-trailing-newline file
+// terminates the last line first: a non-separated kind's text starts on
+// its own line instead of gluing on, and a separated kind keeps its one
+// blank line of separation (the terminator is not charged to it).
+@(test)
+editor_symbol_insert_after_eof_without_trailing_newline :: proc(t: ^testing.T) {
+	f := editor_fixture(t, .Lf)
+	defer editor_fixture_destroy(f)
+
+	// Non-separated kind (a variable): without the termination the text
+	// would land at the end of the unterminated last line.
+	src := "package a\n\nvar Tail = 1"
+	write_fixture_file(f, "t.go", src)
+	editor.editor_drop_buffer(f.e, "t.go")
+	roots := build_go_symbols(t, src)
+	defer symbol.symbol_forest_destroy(roots, context.allocator)
+	s := find_symbol_named(roots, "Tail")
+	testing.expectf(t, s != nil, "Tail not found")
+	if s == nil {
+		return
+	}
+	basis, _, _ := editor.editor_read_file(f.e, "t.go")
+	defer delete(basis, f.e.allocator)
+	eerr, emsg := editor.editor_symbol_insert_after(f.e, "t.go", s, basis, "var After = 2")
+	testing.expectf(t, eerr == .None, "insert after: %s", emsg)
+	disk := read_fixture_file(f, "t.go")
+	defer delete(disk, context.allocator)
+	testing.expect_value(t, disk, "package a\n\nvar Tail = 1\nvar After = 2\n")
+
+	// Separated kind (a function): the blank line survives the EOF seam.
+	src2 := "package a\n\nfunc Lone()"
+	write_fixture_file(f, "t.go", src2)
+	editor.editor_drop_buffer(f.e, "t.go")
+	roots2 := build_go_symbols(t, src2)
+	defer symbol.symbol_forest_destroy(roots2, context.allocator)
+	s2 := find_symbol_named(roots2, "Lone")
+	testing.expectf(t, s2 != nil, "Lone not found")
+	if s2 == nil {
+		return
+	}
+	basis2, _, _ := editor.editor_read_file(f.e, "t.go")
+	defer delete(basis2, f.e.allocator)
+	eerr, emsg = editor.editor_symbol_insert_after(f.e, "t.go", s2, basis2, "type After struct{}")
+	testing.expectf(t, eerr == .None, "insert after separated: %s", emsg)
+	disk2 := read_fixture_file(f, "t.go")
+	defer delete(disk2, context.allocator)
+	testing.expect_value(t, disk2, "package a\n\nfunc Lone()\n\ntype After struct{}\n")
 }
 
 // A same-file move vacates the source site through the same line-granular
