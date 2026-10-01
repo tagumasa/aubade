@@ -8,6 +8,7 @@ package tests
 
 import "core:os"
 import "core:path/filepath"
+import "core:sync"
 import "core:testing"
 import "core:thread"
 import "core:time"
@@ -15,12 +16,19 @@ import "core:time"
 import "src:platform"
 
 Retry_Box :: struct {
-	path: string,
-	err:  platform.Err,
+	path:    string,
+	err:     platform.Err,
+	mu:      sync.Mutex,
+	cond:    sync.Cond,
+	started: bool,
 }
 
 retry_writer_entry :: proc(data: rawptr) {
 	b := cast(^Retry_Box)data
+	sync.mutex_lock(&b.mu)
+	b.started = true
+	sync.cond_broadcast(&b.cond)
+	sync.mutex_unlock(&b.mu)
 	// A typed local, not a literal: transmute refuses untyped string
 	// constants, and this file only compiles on the Windows runner.
 	payload := "second"
@@ -57,10 +65,17 @@ atomic_write_waits_out_a_reader_holding_the_target :: proc(t: ^testing.T) {
 	box^ = {path = path}
 	writer := thread.create_and_start_with_data(box, retry_writer_entry, self_cleanup = false, name = "aw-hold-writer")
 
-	// Hold across at least one failed rename attempt, then release — the
-	// writer's bounded retry lands the rename after it. The release is
-	// unconditional, so the join is bounded by the retry budget.
-	time.sleep(150 * time.Millisecond)
+	// Wait until the writer is provably inside atomic_write, then hold
+	// across two retry steps so the first rename attempts fail against
+	// the held file (the step constant owns the exact spacing). The
+	// release is unconditional, so the join stays bounded by the retry
+	// budget either way.
+	sync.mutex_lock(&box.mu)
+	for !box.started {
+		sync.cond_wait(&box.cond, &box.mu)
+	}
+	sync.mutex_unlock(&box.mu)
+	time.sleep(time.Duration(platform.RENAME_RETRY_STEP_MS * 2) * time.Millisecond)
 	os.close(holder)
 
 	thread.join(writer)
