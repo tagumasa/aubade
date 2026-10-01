@@ -159,7 +159,7 @@ An event-sourced bug and audit tracker scoped to the project. Incidents are file
 
 **Shadow git (optional)** — `shadow_snapshot`, `shadow_log`, `shadow_diff`, `shadow_patch`, `shadow_restore`, `shadow_revert_file`
 
-Shadow git keeps workspace snapshots in a private git repository under the aubade home, separate from the project's own git history. `shadow_snapshot` records one and returns its commit hash; `shadow_log`, `shadow_diff`, and `shadow_patch` inspect and export them; and `shadow_restore` / `shadow_revert_file` roll the workspace — or a single file — back, passing the same containment and write-denial gate as file writes.
+Shadow git keeps workspace snapshots in a private git repository under the aubade home, separate from the project's own git history. `shadow_snapshot` records one and returns its commit hash; `shadow_log`, `shadow_diff`, and `shadow_patch` inspect and export them; and `shadow_restore` / `shadow_revert_file` roll the workspace — or a single file — back, passing the same containment and write-denial gate as file writes. Restoring also deletes files the snapshot does not track (ignore-excluded files are spared), and reverting a file that was absent from the snapshot deletes it.
 
 **Web (optional)** — `web_fetch`, `web_search` (needs a search provider in `config.jsonc`: Brave, Tavily, Perplexity, DuckDuckGo, or SearXNG)
 
