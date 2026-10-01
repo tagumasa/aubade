@@ -1248,7 +1248,7 @@ editor_utf16_round_trip :: proc(t: ^testing.T) {
 	contents, rerr, _ := editor.editor_read_file(e, "u.go")
 	testing.expect(t, rerr == .None)
 	defer delete(contents, e.allocator)
-	testing.expect_value(t, contents, "package x\n\nfunc f() {}\n")
+	testing.expect(t, contents == "package x\n\nfunc f() {}\n", "decoded UTF-16 read")
 
 	eerr, emsg := editor.editor_insert_at_line(e, "u.go", 1, "// コメント\n")
 	testing.expectf(t, eerr == .None, "insert: %s", emsg)
@@ -1259,7 +1259,7 @@ editor_utf16_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, rune(raw[0]), 0xFF)
 	testing.expectf(t, rune(raw[1]) == 0xFE, "the save writes a BOM'd LE stream")
 	decoded := util.decode_utf16_bytes(transmute([]byte)raw, context.temp_allocator)
-	testing.expect_value(t, decoded, "package x\n// コメント\n\nfunc f() {}\n")
+	testing.expect(t, decoded == "package x\n// コメント\n\nfunc f() {}\n", "BOM'd LE stream after the save")
 
 	// The probe is quiet over the codec: reading again reloads nothing.
 	rec := editor_probe_recorder(t)
@@ -1271,7 +1271,7 @@ editor_utf16_round_trip :: proc(t: ^testing.T) {
 	again, rerr2, _ := editor.editor_read_file(e, "u.go")
 	testing.expect(t, rerr2 == .None)
 	defer delete(again, e.allocator)
-	testing.expect_value(t, again, "package x\n// コメント\n\nfunc f() {}\n")
+	testing.expect(t, again == "package x\n// コメント\n\nfunc f() {}\n", "re-read without reload")
 	testing.expectf(t, editor_event_count(rec, "change") == 0, "no reload after own save")
 }
 
@@ -1291,7 +1291,7 @@ editor_utf8_bom_round_trip :: proc(t: ^testing.T) {
 	contents, rerr, _ := editor.editor_read_file(f.e, "b.go")
 	testing.expect(t, rerr == .None)
 	defer delete(contents, f.e.allocator)
-	testing.expect_value(t, contents, "package x\n\nfunc f() {}\n")
+	testing.expect(t, contents == "package x\n\nfunc f() {}\n", "read strips the BOM")
 
 	// A start-anchored regex matches line 1 (with the BOM parked in the
 	// buffer it used to eat the ^).
@@ -1311,7 +1311,7 @@ editor_utf8_bom_round_trip :: proc(t: ^testing.T) {
 
 	disk := read_fixture_file(f, "b.go")
 	defer delete(disk, context.allocator)
-	testing.expect_value(t, disk, "\xEF\xBB\xBFpackage z\n\nfunc f() {}\n")
+	testing.expect(t, disk == "\xEF\xBB\xBFpackage z\n\nfunc f() {}\n", "save restores the BOM")
 }
 
 @(test)
@@ -1553,7 +1553,7 @@ editor_symbol_insert_after_eof_without_trailing_newline :: proc(t: ^testing.T) {
 	testing.expectf(t, eerr == .None, "insert after separated: %s", emsg)
 	disk2 := read_fixture_file(f, "t.go")
 	defer delete(disk2, context.allocator)
-	testing.expect_value(t, disk2, "package a\n\nfunc Lone()\n\ntype After struct{}\n")
+	testing.expect(t, disk2 == "package a\n\nfunc Lone()\n\ntype After struct{}\n", "save after the symbol delete")
 }
 
 // A same-file move vacates the source site through the same line-granular
