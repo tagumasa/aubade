@@ -365,12 +365,12 @@ notification_body_omits_null_params :: proc(t: ^testing.T) {
 	// a literal "params":null frame is rejected by strict client
 	// validators, so the member disappears when there is no payload.
 	empty := jsonrpc.build_notification_body("notifications/tools/list_changed", nil, context.temp_allocator)
-	testing.expect_value(t, empty, `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+	testing.expect(t, empty == `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`, "body without params")
 
 	params := jsonutil.json_object(1, context.temp_allocator)
 	jsonutil.obj_set(&params, "n", jsonutil.json_int(7))
 	loaded := jsonrpc.build_notification_body("n", json.Value(json.Object(params)), context.temp_allocator)
-	testing.expect_value(t, loaded, `{"jsonrpc":"2.0","method":"n","params":{"n":7}}`)
+	testing.expect(t, loaded == `{"jsonrpc":"2.0","method":"n","params":{"n":7}}`, "body with params")
 }
 
 @(test)
@@ -379,12 +379,12 @@ request_body_omits_null_params :: proc(t: ^testing.T) {
 	// absent, not null — strict peers reject a literal "params":null for
 	// methods whose params are optional (LSP shutdown carries none).
 	empty := jsonrpc.build_request_body(7, "shutdown", nil, context.temp_allocator)
-	testing.expect_value(t, empty, `{"jsonrpc":"2.0","id":7,"method":"shutdown"}`)
+	testing.expect(t, empty == `{"jsonrpc":"2.0","id":7,"method":"shutdown"}`, "body without params")
 
 	params := jsonutil.json_object(1, context.temp_allocator)
 	jsonutil.obj_set(&params, "n", jsonutil.json_int(7))
 	loaded := jsonrpc.build_request_body(3, "m", json.Value(json.Object(params)), context.temp_allocator)
-	testing.expect_value(t, loaded, `{"jsonrpc":"2.0","id":3,"method":"m","params":{"n":7}}`)
+	testing.expect(t, loaded == `{"jsonrpc":"2.0","id":3,"method":"m","params":{"n":7}}`, "body with params")
 }
 
 // --- Conn roundtrips --------------------------------------------------------
@@ -895,6 +895,8 @@ jsonrpc_request_queue_full_rejects_without_cloning :: proc(t: ^testing.T) {
 	// overflow post must refuse while the queue is provably full.
 	entered_raw, eerr := chan.create_buffered(chan.Chan(bool), 1, context.allocator)
 	release_raw, rerr := chan.create_unbuffered(chan.Chan(bool), context.allocator)
+	// A silent return here would pass the test while testing nothing.
+	testing.expectf(t, eerr == nil && rerr == nil, "chan setup failed: %v / %v", eerr, rerr)
 	if eerr != nil || rerr != nil {
 		return
 	}
