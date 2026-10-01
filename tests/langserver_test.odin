@@ -1204,6 +1204,12 @@ langserver_scan_language_roots :: proc(t: ^testing.T) {
 	defer delete(root, context.allocator)
 	defer _ = os.remove_all(root)
 
+	// scan_language_roots resolves the managed-dir skip through the
+	// ambient AUBADE_HOME; pin it so the developer's real config
+	// cannot change which directories the scan skips.
+	old, had := set_aubade_home(root)
+	defer restore_aubade_home(old, had)
+
 	// Two sibling modules plus a nested one; node_modules carries a
 	// marker that must never surface; plain/ has none.
 	scan_mk_dir(root, "modA")

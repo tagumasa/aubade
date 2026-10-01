@@ -75,15 +75,17 @@ h_zork_two_alphas :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 // an LSP source wired to a fake peer (or a refusing port when
 // with_client=false — its failure is the proof a path never called it).
 Symbol_Edit_Fallback_Env :: struct {
-	dir:     string,
-	db_dir:  string,
-	db:      ^store.DB,
-	clock:   ^platform.Clock,
-	ts_src:  ^svc.TS_Source,
-	lsp_src: ^svc.LSP_Source,
-	ed:      ^editor.Editor,
-	pair:    ^Lsp_Pair,
-	port:    Fake_LSP_Port,
+	dir:      string,
+	db_dir:   string,
+	db:       ^store.DB,
+	clock:    ^platform.Clock,
+	ts_src:   ^svc.TS_Source,
+	lsp_src:  ^svc.LSP_Source,
+	ed:       ^editor.Editor,
+	pair:     ^Lsp_Pair,
+	port:     Fake_LSP_Port,
+	home_old: string,
+	home_had: bool,
 }
 
 symbol_edit_fallback_setup :: proc(t: ^testing.T, name: string, content: string, with_client: bool) -> ^Symbol_Edit_Fallback_Env {
@@ -136,10 +138,17 @@ symbol_edit_fallback_setup :: proc(t: ^testing.T, name: string, content: string,
 	}
 	env.lsp_src = new(svc.LSP_Source, context.allocator)
 	svc.lsp_source_init(env.lsp_src, dir, db, env.clock, nil, fake_lsp_port, &env.port, fake_lsp_release, context.allocator)
+
+	// The mutating ops resolve the managed-state gate through the
+	// ambient AUBADE_HOME; pin it to the fixture dir so the
+	// developer's real config cannot steer the refusals.
+	env.home_old, env.home_had = set_aubade_home(env.dir)
+
 	return env
 }
 
 symbol_edit_fallback_teardown :: proc(env: ^Symbol_Edit_Fallback_Env) {
+	restore_aubade_home(env.home_old, env.home_had)
 	editor.editor_destroy(env.ed)
 	free(env.ed, context.allocator)
 	svc.lsp_source_destroy(env.lsp_src)
