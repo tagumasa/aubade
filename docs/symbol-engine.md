@@ -3,34 +3,37 @@
 How aubade answers "where is this symbol defined?" across a project — the
 three-tier resolution pipeline, the two source engines that feed it, and
 how edits, discovery crawls, and the read path keep the index current.
-Memory budgets for the caches described here live in
-[memory.md](memory.md).
+The same engines also feed the LSP server face (`aubade lsp`):
+`textDocument/documentSymbol` renders the outline and
+`textDocument/semanticTokens/full` the highlight queries — see
+[lsp-server.md](lsp-server.md). Memory budgets for the caches described
+here live in [memory.md](memory.md).
 
 ## Architecture overview
 
 ```
-                         symbol_find / symbol_list
-                                    │
-                    ┌───────────────▼───────────────┐
-                    │         L0: name index          │  SQLite table
-                    │  (does this name exist? where?) │  symbol_names
-                    └───────────────┬───────────────┘
-                                    │ candidate files
-                    ┌───────────────▼───────────────┐
-                    │    L1: per-file payload cache   │  SQLite table
-                    │  (full symbol forest, compact)  │  symbol_cache
-                    │  + in-memory mirror (64 MiB)    │
-                    └───────────────┬───────────────┘
-                                    │ cache miss or stale hash
-                    ┌───────────────▼───────────────┐
-                    │   L2: hot parse-tree LRU        │  In-memory
-                    │  (skip re-parse entirely)       │  5,000 / 128 MiB
-                    └───────────────┬───────────────┘
-                                    │ tree miss
-                    ┌───────────────▼───────────────┐
-                    │        Fresh parse               │  tree-sitter or
-                    │  (parse → outline → write L0+L1) │  LSP fallback
-                    └───────────────────────────────┘
+                          symbol_find / symbol_list
+                                      │
+                    ┌─────────────────▼─────────────────┐
+                    │  L0: name index                   │  SQLite table
+                    │  (does this name exist? where?)   │  symbol_names
+                    └─────────────────┬─────────────────┘
+                                      │ candidate files
+                    ┌─────────────────▼─────────────────┐
+                    │  L1: per-file payload cache       │  SQLite table
+                    │  (full symbol forest, compact)    │  symbol_cache
+                    │  + in-memory mirror (64 MiB)      │
+                    └─────────────────┬─────────────────┘
+                                      │ cache miss or stale hash
+                    ┌─────────────────▼─────────────────┐
+                    │  L2: hot parse-tree LRU           │  In-memory
+                    │  (skip re-parse entirely)         │  5,000 / 128 MiB
+                    └─────────────────┬─────────────────┘
+                                      │ tree miss
+                    ┌─────────────────▼─────────────────┐
+                    │  Fresh parse                      │  tree-sitter or
+                    │  (parse → outline → write L0+L1)  │  LSP fallback
+                    └───────────────────────────────────┘
 ```
 
 ## Source engines
@@ -229,3 +232,34 @@ The outliner converts a parse tree into a symbol forest:
    nesting ranges and owner rules (e.g. Go method receiver type).
 5. **Symbol conversion**: map tree-sitter node types to the `Symbol`
    model (name, kind, container, ranges).
+
+## Known limitations
+
+- Most bundled grammars ship highlight queries only, so their tags
+  queries are inferred from generic node shapes. Aubade maintains full
+  outline-query overrides for Go, Odin, and TypeScript (whose inference
+  missed most Odin declarations and TypeScript variables/fields) and
+  hand-verified inference overrides for about 40 more languages; other
+  inference-served languages can miss language-specific declaration
+  forms.
+- Rust `impl`-block methods surface as top-level functions (`new`, not
+  `Server/new`): owner nesting is driven by receiver resolution, which
+  is currently Go-only.
+- A single-line multi-name declaration (`var a, b = 1, 2` in Go) is
+  dropped rather than half-captured; one declaration per line is
+  unaffected.
+- Go type aliases are classified by the `type` keyword's declaration
+  text, so `type R = io.Reader` reports Struct where gopls reports
+  Interface.
+- Markup and data languages (JSON, YAML, HTML, CSS, …) have no symbol
+  outline: `symbol_list` answers empty for them, and nothing in the
+  response distinguishes "no symbols" from "language not served".
+  JSON-family and YAML files do get a structural face —
+  `file_read_outline` renders their key tree and extracts jq-style
+  paths — but the remaining markup/data languages are plain text to
+  both engines.
+- Cross-file `symbol_find` is an index read: files outside the crawl
+  caps or inside ignored paths stay unindexed until read —
+  `symbol_list` indexes a file as a side effect of reading it. The
+  freshness model around this is [Crawl and
+  discovery](#crawl-and-discovery), above.

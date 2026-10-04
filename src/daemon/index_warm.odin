@@ -19,8 +19,8 @@ import "src:util"
 
 INDEX_WARM_KEY :: "index.crawled"
 
-index_warm_thread_entry :: proc(data: rawptr) {
-	index_warm_run(cast(^Daemon)data)
+index_warm_thread_entry :: proc(d: ^Daemon) {
+	index_warm_run(d)
 }
 
 // index_warm_run is the one-shot warm-up step, directly callable from tests.

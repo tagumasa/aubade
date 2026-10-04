@@ -121,3 +121,36 @@ util_read_bounded_file :: proc(t: ^testing.T) {
 		testing.expect_value(t, proc_outcome, util.Read_Outcome.Too_Large)
 	}
 }
+
+@(test)
+util_stat_unchanged_since :: proc(t: ^testing.T) {
+	tmp, err := os.make_directory_temp("", "aubade-fs4-", context.allocator)
+	if err != nil {
+		testing.fail_now(t, "temp dir failed")
+	}
+	defer {
+		_ = os.remove_all(tmp)
+		delete(tmp)
+	}
+
+	file_path, _ := filepath.join({tmp, "memo.txt"}, context.temp_allocator)
+	if werr := os.write_entire_file_from_string(file_path, "hello"); werr != nil {
+		testing.fail_now(t, "write failed")
+	}
+
+	// The torn-read verdict read_bounded_file consults after its bytes are
+	// collected: an untouched file reports unchanged, a rewritten one
+	// changed (the rewrite changes the size — the half of the (size,
+	// mtime) pair every filesystem moves, whatever its mtime granularity),
+	// and a vanished one changed.
+	_, size, mtime_ns, sok := util.stat_kind_size_mtime(file_path)
+	testing.expectf(t, sok, "stat failed")
+	testing.expectf(t, util.stat_unchanged_since(file_path, size, mtime_ns), "untouched file reports unchanged")
+	if werr := os.write_entire_file_from_string(file_path, "hello again"); werr != nil {
+		testing.fail_now(t, "rewrite failed")
+	}
+	testing.expectf(t, !util.stat_unchanged_since(file_path, size, mtime_ns), "rewritten file reports changed")
+
+	_ = os.remove(file_path)
+	testing.expectf(t, !util.stat_unchanged_since(file_path, size, mtime_ns), "vanished file reports changed")
+}

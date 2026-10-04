@@ -130,8 +130,7 @@ procrun_token_kills_mid_run :: proc(t: ^testing.T) {
 	box := new(Token_Box, context.allocator)
 	defer free(box, context.allocator)
 	box^ = {tok = root, ready = ready}
-	fire_when_ready :: proc(data: rawptr) {
-		b := cast(^Token_Box)data
+	fire_when_ready :: proc(b: ^Token_Box) {
 		// Bounded poll: on expiry the token fires anyway and the test's
 		// own assertions report the failure.
 		deadline := platform.mono_ms() + 2000
@@ -143,7 +142,7 @@ procrun_token_kills_mid_run :: proc(t: ^testing.T) {
 		}
 		platform.token_fire(b.tok, .Cancelled)
 	}
-	canceller := thread.create_and_start_with_data(box, fire_when_ready, self_cleanup = false)
+	canceller := thread.create_and_start_with_poly_data(box, fire_when_ready, self_cleanup = false)
 
 	payload, _ := strings.concatenate({"touch ", ready, "; sleep 5"}, context.temp_allocator)
 	started := platform.mono_ms()
@@ -301,8 +300,7 @@ shell_run_cwd_containment :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(text, "not a valid directory"))
 
 	// The project root itself is a legitimate cwd — both relative and
-	// absolute spellings (the hand-rolled prefix check this replaces
-	// rejected the root because it never matches its own "root/" prefix).
+	// absolute spellings.
 	text, is_error = shell_call(t, context.temp_allocator, root, sc, `{"command": "pwd", "cwd": "."}`)
 	testing.expect(t, !is_error)
 	testing.expect(t, strings.contains(text, root))

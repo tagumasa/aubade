@@ -26,8 +26,6 @@ jobs:
             platform: linux-arm64
           - os: macos-latest
             platform: darwin-arm64
-          - os: macos-15-intel
-            platform: darwin-amd64
           - os: windows-latest
             platform: windows-amd64
     steps:
@@ -36,29 +34,26 @@ jobs:
         with:
           submodules: true
 
-      # The nightly distribution replaces assets under the same date key
-      # (verified: the listed sha1 no longer matches the served object),
-      # so consecutive runs can silently test different compilers — one
-      # run linked a bare `libSystem.dylib` operand that no shipped core
-      # source contains. The dev-YYYY-MM GitHub releases are frozen
-      # assets; dev-2026-09 is exactly dev-2026-09-nightly:a2fb372, the
-      # build this repository is developed against. Re-pin deliberately
-      # when bumping the toolchain.
-      - name: Set up Odin (dev-2026-09)
+      # The nightly distribution replaces assets under the same date key,
+      # so consecutive runs can silently test different compilers; the
+      # dev-YYYY-MM releases are frozen assets. dev-2026-10 is exactly
+      # dev-2026-10-nightly:84bc3fc, the build this repository is developed
+      # against. Re-pin deliberately when bumping the toolchain.
+      - name: Set up Odin (dev-2026-10)
         uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release: dev-2026-09
+          release: dev-2026-10
 
       # Hard gate: anything other than the pinned toolchain fails the job
       # here (the setup action's failure modes silently fall back to a
       # git-based build of a different revision — a fallback must be
       # visible, not discovered from link errors three steps later).
-      - name: Assert Odin toolchain (dev-2026-09-nightly:a2fb372)
+      - name: Assert Odin toolchain (dev-2026-10-nightly:84bc3fc)
         shell: bash
         run: |
           odin version
-          odin version | grep -q 'dev-2026-09-nightly:a2fb372'
+          odin version | grep -q 'dev-2026-10-nightly:84bc3fc'
 
       # Odin invokes `clang` from PATH for every link; which clang answers
       # on darwin is environment state we do not control (the setup action
@@ -96,18 +91,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # vcpkg's curl port has no [schannel] feature any more —
-          # Schannel is its default TLS backend on Windows.
+          # vcpkg's curl port builds Schannel as its default TLS backend
+          # on Windows — there is no [schannel] feature to request.
           vcpkg install curl:x64-windows-static-md
           $odinDir = Split-Path (Split-Path (Get-Command odin).Source)
           New-Item -ItemType Directory -Force "$odinDir\vendor\curl\lib" | Out-Null
           Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md\lib\libcurl.lib" "$odinDir\vendor\curl\lib\libcurl.lib"
 
       # Same key scheme as CI, so a tag run restores whatever the default
-      # branch warmed. Tag runs can only restore caches from their own ref
-      # or the default branch, so until the Odin tree is the default
-      # branch every tag run builds the C artifacts cold (~35-40 min per
-      # leg, legs run in parallel). The explicit save (instead of plain
+      # branch warmed (tag runs can only restore caches from their own ref
+      # or the default branch). The explicit save (instead of plain
       # actions/cache, which only saves on job success) also warms re-runs
       # of a failed tag build, without ever caching a partial lib/ — a
       # failed build skips the save step by default.
@@ -185,9 +178,42 @@ jobs:
           name: aubade-${{ matrix.platform }}
           path: aubade-*
 
+  # Same shape as CI's vscode-extension job: the vsix is OS-independent
+  # TypeScript, so it builds once on linux. No dedicated wiring is needed
+  # beyond the artifact upload — see the release job below.
+  vsix:
+    name: VSCode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # `just` is not preinstalled on any GitHub-hosted runner image.
+      - name: Set up just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Package extension
+        run: just vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: editors/vscode/*.vsix
+
   release:
     name: Create draft release
-    needs: build
+    # The vsix ships without further wiring: the download below has no
+    # name filter and merge-multiple: true, so the vscode-extension
+    # artifact lands in dist/ beside the per-platform archives; the
+    # checksums step hashes everything in dist/* (vsix included), and
+    # `gh release create` attaches dist/* wholesale.
+    needs: [build, vsix]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

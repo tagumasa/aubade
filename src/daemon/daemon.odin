@@ -5,6 +5,7 @@
 // shutdown.
 package daemon
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -22,6 +23,7 @@ import "src:store"
 import "src:tracker"
 import "src:safety"
 import "src:svc"
+import "src:util"
 import "src:web"
 
 DEFAULT_PING_MS    :: i64(5000)
@@ -30,6 +32,12 @@ DEFAULT_MISSES     :: 3
 DEFAULT_GRACE_MS   :: i64(30000)
 DEFAULT_DRAIN_MS   :: i64(30000)
 DEFAULT_WORKERS    :: 8
+
+// The teardown pass's bounded wait for a child's in-flight push pin to
+// drop. The pin holder's notify is non-blocking (the push face sheds load,
+// never waits), so the wait is normally a single poll; the bound only
+// stops a wedged holder from stalling shutdown.
+CHILD_PUSH_DRAIN_MS :: i64(250)
 
 Config :: struct {
 	project_root:  string, // normalized absolute path
@@ -81,6 +89,14 @@ Child :: struct {
 	token:         ^platform.Cancel_Token, // .Session_Gone on dead child
 	state:         Child_State,            // guarded by Daemon.children_mu
 	is_hello_seen: bool,                   // svc.hello with the auth token completed (children_mu)
+	is_lsp:        bool,                   // svc.hello mode=="lsp": receives the daemon→child push family (children_mu)
+	// The editor's applyEdit capability bits, declared with the child's
+	// doc/open (the apply form is fixed at the editor's initialize; the
+	// child re-declares it where the daemon link exists). Guarded by
+	// mu, like inflight/active; the routing gate reads them before any
+	// svc.edit/apply is sent.
+	has_apply_edit:       bool,
+	has_document_changes: bool,
 	last_seen_ms:  i64,
 	misses:        int,
 	inflight:      map[i64]^Inflight_Entry, // call_id -> one token slot per registered request
@@ -118,6 +134,7 @@ Daemon :: struct {
 	children:               [dynamic]^Child,
 	children_mu:            sync.Mutex, // children list + states; lock order: children_mu -> child locks, never reverse
 	next_child_id:          int,
+	is_push_quiesced:       bool, // push face closed for teardown; guarded by children_mu (push_lsp_children pins nothing once set)
 	svc_table:              svc.Table,
 	db:                     ^store.DB, // project symbol index (opened in daemon_init)
 	db_path:                string,
@@ -135,6 +152,9 @@ Daemon :: struct {
 	lsp_port:               ^LSP_Port, // registry+manager adapter behind the svc producer ports
 	lsp_src:                ^svc.LSP_Source, // LSP symbol producer (writes through write_symbol_index)
 	ls_sync:                ^svc.Editor_Sync, // editor buffer → didOpen/didChange/didClose bridge
+	doc_sync:               ^svc.Doc_Sync, // child document-sync face over the editor buffers
+	doc_sync_thread:        ^thread.Thread, // the face's single apply worker (joined at cleanup)
+	edit_tw:                ^svc.Two_Writer, // the two-writer routing face over doc_sync
 	pool:                   thread.Pool,
 	is_pool_started:        bool,
 	lock:                   platform.File_Lock,
@@ -377,12 +397,15 @@ daemon_run :: proc(d: ^Daemon) -> int {
 	// regardless of which thread's context runs here.
 	thread_alloc := context.allocator
 	context.allocator = d.allocator
-	d.hb_thread = thread.create_and_start_with_data(d, hb_thread_entry, self_cleanup = false, name = "aubade-hb")
-	d.sweep_thread = thread.create_and_start_with_data(d, sweep_thread_entry, self_cleanup = false, name = "aubade-sweep")
-	d.index_warm_thread = thread.create_and_start_with_data(d, index_warm_thread_entry, self_cleanup = false, name = "aubade-index-warm")
-	d.index_refresh_thread = thread.create_and_start_with_data(d, index_refresh_thread_entry, self_cleanup = false, name = "aubade-index-refresh")
+	d.hb_thread = thread.create_and_start_with_poly_data(d, hb_thread_entry, self_cleanup = false, name = "aubade-hb")
+	d.sweep_thread = thread.create_and_start_with_poly_data(d, sweep_thread_entry, self_cleanup = false, name = "aubade-sweep")
+	d.index_warm_thread = thread.create_and_start_with_poly_data(d, index_warm_thread_entry, self_cleanup = false, name = "aubade-index-warm")
+	d.index_refresh_thread = thread.create_and_start_with_poly_data(d, index_refresh_thread_entry, self_cleanup = false, name = "aubade-index-refresh")
+	if d.doc_sync != nil {
+		d.doc_sync_thread = thread.create_and_start_with_poly_data(d.doc_sync, doc_sync_worker_entry, self_cleanup = false, name = "aubade-doc-sync")
+	}
 	if !d.is_in_process {
-		d.accept_thread = thread.create_and_start_with_data(d, accept_thread_entry, self_cleanup = false, name = "aubade-accept")
+		d.accept_thread = thread.create_and_start_with_poly_data(d, accept_thread_entry, self_cleanup = false, name = "aubade-accept")
 	}
 	context.allocator = thread_alloc
 
@@ -454,13 +477,45 @@ daemon_cleanup :: proc(d: ^Daemon) {
 		free(d.index_refresh_thread, d.allocator)
 		d.index_refresh_thread = nil
 	}
+	// The apply worker exits through its own stop flag (it parks on the
+	// face's condvar, not the root token) and must be gone before the
+	// project state tears the editor down under it.
+	if d.doc_sync != nil {
+		svc.doc_sync_stop(d.doc_sync)
+	}
+	if d.doc_sync_thread != nil {
+		thread.join(d.doc_sync_thread)
+		free(d.doc_sync_thread, d.allocator)
+		d.doc_sync_thread = nil
+	}
 
 	sync.mutex_lock(&d.children_mu)
 	children := d.children
 	d.children = nil
+	// The push face closes in the same critical section that takes the
+	// children snapshot: the language-server threads feeding it stop only
+	// later (in project_state_destroy), and a reader landing in
+	// push_lsp_children from here on must pin no child this pass frees.
+	d.is_push_quiesced = true
 	sync.mutex_unlock(&d.children_mu)
 
 	for child in children {
+		// Freeing a child whose push pin is still held corrupts the conn
+		// the in-flight push is about to notify. The holder's notify is
+		// non-blocking (the push face sheds load, never waits), so the
+		// drain is effectively immediate; the bounded deadline honors the
+		// heartbeat reaper's discipline that a child is torn down only at
+		// zero outstanding work. Past the deadline the child leaks on
+		// purpose: the daemon is exiting, and leaking is the safe side of
+		// freeing under a live reference.
+		if !child_push_drain(d, child) {
+			util.log_warning(fmt.aprintf(
+				"daemon shutdown: child %d still held a push pin at teardown; leaking it to process exit",
+				child.id,
+				allocator = context.temp_allocator,
+			))
+			continue
+		}
 		close_child(d, child)
 	}
 	delete(children)
@@ -553,28 +608,56 @@ wait_children_drained :: proc(d: ^Daemon, timeout_ms: i64) -> bool {
 	}
 }
 
+// child_push_drain waits out the push pins one child still carries before
+// the teardown pass frees it. An in-flight push holds the child's
+// outstanding-work pin for one non-blocking notify, so the wait is
+// effectively immediate — the bounded monotonic deadline only keeps a
+// wedged holder from stalling shutdown. The heartbeat reaper's rule holds
+// here too: a child is torn down only at zero outstanding work. false
+// means the deadline passed with a pin still held; the caller leaves the
+// child to process exit rather than free it under a live reference.
+child_push_drain :: proc(d: ^Daemon, child: ^Child) -> bool {
+	deadline := platform.clock_now(d.cfg.clock) + CHILD_PUSH_DRAIN_MS
+	for {
+		sync.mutex_lock(&child.mu)
+		active := child.active
+		sync.mutex_unlock(&child.mu)
+		if active == 0 {
+			return true
+		}
+		if platform.clock_now(d.cfg.clock) >= deadline {
+			return false
+		}
+		platform.clock_wait(d.cfg.clock, 2)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Accept + per-connection threads
 // ---------------------------------------------------------------------------
 
-hb_thread_entry :: proc(data: rawptr) {
-	hb_loop(cast(^Daemon)data)
+hb_thread_entry :: proc(d: ^Daemon) {
+	hb_loop(d)
 }
 
-sweep_thread_entry :: proc(data: rawptr) {
-	sweep_loop(cast(^Daemon)data)
+sweep_thread_entry :: proc(d: ^Daemon) {
+	sweep_loop(d)
 }
 
-accept_thread_entry :: proc(data: rawptr) {
-	accept_loop(cast(^Daemon)data)
+doc_sync_worker_entry :: proc(ds: ^svc.Doc_Sync) {
+	svc.doc_sync_worker_run(ds)
 }
 
-reader_thread_entry :: proc(data: rawptr) {
-	reader_loop(cast(^Child)data)
+accept_thread_entry :: proc(d: ^Daemon) {
+	accept_loop(d)
 }
 
-pump_thread_entry :: proc(data: rawptr) {
-	pump_loop(cast(^Child)data)
+reader_thread_entry :: proc(child: ^Child) {
+	reader_loop(child)
+}
+
+pump_thread_entry :: proc(child: ^Child) {
+	pump_loop(child)
 }
 
 accept_loop :: proc(d: ^Daemon) {
@@ -678,8 +761,8 @@ start_child :: proc(d: ^Daemon, stream: ^rpc.Stream, owned_stream: bool) -> ^Chi
 	// it (this proc may run on the accept thread, not the initializer).
 	thread_alloc := context.allocator
 	context.allocator = d.allocator
-	child.reader_thread = thread.create_and_start_with_data(child, reader_thread_entry, self_cleanup = false, name = "aubade-rpc-reader")
-	child.pump_thread = thread.create_and_start_with_data(child, pump_thread_entry, self_cleanup = false, name = "aubade-rpc-pump")
+	child.reader_thread = thread.create_and_start_with_poly_data(child, reader_thread_entry, self_cleanup = false, name = "aubade-rpc-reader")
+	child.pump_thread = thread.create_and_start_with_poly_data(child, pump_thread_entry, self_cleanup = false, name = "aubade-rpc-pump")
 	context.allocator = thread_alloc
 	return child
 }
@@ -865,12 +948,7 @@ pump_loop :: proc(child: ^Child) {
 	drained := child.active == 0
 	sync.mutex_unlock(&child.mu)
 	if drained {
-		d := d_of_child(child)
-		sync.mutex_lock(&d.children_mu)
-		if child.state == .Draining {
-			child.state = .Closed
-		}
-		sync.mutex_unlock(&d.children_mu)
+		child_mark_closed(d_of_child(child), child)
 	}
 }
 
@@ -896,12 +974,19 @@ task_done :: proc(child: ^Child) {
 	drained := child.active == 0 && child.is_pump_done
 	sync.mutex_unlock(&child.mu)
 	if drained {
-		sync.mutex_lock(&d.children_mu)
-		if child.state == .Draining {
-			child.state = .Closed
-		}
-		sync.mutex_unlock(&d.children_mu)
+		child_mark_closed(d, child)
 	}
+}
+
+// child_mark_closed completes the Draining -> Closed transition. The last
+// finisher of outstanding work calls it (the pump, task_done, and the
+// push-face release all share the one shape).
+child_mark_closed :: proc(d: ^Daemon, child: ^Child) {
+	sync.mutex_lock(&d.children_mu)
+	if child.state == .Draining {
+		child.state = .Closed
+	}
+	sync.mutex_unlock(&d.children_mu)
 }
 
 frame_task_proc :: proc(task: thread.Task) {
@@ -946,6 +1031,14 @@ child_gone :: proc(d: ^Daemon, child: ^Child) {
 	sync.mutex_unlock(&d.children_mu)
 	if fire {
 		platform.token_fire(child.token, .Session_Gone)
+	}
+	// The gone child's owned documents return to the non-open state —
+	// direct buffer writes and synchronous saves resume. Runs after the
+	// Draining claim, so a routing decision concurrent with this either
+	// sees the owner still (and fails its round trip explicitly) or sees
+	// none (and takes the resumed direct path).
+	if d.doc_sync != nil {
+		svc.doc_sync_owner_disconnected(d.doc_sync, child.id)
 	}
 	child.stream.close(child.stream)
 	jsonrpc.conn_close(child.conn)

@@ -45,6 +45,7 @@ Symbol_String_Op :: proc(
 	lsp_src: ^svc.LSP_Source,
 	a: mem.Allocator,
 	token: ^platform.Cancel_Token,
+	tw: ^svc.Two_Writer,
 ) -> platform.Err
 
 // handle_symbol_string_op parses the shared target plus the one required
@@ -59,7 +60,7 @@ handle_symbol_string_op :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: stri
 	if verr != nil {
 		return nil, verr
 	}
-	if aerr := op(d.ts, d.ed, name_path, rel, value, d.lsp_src, ctx.allocator, ctx.token); aerr != nil {
+	if aerr := op(d.ts, d.ed, name_path, rel, value, d.lsp_src, ctx.allocator, ctx.token, d.edit_tw); aerr != nil {
 		return nil, aerr
 	}
 	return empty_ok(ctx), nil
@@ -109,7 +110,7 @@ handle_symbol_move :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value
 		return nil, svc.wrapped_err(.Invalid, parse_msg, ctx.allocator)
 	}
 
-	summary, aerr := svc.symbol_edit_move(d.ts, d.ed, name_path, source_rel, target_rel, position, mode, ctx.allocator, ctx.token)
+	summary, aerr := svc.symbol_edit_move(d.ts, d.ed, name_path, source_rel, target_rel, position, mode, ctx.allocator, ctx.token, d.edit_tw)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -128,7 +129,7 @@ handle_symbol_delete_docstring :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) ->
 	if err != nil {
 		return nil, err
 	}
-	if aerr := svc.symbol_edit_delete_docstring(d.ts, d.ed, name_path, rel, d.lsp_src, ctx.allocator, ctx.token); aerr != nil {
+	if aerr := svc.symbol_edit_delete_docstring(d.ts, d.ed, name_path, rel, d.lsp_src, ctx.allocator, ctx.token, d.edit_tw); aerr != nil {
 		return nil, aerr
 	}
 	return empty_ok(ctx), nil

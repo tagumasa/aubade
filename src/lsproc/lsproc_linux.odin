@@ -156,8 +156,7 @@ platform_spawn :: proc(l: ^Launch, p: ^Proc) -> platform.Err {
 		// parent died between fork and prctl (the signal would never arm).
 		// Raw syscall5, not core's prctl wrapper: the wrapper indexes all
 		// four variadic slots unconditionally and panics on fewer
-		// arguments (still so on dev-2026-09-nightly) — and a panicking
-		// child wedges the fork.
+		// arguments — and a panicking child wedges the fork.
 		_ = linux.syscall(
 			linux.SYS_prctl,
 			cast(uintptr)PR_SET_PDEATHSIG,

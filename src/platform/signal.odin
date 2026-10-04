@@ -63,16 +63,14 @@ install_stop_signals :: proc(
 	// in the same process, e.g. a test) would fire the new token
 	// immediately.
 	intrinsics.atomic_store_explicit(&stop_requested, false, .Release)
-	box := new(Signal_Watch_Box, a)
-	box^ = {root = root, allocator = a, wake = wake, wake_user = wake_user, exited = exited}
-	// Self-cleaning: the thread frees its own resources when the watcher
+	box := Signal_Watch_Box{root = root, allocator = a, wake = wake, wake_user = wake_user, exited = exited}
+	// Self-cleaning: the thread frees its own handle when the watcher
 	// returns, so there is no handle to join — its exit paths are "token
 	// fired" and "root already fired", both process-shutdown moments.
-	thr := thread.create_and_start_with_data(
+	thr := thread.create_and_start_with_poly_data(
 		box, signal_watch_entry, self_cleanup = true, name = "aubade-signal-watch",
 	)
 	if thr == nil {
-		free(box, a)
 		// The handlers are in place but the watcher that fires the token
 		// never starts: a delivered signal would latch the flag and
 		// suppress the default termination instead of stopping anything.
@@ -90,14 +88,11 @@ reset_stop_signals :: proc() {
 	intrinsics.atomic_store_explicit(&stop_requested, false, .Release)
 }
 
-signal_watch_entry :: proc(data: rawptr) {
-	box := cast(^Signal_Watch_Box)data
+signal_watch_entry :: proc(box: Signal_Watch_Box) {
 	root := box.root
-	alloc := box.allocator
 	wake := box.wake
 	wake_user := box.wake_user
 	exited := box.exited
-	free(box, alloc)
 	for {
 		if intrinsics.atomic_load_explicit(&stop_requested, .Acquire) {
 			token_fire(root, .Shutdown)

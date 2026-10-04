@@ -111,6 +111,7 @@ handle_symbol_find_references :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> 
 		rel_of := ref.sym.location != nil ? ref.sym.location.rel_path : ""
 		jsonutil.obj_set(&entry, "relative_path", jsonutil.json_string(rel_of))
 		jsonutil.obj_set(&entry, "reference_line", jsonutil.json_int(i64(ref.line)))
+		jsonutil.obj_set(&entry, "reference_col", jsonutil.json_int(i64(ref.col)))
 		if ref.content_around != "" {
 			jsonutil.obj_set(&entry, "content_around_reference", jsonutil.json_string(ref.content_around))
 		}
@@ -235,7 +236,7 @@ handle_symbol_rename :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Val
 		return nil, nerr
 	}
 
-	summary, rerr := svc.symbol_lsp_rename(d.lsp_src, d.ed, name_path, rel, new_name, ctx.allocator, ctx.token)
+	summary, rerr := svc.symbol_lsp_rename(d.lsp_src, d.ed, name_path, rel, new_name, ctx.allocator, ctx.token, d.edit_tw)
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -264,7 +265,7 @@ handle_symbol_delete :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Val
 		include_comments = v
 	}
 
-	refusal, delerr := svc.symbol_lsp_delete(d.lsp_src, d.ed, name_path, rel, include_comments, ctx.allocator, ctx.token)
+	refusal, delerr := svc.symbol_lsp_delete(d.lsp_src, d.ed, name_path, rel, include_comments, ctx.allocator, ctx.token, d.edit_tw)
 	if delerr != nil {
 		return nil, delerr
 	}

@@ -347,10 +347,9 @@ cache_push_front :: proc(c: ^Bounded_Cache($K, $V), entry: ^Cache_Entry(K, V)) {
 
 // cache_import_anchor exists for the per-directory check (packages compile
 // with -no-entry-point and no consumers there): the unused-import analysis
-// skips generic definitions (still so on dev-2026-09-nightly), so without
-// one concrete instantiation the imports used only by Bounded_Cache would
-// be flagged. The anchor also smoke-compiles the container for a common
-// key/value pair.
+// skips generic definitions, so without one concrete instantiation the
+// imports used only by Bounded_Cache would be flagged. The anchor also
+// smoke-compiles the container for a common key/value pair.
 @(private)
 cache_import_anchor :: proc() {
 	c: Bounded_Cache(string, int)

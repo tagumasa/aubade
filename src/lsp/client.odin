@@ -21,6 +21,14 @@ DEFAULT_REQUEST_TIMEOUT_MS :: i64(15_000)
 // worker; nil answers an empty configuration array.
 Config_Provider :: proc(user: rawptr, params: json.Value, arena: mem.Allocator) -> json.Value
 
+// Diagnostics_Push_Proc forwards one stored diagnostics set to the host's
+// relay (the daemon hands it to its lsp-mode children). It runs on the
+// language-server reader thread, straight after the store update: the
+// callback must be non-blocking (posting to a bounded outbound queue is
+// the ceiling — never a round trip) and reads both strings synchronously
+// only, since they view the notification's request arena.
+Diagnostics_Push_Proc :: proc(user: rawptr, uri: string, items_json: string)
+
 Client :: struct {
 	conn:               ^jsonrpc.Conn,
 	clock:              ^platform.Clock, // deadlines come from the injected clock
@@ -35,6 +43,9 @@ Client :: struct {
 
 	config_provider: Config_Provider, // optional workspace/configuration source
 	config_host:     rawptr,
+
+	push_diagnostics: Diagnostics_Push_Proc, // optional diagnostics relay (nil = none)
+	push_host:        rawptr,
 
 	diagnostics: Diagnostics_Store,
 
@@ -180,6 +191,11 @@ on_publish_diagnostics :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, aren
 	raw := jsonutil.marshal_value(diag_value, arena)
 	diagnostics_store_set(&cl.diagnostics, uri, raw, version)
 	readiness_signal_diagnostics(&cl.readiness)
+	if cl.push_diagnostics != nil {
+		// `raw` is the store's own marshaled spelling; the relay copies
+		// what it keeps (see the port's thread/blocking contract above).
+		cl.push_diagnostics(cl.push_host, uri, raw)
+	}
 }
 
 client_register_builtins :: proc(cl: ^Client) {

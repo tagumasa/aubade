@@ -3,8 +3,7 @@
 // incomplete until the server has finished initial indexing. Servers show
 // that with either the first textDocument/publishDiagnostics or the end of
 // a $/progress WorkDone unit; the client waits for either signal within an
-// event window and otherwise falls back to a fixed settle wait. This
-// replaces the previous implementation's unconditional time.Sleep(2s).
+// event window and otherwise falls back to a fixed settle wait.
 package lsp
 
 import "core:mem"

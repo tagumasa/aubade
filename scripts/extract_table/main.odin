@@ -771,7 +771,7 @@ write_src_table :: proc(
 			"aliases = ", string_list_literal(e.aliases[:]),
 			", extensions = ", string_list_literal(e.extensions[:]),
 			",\n\t language = ", language,
-			", tags_query = ts_", e.name, ".TAGS},\n",
+			", tags_query = ts_", e.name, ".TAGS, highlights_query = ts_", e.name, ".HIGHLIGHTS},\n",
 		})
 		ws(&buf, line)
 	}

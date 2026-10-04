@@ -590,6 +590,13 @@ collect_grammar_objs :: proc(grammars_root: string, out: ^[dynamic]string) -> bo
 	return true
 }
 
+// The query files every installed grammar carries beside its binding:
+// install_parser copies each one from the grammar's queries directory
+// (empty when the grammar ships none), write_parser_binding #loads them
+// into constants named by the file's uppercased stem, and
+// write_stub_binding mirrors that surface with empty constants.
+QUERY_FILES :: []string{"tags.scm", "highlights.scm"}
+
 install_parser :: proc(g: Grammar_Desc) -> (ok: bool, built: bool) {
 	dest := join_path(lib_dir(), "grammars", g.name)
 	binding_path := join_path(dest, strings.concatenate({g.name, ".odin"}))
@@ -683,28 +690,31 @@ install_parser :: proc(g: Grammar_Desc) -> (ok: bool, built: bool) {
 		}
 	}
 
-	// Queries: only the tags query is consumed (outline); grammars that
-	// ship none still get an empty tags.scm so the generated binding can
-	// always expose TAGS and the runtime falls back to query inference.
-	// Prefer <path>/queries, fall back to the repository root.
-	queries_src := join_path(lang_dir, "queries")
-	if !os.exists(join_path(queries_src, "tags.scm")) {
-		queries_src = join_path(src_dir, "queries")
-	}
+	// Queries: the generated binding loads tags.scm and highlights.scm at
+	// compile time (#load), so each file must exist in the installed tree
+	// even when the grammar ships none — a missing query is written empty
+	// (an empty TAGS sends the runtime to query inference). Each file
+	// prefers <path>/queries and falls back to the repository root on its
+	// own: a grammar can ship the two under different query directories.
 	dest_queries := join_path(dest, "queries")
 	if err := os.make_directory_all(dest_queries); err != nil && err != .Exist {
 		log.errorf("could not create %q: %s", dest_queries, os.error_string(err))
 		return false, false
 	}
-	tags_src := join_path(queries_src, "tags.scm")
-	tags_dst := join_path(dest_queries, "tags.scm")
-	if os.exists(tags_src) {
-		if !copy_file(tags_src, tags_dst) {
+	for query_name in QUERY_FILES {
+		query_src := join_path(lang_dir, "queries", query_name)
+		if !os.exists(query_src) {
+			query_src = join_path(src_dir, "queries", query_name)
+		}
+		query_dst := join_path(dest_queries, query_name)
+		if os.exists(query_src) {
+			if !copy_file(query_src, query_dst) {
+				return false, false
+			}
+		} else if werr := os.write_entire_file(query_dst, ""); werr != nil {
+			log.errorf("could not write %q: %s", query_dst, os.error_string(werr))
 			return false, false
 		}
-	} else if werr := os.write_entire_file(tags_dst, ""); werr != nil {
-		log.errorf("could not write %q: %s", tags_dst, os.error_string(werr))
-		return false, false
 	}
 
 	for lname in ([]string{"LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.rst"}) {
@@ -736,10 +746,12 @@ write_parser_binding :: proc(g: Grammar_Desc, dest: string) -> bool {
 	fmt.sbprintf(&buf, "\t%s :: proc() -> rawptr ---\n", symbol)
 	ws(&buf, "}\n")
 
-	// install_parser guarantees queries/tags.scm exists (empty when the
-	// grammar ships none); an empty TAGS sends the runtime to the
-	// inferred tags query.
+	// install_parser guarantees queries/tags.scm and
+	// queries/highlights.scm exist (each empty when the grammar ships
+	// none); an empty TAGS sends the runtime to the inferred tags query,
+	// an empty HIGHLIGHTS means the grammar carries no highlight query.
 	ws(&buf, "\nTAGS :: #load(\"queries/tags.scm\", string)\n")
+	ws(&buf, "HIGHLIGHTS :: #load(\"queries/highlights.scm\", string)\n")
 
 	bindings_path := join_path(dest, strings.concatenate({g.name, ".odin"}))
 	if werr := os.write_entire_file(bindings_path, buf.buf[:]); werr != nil {
@@ -776,7 +788,13 @@ write_stub_binding :: proc(g: Grammar_Desc) -> bool {
 	ws(&buf, "// platform; the language resolves but stays unavailable at runtime.\n")
 	ws(&buf, symbol)
 	ws(&buf, " :: proc \"c\" () -> rawptr {\n\treturn nil\n}\n\n")
-	ws(&buf, "TAGS :: \"\"\n")
+	// Mirror the real binding's query surface: one empty constant per query
+	// file, named by the file's uppercased stem (the name
+	// write_parser_binding #loads it into).
+	for query_name in QUERY_FILES {
+		stem := strings.trim_suffix(query_name, ".scm")
+		fmt.sbprintf(&buf, "%s :: \"\"\n", strings.to_upper(stem, context.temp_allocator))
+	}
 
 	bindings_path := join_path(dest, strings.concatenate({g.name, ".odin"}))
 	if werr := os.write_entire_file(bindings_path, buf.buf[:]); werr != nil {

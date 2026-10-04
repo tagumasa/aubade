@@ -114,17 +114,16 @@ App :: struct {
 	daemon_dir:             string,
 	home:                   string,
 
-	hb_thread:              ^thread.Thread,      // joined at shutdown
+	hb_thread:              ^thread.Thread,      // joined at shutdown (the lsp session joins it before its face teardown)
 	parent_reader_thread:   ^thread.Thread,  // joined at shutdown
-	ticker_thread:          ^thread.Thread,      // production clock timer pump
-	ticker_box:             ^platform.Clock_Ticker,
+	ticker_thread:          ^thread.Thread,      // production clock timer pump (the ticker state itself rides the thread's user args)
 
 	// stdio reader ownership: the reader cannot be unblocked from a
 	// blocked os.read(stdin) portably, so shutdown joins and frees it only
 	// when it already exited; otherwise those resources are abandoned to
 	// process exit (see shutdown).
 	stdio_reader:           ^thread.Thread,
-	stdio_pair:             ^Frames_Pair,
+	stdio_frames:           Frames_Chan,
 	is_stdio_reader_exited: bool, // guarded by stdio_mu
 	stdio_mu:               sync.Mutex,
 
@@ -150,6 +149,19 @@ App :: struct {
 	// lifetime, queued ones included).
 	calls_mu:               sync.Mutex,
 	calls_cond:             sync.Cond,
+
+	// The child-mode announcement and the per-link wire hook: send_hello
+	// adds member "mode" only when parent_mode is set, and BOTH parent
+	// conn establishments (connect_parent's success path and the
+	// in-process daemon) invoke parent_conn_wire when set — the heartbeat
+	// ladder can retire and re-establish the link, so a handler registered
+	// only on the first conn would go deaf after the first reconnect. The
+	// hook is a plain proc (Odin has no closures), so the host behind it
+	// is parked type-erased in host_face — the same rawptr+cast inversion
+	// Conn.host uses. The MCP child leaves all three at their zero values.
+	host_face:              rawptr,
+	parent_mode:            string,
+	parent_conn_wire:       proc(a: ^App, conn: ^jsonrpc.Conn),
 
 	session_info:           tools.Session_Info,
 	dispatch:               tools.Dispatch_Host,

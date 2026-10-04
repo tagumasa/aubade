@@ -38,8 +38,7 @@ hammer_fail :: proc(s: ^Hammer_Shared) {
 	sync.mutex_unlock(&s.mu)
 }
 
-hammer_worker_entry :: proc(data: rawptr) {
-	w := cast(^Hammer_Worker)data
+hammer_worker_entry :: proc(w: ^Hammer_Worker) {
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
 	context.temp_allocator = mem.dynamic_arena_allocator(&arena)
@@ -115,7 +114,7 @@ store_transaction_spans_serialize :: proc(t: ^testing.T) {
 	handles: [HAMMER_THREADS]^thread.Thread
 	for i in 0..<HAMMER_THREADS {
 		workers[i] = {shared = shared, idx = i}
-		handles[i] = thread.create_and_start_with_data(
+		handles[i] = thread.create_and_start_with_poly_data(
 			&workers[i],
 			hammer_worker_entry,
 			self_cleanup = false,
@@ -168,8 +167,7 @@ kv_race_fail :: proc(s: ^Hammer_Kv_Shared) {
 	sync.mutex_unlock(&s.mu)
 }
 
-kv_rollback_racer_entry :: proc(data: rawptr) {
-	s := cast(^Hammer_Kv_Shared)data
+kv_rollback_racer_entry :: proc(s: ^Hammer_Kv_Shared) {
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
 	context.temp_allocator = mem.dynamic_arena_allocator(&arena)
@@ -192,8 +190,7 @@ kv_rollback_racer_entry :: proc(data: rawptr) {
 	}
 }
 
-kv_put_racer_entry :: proc(data: rawptr) {
-	s := cast(^Hammer_Kv_Shared)data
+kv_put_racer_entry :: proc(s: ^Hammer_Kv_Shared) {
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
 	context.temp_allocator = mem.dynamic_arena_allocator(&arena)
@@ -250,10 +247,10 @@ kv_put_survives_concurrent_transaction_rollback :: proc(t: ^testing.T) {
 	shared^ = {db = db}
 
 	handles: [2]^thread.Thread
-	handles[0] = thread.create_and_start_with_data(
+	handles[0] = thread.create_and_start_with_poly_data(
 		shared, kv_rollback_racer_entry, self_cleanup = false, name = "kv-race-rollback",
 	)
-	handles[1] = thread.create_and_start_with_data(
+	handles[1] = thread.create_and_start_with_poly_data(
 		shared, kv_put_racer_entry, self_cleanup = false, name = "kv-race-put",
 	)
 	for h in handles {

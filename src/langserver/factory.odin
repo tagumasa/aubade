@@ -155,6 +155,13 @@ factory_create :: proc(
 
 	client := new(lsp.Client, a)
 	lsp.client_init(client, conn, clock, entry.id, a)
+	// The manager's diagnostics push port rides every client the factory
+	// builds: publishDiagnostics relays to the daemon's lsp children
+	// without any daemon import here (the port is the dependency
+	// inversion). Nil when the daemon installed none — the port's nil
+	// contract keeps that a no-op.
+	client.push_diagnostics = m.push_diagnostics
+	client.push_host = m.push_host
 	// root_abs is the relativization base the location helpers resolve
 	// server-reported URIs against — the PROJECT root, never the primary
 	// folder: every announced folder sits under it, so answers from any
@@ -185,10 +192,10 @@ factory_create :: proc(
 	// The read loop must run before the handshake: replies arrive over
 	// it. Same for the stderr drain — a server blocked on a full stderr
 	// pipe never answers initialize.
-	s.reader = thread.create_and_start_with_data(
+	s.reader = thread.create_and_start_with_poly_data(
 		s, reader_thread_main, self_cleanup = false, name = "langserver-lsp-read",
 	)
-	s.stderr_pump = thread.create_and_start_with_data(
+	s.stderr_pump = thread.create_and_start_with_poly_data(
 		s, stderr_thread_main, self_cleanup = false, name = "langserver-lsp-stderr",
 	)
 	if s.reader == nil || s.stderr_pump == nil {
@@ -244,8 +251,7 @@ owned_folder_paths :: proc(folders: []Workspace_Folder, a: mem.Allocator) -> []s
 	return clone_strings(paths, a)
 }
 
-reader_thread_main :: proc(data: rawptr) {
-	s := cast(^Server)data
+reader_thread_main :: proc(s: ^Server) {
 	_ = jsonrpc.conn_read_loop(s.conn)
 }
 
@@ -253,8 +259,7 @@ reader_thread_main :: proc(data: rawptr) {
 // at debug level — the minimal form of stderr classification:
 // everything a server writes is diagnostics. The read blocks; EOF means
 // the child is gone and the pump exits.
-stderr_thread_main :: proc(data: rawptr) {
-	s := cast(^Server)data
+stderr_thread_main :: proc(s: ^Server) {
 	rbuf: [STDERR_PUMP_BUF]u8
 	line: [STDERR_LINE_CAP]u8
 	n := 0

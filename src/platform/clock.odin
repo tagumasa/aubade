@@ -218,8 +218,7 @@ Clock_Ticker :: struct {
 
 // clock_ticker_entry pumps a real clock until the token fires. The clock
 // owner starts it on a joinable thread and joins it before clock_destroy.
-clock_ticker_entry :: proc(data: rawptr) {
-	t := cast(^Clock_Ticker)data
+clock_ticker_entry :: proc(t: Clock_Ticker) {
 	for !token_is_fired(t.token) {
 		clock_fire_due(t.clock)
 		clock_wait(t.clock, t.tick_ms)

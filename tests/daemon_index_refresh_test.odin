@@ -248,8 +248,8 @@ refresh_tick_purges_vanished_file :: proc(t: ^testing.T) {
 	store.symbol_names_rows_destroy(rows, context.allocator)
 }
 
-index_refresh_loop_test_entry :: proc(data: rawptr) {
-	daemon.index_refresh_loop(cast(^daemon.Daemon)data)
+index_refresh_loop_test_entry :: proc(d: ^daemon.Daemon) {
+	daemon.index_refresh_loop(d)
 }
 
 @(test)
@@ -257,7 +257,7 @@ refresh_loop_fires_on_interval :: proc(t: ^testing.T) {
 	f := index_refresh_fixture(t)
 	defer index_refresh_teardown(f)
 
-	looper := thread.create_and_start_with_data(f.d, index_refresh_loop_test_entry, self_cleanup = false, name = "iref-test")
+	looper := thread.create_and_start_with_poly_data(f.d, index_refresh_loop_test_entry, self_cleanup = false, name = "iref-test")
 	defer {
 		// Fire, then advance: the loop waits on the virtual clock's cond
 		// in slices, and only an advance (not the fire) wakes a cond_wait.

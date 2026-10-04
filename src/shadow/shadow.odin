@@ -32,10 +32,8 @@ Shadow_Git :: struct {
 	// it. Owned by the daemon allocator.
 	managed_exclude: string,
 	// The environment snapshot every git invocation carries: the process
-	// environment at init plus GIT_CONFIG_NOSYSTEM=1. Built once — each
-	// invocation previously cloned the whole environment string-by-string
-	// just to append one variable. The strings are shadow-owned; a call's
-	// env array only copies the headers.
+	// environment at init plus GIT_CONFIG_NOSYSTEM=1, built once. The
+	// strings are shadow-owned; a call's env array only copies the headers.
 	env_base:      []string,
 	mu:            sync.Mutex,
 	has_head:      bool,

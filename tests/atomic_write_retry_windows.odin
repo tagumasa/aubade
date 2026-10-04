@@ -23,8 +23,7 @@ Retry_Box :: struct {
 	started: bool,
 }
 
-retry_writer_entry :: proc(data: rawptr) {
-	b := cast(^Retry_Box)data
+retry_writer_entry :: proc(b: ^Retry_Box) {
 	sync.mutex_lock(&b.mu)
 	b.started = true
 	sync.cond_broadcast(&b.cond)
@@ -63,7 +62,7 @@ atomic_write_waits_out_a_reader_holding_the_target :: proc(t: ^testing.T) {
 	box := new(Retry_Box, context.allocator)
 	defer free(box, context.allocator)
 	box^ = {path = path}
-	writer := thread.create_and_start_with_data(box, retry_writer_entry, self_cleanup = false, name = "aw-hold-writer")
+	writer := thread.create_and_start_with_poly_data(box, retry_writer_entry, self_cleanup = false, name = "aw-hold-writer")
 
 	// Wait until the writer is provably inside atomic_write, then hold
 	// across two retry steps so the first rename attempts fail against

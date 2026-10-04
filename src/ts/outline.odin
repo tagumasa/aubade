@@ -294,6 +294,38 @@ language_has_field :: proc(lang: Language, name: string) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Shared query-build skeleton (highlights and outline builders)
+// ---------------------------------------------------------------------------
+
+// query_source_empty is the package's emptiness rule for a query source: a
+// grammar whose shipped query is all whitespace ships nothing usable, which
+// builders record as query-empty (an observable decline at run time)
+// instead of compiling.
+query_source_empty :: proc(query_src: string) -> bool {
+	return strings.trim_space(query_src) == ""
+}
+
+// compile_grammar_query compiles one query source with the skeleton the
+// highlights and outline builders share: an all-whitespace source
+// (query_source_empty) returns a nil query with is_empty set — the caller
+// records query_empty and the decline happens at run time — and a
+// non-empty source that fails to compile is an error naming the grammar
+// ("<kind> query failed to compile for <name>"). The predicate table stays
+// the caller's step (compile_predicates on the returned query), so a build
+// that stops past this call destroys its own holder.
+compile_grammar_query :: proc(lang: Language, query_src: string, kind, grammar_name: string) -> (query: Query, is_empty: bool, err: string) {
+	if query_source_empty(query_src) {
+		is_empty = true
+		return
+	}
+	query = compile_query(lang, query_src)
+	if query == nil {
+		err = strings.concatenate({kind, " query failed to compile for ", grammar_name}, context.temp_allocator)
+	}
+	return
+}
+
+// ---------------------------------------------------------------------------
 // Outliner lifecycle
 // ---------------------------------------------------------------------------
 
@@ -328,26 +360,30 @@ build_outliner :: proc(lang_name: string, a := context.allocator) -> (o: ^Outlin
 	o = new(Outliner, a)
 	o^ = {lang = lang, allocator = a}
 
-	if strings.trim_space(query_src) != "" {
-		o.query = compile_query(lang, query_src)
-	}
-	if o.query == nil {
+	query, primary_empty, primary_err := compile_grammar_query(lang, query_src, "outline", table[idx].name)
+	if query == nil {
+		// Inference rung: the inferred query serves a grammar that ships no
+		// tags query and a shipped query the C core rejects wholesale (the
+		// ladder the build contract above states).
 		inferred := tags_query_infer(table[idx].name, lang)
-		if strings.trim_space(inferred) != "" {
-			o.query = compile_query(lang, inferred)
-		}
+		query, _, _ = compile_grammar_query(lang, inferred, "outline", table[idx].name)
 	}
-	if o.query == nil {
-		if strings.trim_space(query_src) != "" {
-			outliner_destroy(o)
-			return nil, strings.concatenate({
-				"outline query failed to compile for ", table[idx].name,
-			}, context.temp_allocator)
+	if query == nil {
+		if primary_empty {
+			// Nothing compiled and the grammar ships no query: build
+			// successfully, and outline_tree declines observably
+			// (Query_Empty) rather than the run being silently empty.
+			o.query_empty = true
+			return o, ""
 		}
-		o.query_empty = true
-		return o, ""
+		// The grammar ships a query nothing could compile — the shipped
+		// query's own refusal is the failure, whether the inferred
+		// fallback refused too or resolved nothing.
+		outliner_destroy(o)
+		return nil, primary_err
 	}
-	preds, perr := compile_predicates(o.query, a)
+	o.query = query
+	preds, perr := compile_predicates(query, a)
 	if perr != "" {
 		outliner_destroy(o)
 		return nil, perr

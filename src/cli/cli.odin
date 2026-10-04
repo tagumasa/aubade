@@ -41,6 +41,11 @@ COMMANDS :: []Cmd_Entry{
 		run   = run_mcp,
 	},
 	{
+		name  = "lsp",
+		brief = "Start an LSP server child session (stdio)",
+		run   = run_lsp,
+	},
+	{
 		name  = "setup",
 		brief = "Set up Aubade for use with a specific client",
 		run   = run_setup,
@@ -367,6 +372,71 @@ run_mcp :: proc(args: []string, g: ^Globals, version: string) -> int {
 	cfg.log_level = g.log_level // "" = keep the config key's level
 	cfg.install_signals = true
 	rc := session.run_session(cfg)
+	delete(contexts)
+	delete(modes)
+	return rc
+}
+
+// run_lsp parses `aubade lsp` flags and runs the LSP child session. The
+// project root is optional here — without --project/--project-from-cwd it
+// resolves from initialize's rootUri (or workspaceFolders[0]) instead of
+// the working directory.
+run_lsp :: proc(args: []string, g: ^Globals, version: string) -> int {
+	cfg := session.default_config()
+	// Made (not nil) before appending: append on a nil dynamic array grows
+	// through context.allocator, which strands the backing under a test
+	// tracking allocator.
+	contexts := make([dynamic]string, 0, 4, context.allocator)
+	modes := make([dynamic]string, 0, 4, context.allocator)
+	rest := make([dynamic]string, 0, len(args), context.temp_allocator)
+	if !strip_globals(args, g, &rest) {
+		return usage_error("lsp", "invalid global flag value")
+	}
+
+	i := 0
+	for i < len(rest) {
+		arg := rest[i]
+		handled, ferr := parse_shared_flag(rest[:], &i, &cfg.home, &cfg.hb_ping_ms, &cfg.hb_timeout_ms, &cfg.hb_grace_ms, &cfg.hb_drain_ms)
+		if !handled {
+			handled, ferr = parse_context_mode_flag(rest[:], &i, &contexts, &modes)
+		}
+		if handled {
+			if ferr != "" {
+				return usage_error("lsp", ferr)
+			}
+			i += 1
+			continue
+		}
+		switch arg {
+		case "--in-process":
+			cfg.is_in_process = true
+		case "--trace-lsp-communication":
+			// The session forwards it in svc.hello; the daemon's LSP
+			// factory turns frame logging on for servers it starts.
+			cfg.trace_lsp = true
+		case:
+			return usage_error("lsp", strings.concatenate({"unknown flag: ", arg}, context.temp_allocator))
+		}
+		i += 1
+	}
+
+	if g.project != "" || g.project_from_cwd {
+		root, code := resolve_project_root("lsp", g)
+		if code != 0 {
+			return code
+		}
+		cfg.project_root = root
+	}
+
+	cfg.contexts = contexts[:]
+	// An empty slice must read as "no selection made", not as an explicit
+	// empty selection (the same rule as the mcp child's mode list).
+	if len(modes) > 0 {
+		cfg.modes = modes[:]
+	}
+	cfg.log_level = g.log_level // "" = keep the config key's level
+	cfg.install_signals = true
+	rc := session.run_lsp_session(cfg)
 	delete(contexts)
 	delete(modes)
 	return rc

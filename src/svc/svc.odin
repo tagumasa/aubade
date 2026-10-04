@@ -20,6 +20,32 @@ METHOD_BYE     :: "svc.bye"     // notification: {}
 METHOD_ECHO    :: "svc.echo"    // request: {message} -> {message}
 METHOD_CANCEL  :: "svc.cancel"  // notification: {call_id}
 
+// The daemon→LSP-child push family: the reverse direction on the same
+// conns. The daemon sends these only to children whose hello carried
+// mode=="lsp" (MCP children never register handlers for them); the LSP
+// child registers plain jsonrpc notification handlers on its parent conn.
+// svc.push/diagnostics carries the daemon's stored real-LS set for one URI
+// as `items` (the marshaled LSP Diagnostic[] string — the store's own
+// spelling, parsed once by the child). No version crosses: the daemon's
+// mirror version is not the editor's document version, and the child
+// stamps its own view's current version on the republish.
+METHOD_PUSH_DIAGNOSTICS :: "svc.push/diagnostics" // notification (daemon→lsp child): {uri, items}
+// svc.push/langserver_state reports a real-LS running transition the
+// child did not trigger itself (another child's start, a restart, a stop,
+// an idle reap). The capability bits are the running server's and are
+// meaningful only while running is true.
+METHOD_PUSH_LANGSERVER_STATE :: "svc.push/langserver_state" // notification (daemon→lsp child): {language, running, references, declaration}
+// svc.edit/apply is the two-writer round trip's request leg: the
+// daemon asks the owner lsp child to apply one tool edit through the
+// editor's workspace/applyEdit. Params: {label?, document_changes:
+// [{uri (daemon canonical), version (the observed version V the edits
+// were computed against — OptionalVersionedTextDocumentIdentifier),
+// edits: [{range: {start:{line,character}, end:{line,character}},
+// new_text}]}]} — every column UTF-16. Result: {applied, reason?}. The
+// child forwards documentChanges (never the version-less `changes`
+// form), so the editor rejects an edit whose document moved off V.
+METHOD_EDIT_APPLY :: "svc.edit/apply" // request (daemon→lsp child): {label?, document_changes} -> {applied, reason?}
+
 // Svc_Ctx is the per-request context handed to handlers. call_id is the
 // numeric jsonrpc request id (child-originated svc calls always use
 // numeric ids), usable with METHOD_CANCEL.

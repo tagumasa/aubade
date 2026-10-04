@@ -448,8 +448,7 @@ Guard_Hammer_Box :: struct {
 	failed: bool,
 }
 
-guard_hammer_entry :: proc(data: rawptr) {
-	box := cast(^Guard_Hammer_Box)data
+guard_hammer_entry :: proc(box: ^Guard_Hammer_Box) {
 	for _ in 0..<box.rounds {
 		if blocked, _ := safety.check_command(box.s, "rm -rf /"); !blocked {
 			box.failed = true
@@ -487,8 +486,8 @@ shared_guards_survive_concurrent_checks :: proc(t: ^testing.T) {
 	box^ = {s = &s, rounds = 200}
 	defer free(box, context.allocator)
 
-	t1 := thread.create_and_start_with_data(box, guard_hammer_entry, self_cleanup = false, name = "guard-hammer-1")
-	t2 := thread.create_and_start_with_data(box, guard_hammer_entry, self_cleanup = false, name = "guard-hammer-2")
+	t1 := thread.create_and_start_with_poly_data(box, guard_hammer_entry, self_cleanup = false, name = "guard-hammer-1")
+	t2 := thread.create_and_start_with_poly_data(box, guard_hammer_entry, self_cleanup = false, name = "guard-hammer-2")
 	thread.join(t1)
 	thread.join(t2)
 	free(t1, context.allocator)

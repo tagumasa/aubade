@@ -40,9 +40,7 @@ shell_run_apply :: proc(ctx: ^Tool_Ctx, args: ^Args) -> Tool_Result {
 	requested := arg_str(args, "cwd")
 	if requested != "" {
 		// Containment (lexical + symlink) lives in safety — one engine for
-		// every consumer. The hand-rolled prefix check this replaces was
-		// case-sensitive, separator-blind on Windows, rejected the project
-		// root itself, and never looked at symlinks.
+		// every consumer.
 		candidate, esc := safety.pathguard_validate_contained_dir(ctx.project_root, requested, ctx.allocator)
 		if esc.reason != "" {
 			return err_result(ctx, strings.concatenate(

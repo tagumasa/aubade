@@ -344,13 +344,10 @@ platform_containment_setup :: proc(p: ^Proc, limit_mb: int, language: string) ->
 // safety net, not the kernel-side ceiling the Linux cgroup path provides.
 start_rss_watchdog :: proc(p: ^Proc, limit_mb: int) -> bool {
 	p.state.is_watchdog_on = true
-	args := new(Watchdog_Args, p.state.allocator)
-	args^ = {proc_ = p, limit_kb = cast(i64)limit_mb * 1024}
-	p.state.watchdog = thread.create_and_start_with_data(
-		args, watchdog_entry, self_cleanup = false, name = "lsproc-watchdog",
+	p.state.watchdog = thread.create_and_start_with_poly_data2(
+		p, cast(i64)limit_mb * 1024, watchdog_entry, self_cleanup = false, name = "lsproc-watchdog",
 	)
 	if p.state.watchdog == nil {
-		free(args, p.state.allocator)
 		p.state.is_watchdog_on = false
 		return false
 	}
@@ -463,15 +460,7 @@ stand_down_sitter :: proc(s: ^Platform_State) {
 	}
 }
 
-Watchdog_Args :: struct {
-	proc_:    ^Proc,
-	limit_kb: i64,
-}
-
-watchdog_entry :: proc(data: rawptr) {
-	args := cast(^Watchdog_Args)data
-	p := args.proc_
-	defer free(args, p.state.allocator)
+watchdog_entry :: proc(p: ^Proc, limit_kb: i64) {
 	for {
 		sync.mutex_lock(&p.mu)
 		on := p.state.is_watchdog_on
@@ -488,7 +477,7 @@ watchdog_entry :: proc(data: rawptr) {
 		if gone {
 			return
 		}
-		if rss > args.limit_kb {
+		if rss > limit_kb {
 			platform_kill_tree(p.pid, .KILL)
 			return
 		}

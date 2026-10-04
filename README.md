@@ -1,6 +1,6 @@
 # Aubade
 
-A symbol-level code intelligence server built on the Language Server Protocol, exposed via the Model Context Protocol.
+A symbol-level code intelligence server for AI agents and code editors: agents connect over the Model Context Protocol, editors over the Language Server Protocol, and one shared per-project daemon answers both.
 
 Named after the poetic form called the aubade — a song about lovers parting at dawn. The best-known example comes from Shakespeare's Romeo and Juliet (III.v), where Juliet tries to convince Romeo that the bird they hear is the nightingale, not the lark — that it is still night and not yet morning:
 
@@ -27,6 +27,10 @@ aubade init
 
 # Register with your AI client
 aubade setup claudecode    # or: codex / opencode / qwen / zcode
+
+# Editors (VSCode / VSCodium): package and install the extension
+just vsix
+codium --install-extension editors/vscode/aubade-*.vsix
 ```
 
 The install script needs the C artifacts under `lib/` that
@@ -52,6 +56,8 @@ For manual MCP configuration, the server command is:
 
 MCP is served over stdio. Every CLI command accepts three global flags: `--project <path-or-registered-name>`, `--project-from-cwd`, and `--log-level <DEBUG|INFO|WARNING|ERROR>`.
 
+Editors are served over LSP 3.17 (`aubade lsp`): the extension is a thin launcher that starts one child per workspace folder and needs no registration command — see [docs/lsp-server.md](docs/lsp-server.md) and [editors/vscode/README.md](editors/vscode/README.md). `aubade setup` registers AI clients only.
+
 Client-by-client setup, hooks, and the full configuration reference live in [docs/](docs/index.md).
 
 ## How it works
@@ -64,67 +70,57 @@ Aubade serves symbol-level code intelligence from two engines:
 In mixed-language projects, languages without a bundled grammar (e.g. Lean) still appear in directory- and project-wide symbol searches through whatever language servers are already running — broad searches never *start* servers, they only use running ones, so a project-wide `symbol_find` cannot fan out into dozens of server launches.
 
 ```
-┌─────────────┐      MCP (stdio)         ┌──────────────────────────┐    LSP (JSON-RPC)     ┌──────────────────┐
-│  AI agent   │ ◄─────────────────────── │         Aubade           │ ◄──────────────────── │  gopls,          │
-│  (Claude,   │                          │  ┌────────────────────┐  │   (lazy start,        │  rust-analyzer,  │
-│  OpenCode,  │                          │  │ tree-sitter        │  │    semantic ops       │  typescript-     │
-│  ZCode...)  │                          │  │ symbol engine      │  │    only)              │  language-server │
-└─────────────┘                          │  └────────────────────┘  │                       └──────────────────┘
-                                         └──────────────────────────┘
-                                               │
-                                        ┌──────┴──────┐
-                                        │   SQLite +  │
-                                        │  hot-tree   │
-                                        │ LRU (disk + │
-                                        │  in-memory) │
-                                        └─────────────┘
+        AI agent                           Editor (VSCode / VSCodium)
+  (Claude, Codex, ...)
+            │                                           │
+            │ MCP over stdio                            │ LSP 3.17 over stdio
+            ▼                                           ▼
+      ┌───────────┐                               ┌───────────┐
+      │ aubade mcp│                               │ aubade lsp│
+      └─────┬─────┘                               └─────┬─────┘
+            │                                           │
+            └─────────────────────┬─────────────────────┘
+            internal RPC (loopback TCP, token handshake)
+                                  ▼
+        ┌───────────────────────────────────────────────────┐
+        │                   aubade daemon                   │
+        │   one per project, shared by every session child  │
+        │                                                   │
+        │  tree-sitter symbol engine + hot parse-tree LRU,  │
+        │     on the SQLite store (name index, per-file     │
+        │    payloads): symbol_find / symbol_list answer    │
+        │       instantly, no language server involved      │
+        │                                                   │
+        │    language-server clients (lazy start, capped    │
+        │   memory): references, diagnostics, formatting,   │
+        │     code actions, inlay hints, call hierarchy     │
+        │                                                   │
+        │    shadow git snapshots (optional), web fetcher   │
+        └─────────────────────────┬─────────────────────────┘
+                                  │ LSP (JSON-RPC), started lazily
+                                  ▼
+                   ┌─────────────────────────────┐
+                   │    gopls, rust-analyzer,    │
+                   │ typescript-language-server, │
+                   │  ols, pyright, clangd, ...  │
+                   └─────────────────────────────┘
 ```
+
+Per-mode diagrams (MCP and LSP), the child↔daemon fabric, and the
+two-writer round trip are in [docs/architecture.md](docs/architecture.md).
 
 Symbol resolution is three-tier: a SQLite name index answers name queries without parsing anything; each file's symbol forest is persisted as a compact payload in SQLite, with a bounded in-memory mirror in front; and a bounded LRU keeps hot parse trees in the daemon's memory so follow-up work on recently-touched files skips re-parsing. The on-disk index survives restarts, and every cache is bounded by entries and bytes — the full resident-memory budget, its ledgers, and how the parse-tree charge is calibrated are specified in [docs/memory.md](docs/memory.md). The full architecture (lookup flow, crawl, freshness heal, edit propagation) is in [docs/symbol-engine.md](docs/symbol-engine.md).
 
-### Memory containment
+Language servers run under OS-level memory containment — cgroup v2 on Linux, an RSS watchdog on macOS, kernel Job objects on Windows — with built-in multi-gigabyte defaults; a contained server killed at its limit restarts on the next call. Platform details and caveats are in [docs/configuration.md](docs/configuration.md#language-servers); aubade's own resident-memory budget is [docs/memory.md](docs/memory.md).
 
-Language servers can allocate aggressively (gopls type-checking a large workspace is the classic case) and, left unbounded, can take the whole machine down with them. Aubade caps every language server process at the OS level:
-
-- **Linux**: each server runs in its own cgroup v2 directory with `memory.max` (hard limit), `memory.swap.max=0`, and `memory.oom.group=1`. Enforcement is synchronous in the kernel, so it holds no matter how fast the server allocates. Requires a delegated cgroup subtree (systemd user delegation).
-- **macOS**: a best-effort RSS watchdog kills the server's process tree when it exceeds the limit. Polling cannot fully outrun very fast allocation; it is a safety net, not a guarantee.
-- **Windows**: each server runs inside an anonymous kernel Job object with a job-wide memory ceiling and kill-on-job-close: past the cap the tree's allocations fail (kernel-enforced at commit time — no OOM-kill flavour to ask for), and the daemon's death closes the last job handle, taking every member down with it. The Job path is the newest of the three and has seen the least real-world use.
-- Limits are built-in defaults, not config keys: a multi-gigabyte ceiling per server, with extra headroom for gopls — which also gets a soft `GOMEMLIMIT` so the Go runtime paces itself before the hard ceiling.
-- When a contained server hits the limit and is killed, aubade's restart machinery brings it back on the next call.
-
-Known containment caveats: without a delegated cgroup subtree — common in unprivileged user sessions — aubade logs a warning and runs the server without a hard limit rather than failing to start; and cgroup directories are removed when a server exits normally, but if aubade itself is SIGKILLed the (empty, still-limited) directories remain under the delegated subtree.
-
-This section caps *language servers*. For aubade's own resident-memory budget, see [docs/memory.md](docs/memory.md).
-
-### Tree-sitter symbol engine: known limitations
-
-- Most bundled grammars ship highlight queries only, so their tags queries are inferred from generic node shapes. Aubade maintains full outline-query overrides for Go, Odin, and TypeScript (whose inference missed most Odin declarations and TypeScript variables/fields) and hand-verified inference overrides for about 40 more languages; other inference-served languages can miss language-specific declaration forms.
-- Rust `impl`-block methods surface as top-level functions (`new`, not `Server/new`): owner nesting is driven by receiver resolution, which is currently Go-only.
-- A single-line multi-name declaration (`var a, b = 1, 2` in Go) is dropped rather than half-captured; one declaration per line is unaffected.
-- Go type aliases are classified by the `type` keyword's declaration text, so `type R = io.Reader` reports Struct where gopls reports Interface.
-- Markup and data languages (JSON, YAML, HTML, CSS, …) have no symbol outline: `symbol_list` answers empty for them, and nothing in the response distinguishes "no symbols" from "language not served". JSON-family and YAML files do get a structural face — `file_read_outline` renders their key tree and extracts jq-style paths — but the remaining markup/data languages are plain text to both engines.
-- Cross-file `symbol_find` is an index read. The daemon warms the index with a whole-project crawl at startup, and out-of-band file changes — an agent's own writes, git checkout, scripts — are discovered without waiting for it: an answer that would come back empty triggers one rate-bounded incremental discovery walk before it is returned, and a background loop re-walks the project periodically as a hygiene floor. The crawl skips a shared built-in ignore list (`.git`, `node_modules`, build caches, …) and gitignored paths, does not follow symlinks, and is capped (file count, depth, per-file size); files outside the caps (or in ignored paths) still appear once read via `symbol_list`, which indexes as a side effect. The full freshness model is specified in [docs/symbol-engine.md](docs/symbol-engine.md).
-
-### Why the source is full of `rawptr`
-
-Odin has no closures: a procedure literal cannot capture the lexical
-scope around it, so every callback that needs state receives it as an
-explicit `rawptr` parameter and casts it back at the receiving end — the
-same pairing C libraries have always used. Three forces keep the count
-high (over 200 occurrences in `src/`): `core:thread` carries worker
-state as erased pointers at its core, the C interfaces (tree-sitter,
-SQLite, PCRE2) pass `void *` user payloads through their callbacks, and
-non-host packages must hand host handles down across the layer boundary
-type-erased. Generics cannot replace most of these (a `$T` procedure
-value still captures nothing, and the FFI signatures are fixed), so the
-erased-pointer pairs are the deliberate shape of the design, not
-untyped shortcuts.
+The tree-sitter engine has known blind spots: most grammars' outline queries are inferred (full overrides exist for Go, Odin, and TypeScript), receiver-based owner nesting is Go-only (Rust `impl`-block methods surface as top-level functions), and markup/data languages have no symbol outline. The full list is in [docs/symbol-engine.md](docs/symbol-engine.md#known-limitations).
 
 ## Process model
 
-One binary, two roles:
+One binary, three roles:
 
 - **MCP child** (`aubade mcp --project <path>`) — one lightweight process per client session. It speaks MCP over stdio and forwards all work to the daemon over a local RPC.
+- **LSP child** (`aubade lsp`) — one process per editor window. It speaks LSP 3.17 over stdio: semantic tokens and the document outline from the bundled grammars, debounced tree-sitter syntax diagnostics, and navigation/formatting/code-action/inlay-hint/call-hierarchy relays into the project's language servers. Hover, completion, and rename stay with the editor's dedicated language-server extensions. When the editor owns a document, agent edits to it route through `workspace/applyEdit`, so the agent and the human edit through one arbiter. Details: [docs/lsp-server.md](docs/lsp-server.md).
 - **Daemon** (one per project, spawned on demand, singleton via a lock) — owns the language-server clients, tree-sitter caches, editor buffers, the SQLite store, and shadow git. It outlives individual sessions: the next session reconnects to warm caches and already-running language servers, and the daemon exits on its own once the last child disconnects.
 
 `aubade daemon status` reports the pid, port, and connected children; `aubade daemon stop` is refused while sessions are still connected.
@@ -133,45 +129,21 @@ Project state lives under `<project>/.aubade/`: `project.jsonc`, `aubade.db` (SQ
 
 ## Tools
 
-Aubade's tools fall into the groups below; `aubade tool list` previews exactly what a session would see once contexts and modes are applied.
+Aubade's MCP tools fall into the groups below; the reference with per-tool semantics is [docs/tools.md](docs/tools.md), and `aubade tool list` previews exactly what a session would see once contexts and modes are applied. The editor-facing LSP surface is a separate, overlapping interface — see [docs/lsp-server.md](docs/lsp-server.md).
 
 **Symbol operations** — `symbol_list`, `symbol_find`, `symbol_find_dead_code`, `symbol_find_references`, `symbol_find_implementations`, `symbol_find_declaration`, `symbol_replace_body`, `symbol_insert_before`, `symbol_insert_after`, `symbol_move`, `symbol_rename`, `symbol_delete`, `symbol_insert_docstring`, `symbol_delete_docstring`, `symbol_replace_docstring`
 
-`symbol_find_dead_code` reports definitions that are almost surely dead inside the project. A whole-project scan counts every textual occurrence of each definition name — comments, strings, and prose included, not just source — and a candidate is a name that never occurs outside its own declaration spans.
-
-Two refinements keep the answer honest. Same-name definitions keep each other alive — precision is preferred over recall — and convention-invoked names are excluded: attributes or decorators directly above a definition, plus entry-point prefixes (by default `test_`, `Test`, and `main`). The result is a review queue rather than a verdict. "Dead" means unused within this project; consumers outside it are invisible.
-
 **File operations** — `file_read`, `file_write`, `file_list_dir`, `file_find`, `file_search`, `file_read_outline`, `file_replace`, `file_insert_lines`*, `file_replace_lines`*, `file_delete_lines`*, `file_delete`, `file_move`
-
-`file_read_outline` reads JSON/JSONC/JSON5/YAML structurally instead of grepping. Without a `path` it renders an indented key tree with 0-based line numbers and clamped value previews. With a jq-style path — `.a.b[0].c`, quoted keys via `."odd key"` or `["odd key"]`, negative indexes, or a terminal `[]` / `| keys` — it returns the exact value(s) at that path with their line range.
-
-The line numbers feed `file_read`/`file_replace` ranges directly. Malformed files fail loudly, with the first error row.
 
 **AST operations** — `ast_parse`, `ast_query`, `ast_find_duplicates`
 
-`ast_find_duplicates` reports duplicated code deterministically from tree-sitter structure. A whole-project scan hashes every named subtree of at least `min_nodes` nodes over its full shape; comments and formatting never reach the hash, but operators do. Equal hashes group into clones: `exact` covers identical fragments, whilst `renamed` covers copy-paste under a consistent identifier renaming with literal values abstracted, so a partial rename that collapses two names into one does not match.
-
-Groups report maximal clones only, so interior blocks of a larger duplicate do not re-report. Occurrences are 0-based inclusive line spans, and the answer is byte-identical across runs. `path_prefix` filters the report; the scan itself always covers the project.
-
 **Memories** — `memory_write`, `memory_read`, `memory_list`, `memory_replace`, `memory_rename`, `memory_delete`
 
-Memories are persistent markdown notes under `<project>/.aubade/memories` (project) and `~/.aubade/memories/global` (shared, addressed by the `global/` name prefix). The onboarding flow surfaces them in the session prompt; `read_only_memory_patterns` / `ignored_memory_patterns` pin or hide entries (see [docs/configuration.md](docs/configuration.md)).
-
 **Incident tracker** — `incident_create`, `incident_verify`, `incident_update`, `incident_resolve`, `incident_delete`, `incident_list`, `incident_get`, `sprint_start`, `sprint_close`, `sprint_update`, `sprint_record_verification`, `sprint_list`, `sprint_get`, `tracker_export`
-
-An event-sourced bug and audit tracker scoped to the project. Incidents are filed as `reported` and judged with `incident_verify`; false positives are kept as data for FP statistics, never deleted. An incident is resolved only after its root cause has been recorded.
-
-Work happens in sprints. A sprint declares its must-do tasks up front, and each task earns verification records — the latest one wins. Closing is refused whilst a must task has neither a passing verification nor a typed defer (`blocked`/`question`/`descope`).
-
-The event log is the source of truth, and the CLI can query it without an MCP client: `aubade tracker list/show/report`. `tracker export` re-renders the sprint reports into `sprint_reports` rows in the SQLite store, so no files are added to the project tree. `read_only` projects strip the tracker's writing tools.
 
 **Language servers** — `langserver_list`, `langserver_get_diagnostics`, `langserver_get_code_actions`, `langserver_format`, `langserver_get_inlay_hints`, `langserver_find_calls`; management `langserver_start`*, `langserver_stop`*, `langserver_restart`*, `langserver_reload`*
 
 **Shadow git (optional)** — `shadow_snapshot`, `shadow_log`, `shadow_diff`, `shadow_patch`, `shadow_restore`, `shadow_revert_file`
-
-Shadow git keeps workspace snapshots in a private git repository under the aubade home, separate from the project's own git history. `shadow_snapshot` records one and returns its commit hash, whilst `shadow_log`, `shadow_diff`, and `shadow_patch` inspect and export them.
-
-`shadow_restore` and `shadow_revert_file` roll the workspace — or a single file — back, passing the same containment and write-denial gate as file writes. Restoring also deletes files the snapshot does not track, though ignore-excluded files are spared; reverting a file that was absent from the snapshot deletes it.
 
 **Web (optional)** — `web_fetch`, `web_search` (needs a search provider in `config.jsonc`: Brave, Tavily, Perplexity, DuckDuckGo, or SearXNG)
 
@@ -183,69 +155,38 @@ Shadow git keeps workspace snapshots in a private git repository under the aubad
 
 **Capability markers (optional)** — `marker_symbolic_read`, `marker_can_edit`, `marker_symbolic_edit` — no-op tools that let a context's prompt key on what the client grants
 
-Optional tools — the ones marked `*` above, plus the shadow-git, web, and marker groups — stay hidden until included. Inclusion is set via `included_optional_tools` (or the whole set is pinned with `fixed_tools`) in the global config, a context, a mode, or a project. `read_only` projects strip every file-modifying tool, including the config write pair.
+Optional tools — the ones marked `*` above, plus the shadow-git, web, and marker groups — stay hidden until included. Inclusion is set via `included_optional_tools` (or the whole set is pinned with `fixed_tools`) in the global config, a context, a mode, or a project; `read_only` projects strip every file-modifying tool, including the config write pair. The composition rules are in [docs/configuration.md](docs/configuration.md#tool-visibility).
 
 ## Configuration
 
-Everything is JSONC — JSON with comments. Files are generated once from commented templates by explicit commands and are never rewritten as a side effect of reading them. Aubade rewrites only its own machine-owned state: `projects.json` and the database.
+Everything is JSONC — JSON with comments. Files are generated once from commented templates by explicit commands (`aubade init`, `aubade project create .`) and are never rewritten as a side effect of reading them; aubade rewrites only its own machine-owned state (`projects.json` and the database).
 
-### Global (`~/.aubade/config.jsonc`)
+- **Global** `~/.aubade/config.jsonc` — shared across projects: tool visibility, shell/web guards, memory patterns, defaults.
+- **Project** `<project>/.aubade/project.jsonc` — per-project language servers, ignore rules, `read_only`, added modes; `.aubade/project.local.jsonc` overrides it per developer, unversioned.
+- **Contexts** adapt tool descriptions and visibility per MCP client (`--context claudecode`, `--context zcode`, …); **modes** are named presets that exclude tools and inject prompts. Custom ones live in `~/.aubade/contexts/` and `~/.aubade/modes/`.
 
-Created by `aubade init` (write-once: init refuses to overwrite an existing file) and shared across all projects. Notable keys include `default_modes` and `tool_timeout`; the tool-visibility triple `excluded_tools` / `included_optional_tools` / `fixed_tools`; `blocked_shell_commands` / `allowed_shell_commands` (regex patterns matched against the normalized full command line); and the `web` block (search-provider credentials, fetch proxy, host rules).
-
-### Project (`.aubade/project.jsonc`)
-
-Created by `aubade project create .`. Per-project language servers, ignore rules, and tool settings:
-
-```jsonc
-{
-  "project_name": "my-app",
-  "language_servers": [
-    {"name": "go"},
-    {"name": "odin", "path": "~/.local/bin/ols"}
-  ],
-  "ignored_paths": ["internal/generated/**"],
-  "read_only": false
-}
-```
-
-### Language servers
-
-`language_servers` names the servers to start, one object per server: `{"name": <language id>, "path": <server binary>}`.
-
-`name` is the language id (`"go"`; for C use `"cpp"`, for JavaScript `"typescript"`). `path` designates the server binary's OS location and may be absolute (keeps working when the client scrubs the environment), `~/`-anchored, or project-root-relative; omit it for normal `PATH` resolution.
-
-Servers needing extra arguments take a full argv in `language_server_commands`, and initialization options go in `language_server_options`. All three keys apply live through `config_set` / `langserver_reload`. For path-form details, resolution precedence, and memory containment, see [docs/configuration.md](docs/configuration.md#language-servers). Setting `eager_language_servers: true` in the global config restores starting all servers at session start instead of on demand.
-
-### Local override (`.aubade/project.local.jsonc`)
-
-Developer-specific overrides of the project config — create it by hand and keep it out of version control.
-
-### Contexts and modes
-
-**Contexts** adapt tool descriptions and visibility for specific MCP clients (`--context zcode`, `--context claudecode`, …). Built-in contexts cover common clients, and `desktop-app` is the default. A context marked `single_project: true` pins the server to the project resolved at startup and drops `config_get`. Custom contexts live in `~/.aubade/contexts/`, and `aubade context create --from-internal <name>` starts from a copy of a built-in. The full inventory, per-client guidance, and known client issues are in [docs/configuration.md](docs/configuration.md#contexts) and [docs/harnesses.md](docs/harnesses.md#choosing-a-context).
-
-**Modes** are named presets that exclude tools and inject prompts. Built-ins: `editing` and `interactive` (the defaults), `planning`, `onboarding`, `no-onboarding`, `one-shot`, and `no-memories`. Activated via `default_modes` in the global config or `added_modes` per-project; custom modes go in `~/.aubade/modes/`.
+Every key, default, and precedence rule is in [docs/configuration.md](docs/configuration.md); language-server configuration and memory containment in its [Language servers](docs/configuration.md#language-servers) section.
 
 ## Supported languages
 
-Language servers for the languages you are likely to work with are configured out of the box: Go (gopls), Python (pyright, with jedi and ty alternates), TypeScript (typescript-language-server, with vtsls), Rust (rust-analyzer), Java (jdtls), C/C++ (clangd), C#, Ruby (ruby-lsp), Swift (sourcekit-lsp), Scala (metals), Kotlin, Haskell, Elixir, Lua, Zig (zls), Odin (ols), Terraform, and more.
+Language servers for the languages you are likely to work with are configured out of the box: C/C++ (clangd), C#, Elixir, Go (gopls), Haskell, Java (jdtls), Kotlin, Lua, Odin (ols), Python (pyright, with jedi and ty alternates), Ruby (ruby-lsp), Rust (rust-analyzer), Scala (metals), Swift (sourcekit-lsp), Terraform, TypeScript (typescript-language-server, with vtsls), Zig (zls), and more.
 
-Symbol search runs on the bundled tree-sitter grammars, including Go, TypeScript, Python, Rust, Java, C#, Kotlin, Dart, Zig, and Odin. A language server is consulted only for languages without a grammar (see [How it works](#how-it-works)).
+Symbol search runs on the bundled tree-sitter grammars, including C#, Dart, Go, Java, Kotlin, Odin, Python, Rust, TypeScript, and Zig. A language server is consulted only for languages without a grammar (see [How it works](#how-it-works)).
 
 ## Safety
 
 - **Path containment**: every path is cleaned and resolved — symlinks included — and must stay inside the project root and the configured workspace folders; the check fails closed.
-- **Sensitive reads**: reading credential-like paths (`.env`, key and token files, … — a built-in list) is gated by a read-ask heuristic: the tool response tells the model to confirm with the user first.
-- **Shell**: commands are matched against the `blocked_shell_commands` / `allowed_shell_commands` regex rules and run with a scrubbed environment.
-- **Web**: `web_fetch` / `web_search` go through a URL guard — private hosts are denied unless `allow_private_hosts` is set, and `whitelist_hosts` can pin the allowed set.
-- **No telemetry**: aubade's own code contains no analytics, crash reporting, or update checks, and never sends data anywhere on its own. The only outbound network requests are the ones you explicitly make via `web_fetch` / `web_search` — to the URLs you fetch and the search provider you configure. All state (symbol index, tracker, memories, shadow git) stays in `~/.aubade` and `<project>/.aubade/` on your machine.
+- **Sensitive reads**: reading credential-like paths is gated by a read-ask heuristic; **shell** commands run through allow/block regex rules with a scrubbed environment; **web** tools pass a URL guard.
+- **No telemetry**: no analytics, crash reporting, or update checks, and never an outbound request of aubade's own — all state stays in `~/.aubade` and `<project>/.aubade/` on your machine.
+
+The full security model — every gate, the IPC trust boundary, limits, and non-goals — is [docs/security.md](docs/security.md).
 
 ## CLI reference
 
 ```
 aubade init                                           Initialise global configuration
 aubade mcp [--project <path>]                         Start an MCP session (stdio)
+aubade lsp [--project <path>]                         Start an LSP server child session (stdio)
 aubade daemon status | stop                           Inspect or stop the project daemon
 aubade setup <client>                                 Register with a client: claudecode, codex, opencode, qwen, zcode
 aubade uninstall <client>                             Remove the registration (inverse of setup)
@@ -264,9 +205,7 @@ aubade about                                          Print version, licence, an
 
 ## Relationship to Serena
 
-Aubade's design reference is the MCP tool interface of [oraios/serena](https://github.com/oraios/serena). It shares no code with Serena, and it reaches a similar feature set by different means, under its own namespaced tool names (`symbol_find`, `file_replace`, `incident_create`, …) rather than Serena-compatible ones. `aubade tool list` shows the current surface.
-
-Notable differences:
+Aubade's design reference is the MCP tool interface of [oraios/serena](https://github.com/oraios/serena). It shares no code with Serena, and it reaches a similar feature set by different means, under its own namespaced tool names (`symbol_find`, `file_replace`, `incident_create`, …) — `aubade tool list` shows the current surface. Notable differences:
 
 - A single static binary written in Odin — no Python runtime; the bundled grammars dominate the on-disk size but never slow startup
 - A per-project daemon keeps language servers, caches, and the SQLite symbol store warm across sessions
@@ -274,26 +213,16 @@ Notable differences:
 - OS-level memory containment for language servers (cgroup v2 on Linux, an RSS watchdog on macOS, kernel Job objects on Windows)
 - Shadow git for workspace snapshots and rollback
 - A built-in incident tracker with verification records and per-sprint reports
+- An LSP 3.17 server face for code editors beside the MCP surface — semantic tokens, outline, diagnostics, and navigation relays from the same daemon — with a VSCode extension
 
 ## Building from source
 
-Prerequisites and the clone step are in the [Quick start](#quick-start).
-The first `just build` compiles the bundled tree-sitter grammars into
-`lib/` and is slow; later builds are incremental. From there, two ways
-to put the binary on your machine:
+Prerequisites and the clone step are in the [Quick start](#quick-start). After the first `just build` (the grammar compile is slow; later builds are incremental), two ways to put the binary on your machine:
 
-- **Install script** — `sh scripts/build_install.sh` (Linux/macOS)
-  builds and installs to `~/.local/bin`; on Windows,
-  `scripts/build_install.ps1` installs to
-  `%LOCALAPPDATA%\Programs\aubade` and adds the directory to the user
-  PATH. `AUBADE_INSTALL_DIR` overrides the destination on both. The
-  scripts need the C artifacts under `lib/`, so run `just build`
-  first; they warn when a different `aubade` resolves earlier on PATH.
-- **Manual** — a plain `just build` leaves the `aubade` binary at the
-  repository root; copy it anywhere on your `PATH` yourself.
+- **Install script** — `sh scripts/build_install.sh` (Linux/macOS) installs to `~/.local/bin`; on Windows, `scripts\build_install.ps1` installs to `%LOCALAPPDATA%\Programs\aubade` and adds the directory to the user PATH. `AUBADE_INSTALL_DIR` overrides the destination on both; the scripts warn when a different `aubade` resolves earlier on `PATH`.
+- **Manual** — a plain `just build` leaves the `aubade` binary at the repository root; copy it anywhere on your `PATH` yourself.
 
-Windows-specific build details are in
-[docs/windows-build.md](docs/windows-build.md).
+Windows-specific build details are in [docs/windows-build.md](docs/windows-build.md).
 
 ## Requirements
 

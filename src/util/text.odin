@@ -20,6 +20,16 @@ import "core:mem"
 import "core:strings"
 import "core:unicode/utf8"
 
+// utf16_len returns the number of UTF-16 code units occupied by r: BMP
+// runes (≤ U+FFFF) take one unit, anything above takes a surrogate pair
+// (two units). Replacements and invalid runes are treated as one unit.
+utf16_len :: proc(r: rune) -> int {
+	if r > 0xFFFF {
+		return 2
+	}
+	return 1
+}
+
 // utf16_col_to_byte_offset converts a zero-based UTF-16 code unit column on
 // a single line into the corresponding byte offset within that line. LSP
 // positions use UTF-16 columns; Odin strings are UTF-8 byte sequences, so

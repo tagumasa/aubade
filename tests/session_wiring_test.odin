@@ -333,8 +333,7 @@ Drain_Worker :: struct {
 	token: ^platform.Cancel_Token,
 }
 
-drain_worker_main :: proc(data: rawptr) {
-	w := cast(^Drain_Worker)data
+drain_worker_main :: proc(w: ^Drain_Worker) {
 	// Stand-in for a pool worker inside conn_call: parked until the abort
 	// fires the token, then "finishes" and deregisters.
 	platform.token_wait(w.token)
@@ -348,8 +347,7 @@ Drain_Flag :: struct {
 	done: bool,
 }
 
-drain_waiter_main :: proc(data: rawptr) {
-	f := cast(^Drain_Flag)data
+drain_waiter_main :: proc(f: ^Drain_Flag) {
 	session.wait_calls_drained(f.app)
 	sync.mutex_lock(&f.mu)
 	f.done = true
@@ -374,7 +372,7 @@ retire_drain_waits_for_every_deregister :: proc(t: ^testing.T) {
 		id: jsonrpc.Id = i64(i + 1)
 		session.host_register(a, id, token)
 		workers[i] = {a = a, id = id, token = token}
-		handles[i] = thread.create_and_start_with_data(
+		handles[i] = thread.create_and_start_with_poly_data(
 			&workers[i], drain_worker_main, self_cleanup = false, name = "drain-worker",
 		)
 	}
@@ -385,7 +383,7 @@ retire_drain_waits_for_every_deregister :: proc(t: ^testing.T) {
 	f := new(Drain_Flag, context.allocator)
 	defer free(f, context.allocator)
 	f^ = {app = a}
-	waiter := thread.create_and_start_with_data(f, drain_waiter_main, self_cleanup = false, name = "drain-waiter")
+	waiter := thread.create_and_start_with_poly_data(f, drain_waiter_main, self_cleanup = false, name = "drain-waiter")
 
 	// Fire only the FIRST call's token, then wait for ITS deregistration
 	// through the registry itself (bounded): once it lands, the drain is

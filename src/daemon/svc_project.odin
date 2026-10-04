@@ -139,6 +139,14 @@ project_state_init :: proc(d: ^Daemon) -> bool {
 	langserver.manager_init(
 		ls, reg, d.cfg.project_root, d.cfg.clock, langserver.production_factory(ls), allow, eager, d.allocator,
 	)
+	// The push face's ports: running transitions and stored diagnostics
+	// relay to the lsp-mode children (the callbacks are rawptr-first and
+	// recover the daemon; both are no-ops while no child declared
+	// mode=="lsp").
+	ls.on_state = push_langserver_state_to_lsp_children
+	ls.on_state_host = d
+	ls.push_diagnostics = push_diagnostics_to_lsp_children
+	ls.push_host = d
 	// manager_init clones the allowlist onto its own allocator, so the
 	// caller-owned clone from resolve_language_settings is freed here, like
 	// its sibling slices below.
@@ -167,14 +175,24 @@ project_state_init :: proc(d: ^Daemon) -> bool {
 	svc.editor_sync_init(
 		sync, d.cfg.project_root, daemon_lsp_client_for, port, d.allocator,
 		hot = &d.ts.hot, release = daemon_lsp_client_release,
-		ts_src = d.ts,
 	)
 	svc.editor_sync_install(sync, ed)
+	// The document-sync face drives the same editor buffers (and through
+	// them the same installed listener); its worker thread starts with the
+	// daemon's other monitors in daemon_run.
+	doc_sync := new(svc.Doc_Sync, d.allocator)
+	svc.doc_sync_init(doc_sync, d.cfg.project_root, ed, d.allocator)
 	d.ls_reg = reg
 	d.ls = ls
 	d.lsp_port = port
 	d.lsp_src = lsp_src
 	d.ls_sync = sync
+	d.doc_sync = doc_sync
+	// The two-writer routing face over the same doc-sync state and editor;
+	// the port is the daemon's own (child pinning + conn_call).
+	edit_tw := new(svc.Two_Writer, d.allocator)
+	svc.two_writer_init(edit_tw, doc_sync, ed, daemon_edit_apply_port, d)
+	d.edit_tw = edit_tw
 	return true
 }
 
@@ -396,6 +414,19 @@ project_state_destroy :: proc(d: ^Daemon, token: ^platform.Cancel_Token = nil) {
 		svc.editor_sync_destroy(d.ls_sync)
 		free(d.ls_sync, d.allocator)
 		d.ls_sync = nil
+	}
+	if d.edit_tw != nil {
+		// The face holds no allocations of its own (it points into
+		// doc_sync and the editor); it frees before the state it routes.
+		free(d.edit_tw, d.allocator)
+		d.edit_tw = nil
+	}
+	if d.doc_sync != nil {
+		// The apply worker joined in daemon_cleanup before this ladder; the
+		// face's own state frees before the editor it drove.
+		svc.doc_sync_destroy(d.doc_sync)
+		free(d.doc_sync, d.allocator)
+		d.doc_sync = nil
 	}
 	if d.ls != nil {
 		langserver.manager_destroy(d.ls, token)
@@ -700,9 +731,23 @@ symbol_find_heal_stale :: proc(
 		// this loop otherwise paid per answered path per request (a common
 		// name seeded across thousands of files read every one of them).
 		// Gate errors fail toward the read (the hash comparison below is
-		// the authority).
+		// the authority). An open synced document never takes the skip:
+		// the fingerprint compares disk stats, and the document's
+		// client-owned buffer text drifts from the disk without any stat
+		// moving, so its rows are re-decided from the content hash of the
+		// bytes read below — through the editor, buffer first. The doc
+		// sync's version home doubles as the presence signal (has=false
+		// for unknown or closed documents), so no dirty mark and no timer
+		// exist: an unread document costs nothing, and the first read over
+		// its rows pays the one rewrite.
 		if store.fingerprint_skip(d.db, path, mtime_ns, size, platform.clock_now(d.cfg.clock)) {
-			continue
+			doc_open := false
+			if d.doc_sync != nil {
+				_, doc_open = svc.doc_sync_last_applied_version(d.doc_sync, path)
+			}
+			if !doc_open {
+				continue
+			}
 		}
 		contents, from_editor, rerr := svc.read_source_contents(d.ed, path, abs, a)
 		if rerr != "" {

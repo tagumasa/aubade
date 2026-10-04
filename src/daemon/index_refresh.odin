@@ -30,8 +30,8 @@ INDEX_REFRESH_INTERVAL_MS :: i64(60_000)
 // at that moment, so an immediate miss right after it is real.
 INDEX_REFRESH_MIN_GAP_MS :: i64(2_000)
 
-index_refresh_thread_entry :: proc(data: rawptr) {
-	index_refresh_loop(cast(^Daemon)data)
+index_refresh_thread_entry :: proc(d: ^Daemon) {
+	index_refresh_loop(d)
 }
 
 // index_refresh_loop is the discovery thread body: wait one interval,

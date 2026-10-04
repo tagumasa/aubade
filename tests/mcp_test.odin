@@ -53,8 +53,7 @@ Client_Box :: struct {
 	host: ^Mcp_Host,
 }
 
-mcp_client_reader_entry :: proc(data: rawptr) {
-	b := cast(^Client_Box)data
+mcp_client_reader_entry :: proc(b: ^Client_Box) {
 	jsonrpc.conn_read_loop(b.host.client_conn)
 }
 
@@ -163,7 +162,7 @@ mcp_host_setup :: proc(entries: []mcp.Tool_Entry) -> ^Mcp_Host {
 	box := new(Client_Box, context.allocator)
 	box^ = {host = h}
 	h.reader_box = box
-	h.reader = thread.create_and_start_with_data(box, mcp_client_reader_entry, self_cleanup = false)
+	h.reader = thread.create_and_start_with_poly_data(box, mcp_client_reader_entry, self_cleanup = false)
 	return h
 }
 
@@ -209,8 +208,7 @@ Call_Box :: struct {
 	params: json.Value,
 }
 
-mcp_caller_entry :: proc(data: rawptr) {
-	b := cast(^Call_Box)data
+mcp_caller_entry :: proc(b: ^Call_Box) {
 	h := b.host
 	// Use context.temp_allocator for conn_call's arena: request body and
 	// intermediate json values are short-lived and die with the thread.
@@ -243,7 +241,7 @@ mcp_do_call :: proc(h: ^Mcp_Host, method: string, params: json.Value) -> (json.V
 
 	box := new(Call_Box, context.allocator)
 	box^ = {host = h, method = method, params = params}
-	thr := thread.create_and_start_with_data(box, mcp_caller_entry, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(box, mcp_caller_entry, self_cleanup = false)
 
 	body, rerr := jsonrpc.read_frame(&h.server_conn.reader, context.temp_allocator)
 	if rerr == .None {

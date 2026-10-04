@@ -53,6 +53,13 @@ TS_Source :: struct {
 	// (regex_match_local): a compiled pattern is thread-safe to match, its
 	// cached match_data is not.
 	outliners:    map[string]^ts.Outliner,
+	// Per-language highlights holders, built on first use and kept for the
+	// source's lifetime under the same discipline as `outliners` (mutex
+	// guards the lazy map only; the built holder is immutable and shared
+	// lock-free). A nil entry marks a language that serves no highlights
+	// data — no grammar, a query-empty grammar, or a compile refusal — so
+	// the negative verdict is cached like a positive one.
+	highlighters: map[string]^ts.Highlights,
 	// The prebuilt extension tier of grammar detection
 	// (ts.registry_extension_map): constant size, first-wins table order
 	// baked at init — the crawl probes one map lookup per dot-suffix
@@ -68,6 +75,7 @@ ts_source_init :: proc(src: ^TS_Source, project_root: string, db: ^store.DB, clo
 		db           = db,
 		clock        = clock,
 		outliners    = make(map[string]^ts.Outliner, 8, a),
+		highlighters = make(map[string]^ts.Highlights, 8, a),
 		ext_map      = ts.registry_extension_map(a),
 		allocator    = a,
 	}
@@ -97,6 +105,12 @@ ts_source_destroy :: proc(src: ^TS_Source) -> bool {
 		}
 	}
 	delete(src.outliners)
+	for _, h in src.highlighters {
+		if h != nil {
+			ts.highlights_destroy(h)
+		}
+	}
+	delete(src.highlighters)
 	// The extension map's keys are owned clones: free them before the
 	// table (a bare map delete frees only the table).
 	for k, _ in src.ext_map {
@@ -345,62 +359,6 @@ ts_source_outline_for_contents :: proc(
 		return nil, platform.err_clone(werr, a)
 	}
 	return roots, nil
-}
-
-// ts_source_index_contents indexes the bytes handed in — the editor change
-// hook's post-edit row refresh. The contents are the editor's view at
-// commit time and the caller holds the file's lock: this proc must not
-// re-enter the editor, so it never reads the file itself. Returns
-// served=false when no tree-sitter outline serves the file's language (the
-// caller may try the LSP producer) and ok=false on error (the rows stay
-// for the read-side freshness heal or the next crawl).
-ts_source_index_contents :: proc(src: ^TS_Source, rel_in: string, contents: string) -> (served: bool, ok: bool) {
-	scratch_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&scratch_arena, src.allocator)
-	defer mem.dynamic_arena_destroy(&scratch_arena)
-	scratch := mem.dynamic_arena_allocator(&scratch_arena)
-
-	rel := normalize_rel(rel_in, scratch)
-	if rel == "" {
-		return false, false
-	}
-
-	idx, found := ts.registry_detect_with_map(src.ext_map, rel_base(rel), scratch)
-	if !found {
-		// Shebang fallback, sliced from the bytes already in hand.
-		first := contents
-		for i := 0; i < len(contents); i += 1 {
-			if contents[i] == '\n' {
-				first = contents[:i]
-				break
-			}
-		}
-		idx, found = ts.registry_lookup_by_shebang(first)
-		if !found {
-			return false, true
-		}
-	}
-	table := ts.GRAMMARS
-	lang := table[idx].name
-	o := outliner_for(src, lang)
-	if o == nil {
-		return false, true
-	}
-
-	abs := strings.concatenate({src.project_root, "/", rel}, scratch)
-	// The forest lives in the scratch arena — only the DB copies the rows
-	// keep survive its teardown below.
-	roots, oerr := ts_source_outline_for_contents(src, o, lang, contents, abs, rel, scratch, scratch)
-	if oerr != nil {
-		return true, false
-	}
-	if len(roots) == 0 {
-		// The committed bytes parse to an empty outline: the file declares
-		// nothing now, and the previous rows must not keep answering for
-		// it.
-		_ = store.delete_symbol_path(src.db, rel)
-	}
-	return true, true
 }
 
 // index_heal_file re-indexes one file whose indexed rows are stale (the
@@ -1037,6 +995,44 @@ has_definition_capture :: proc(o: ^ts.Outliner) -> bool {
 	return false
 }
 
+// highlighter_for returns the language's compiled highlights holder,
+// building it on first use; a nil verdict (no grammar, query-empty
+// grammar, compile refusal) is cached like a built one. The build runs
+// under the map mutex — a concurrent second builder would leak its query
+// on the losing store — and the mutex is never held during query
+// execution: the built holder is immutable, so sharing it across request
+// threads needs no lock.
+highlighter_for :: proc(src: ^TS_Source, lang: string) -> ^ts.Highlights {
+	sync.mutex_lock(&src.mu)
+	h, have := src.highlighters[lang]
+	if have {
+		sync.mutex_unlock(&src.mu)
+		return h
+	}
+	built: ^ts.Highlights = nil
+	b, err := ts.build_highlights(lang, src.allocator)
+	if err == "" && b != nil {
+		if b.query_empty || b.query == nil {
+			ts.highlights_destroy(b)
+		} else {
+			built = b
+		}
+	}
+	src.highlighters[lang] = built
+	sync.mutex_unlock(&src.mu)
+	return built
+}
+
+// highlights_query_empty reports the registry truth the nil cache verdict
+// hides: whether the language's grammar ships an empty highlights query.
+// The face needs the distinction — a query-empty language declines
+// observably ("no_query"), while a compile refusal is an internal error —
+// and build_highlights itself is not re-run to learn it. false when no
+// grammar serves the language.
+highlights_query_empty :: proc(lang: string) -> bool {
+	return ts.grammar_highlights_query_empty(lang)
+}
+
 // parse_outline_roots runs one file through parse → outline → convert →
 // finalize. The returned forest is allocated in `a`; every intermediate
 // (parse tree, outline forest, converter, body factory) lives in `scratch`
@@ -1216,6 +1212,12 @@ read_source_file :: proc(abs_path: string, a: runtime.Allocator) -> (contents: s
 			"file is too large (", util.int_to_dec(cast(int)refused, a),
 			" bytes); maximum is ", util.int_to_dec(MAX_SOURCE_FILE_BYTES, a), " bytes",
 		}, a)
+	}
+	if outcome == .Changed {
+		// A rewrite torn by the read: the rows for whatever bytes these
+		// are would replace the path's rows wholesale, so the caller keeps
+		// its current rows instead (the honest answer until a later read).
+		return "", "file changed during read"
 	}
 	if outcome != .Ok {
 		return "", "read failed"
