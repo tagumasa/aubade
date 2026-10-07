@@ -1285,7 +1285,7 @@ handle_push_langserver_state :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope
 // lsp_view_uri_for_rel finds the open view whose document is `rel` and
 // returns its client-facing uri ("" when this child holds no such view).
 // The view set is the one place the editor's spelling lives. Single-shot
-// callers (one document per push notification) resolve directly; per-item
+// callers (one document per push notification) match directly; per-item
 // answer paths go through Relay_Uri_Table instead, so the set decodes once
 // per request rather than once per location.
 lsp_view_uri_for_rel :: proc(h: ^Lsp_Host, rel: string, arena: mem.Allocator) -> string {
@@ -1295,7 +1295,7 @@ lsp_view_uri_for_rel :: proc(h: ^Lsp_Host, rel: string, arena: mem.Allocator) ->
 		if !ok {
 			continue
 		}
-		if lsp.rel_path_for_root(h.app.cfg.project_root, p) == rel {
+		if lsp_path_rel_for_root(h, p, arena) == rel {
 			return u
 		}
 	}

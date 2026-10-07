@@ -23,6 +23,7 @@ import "src:lsp"
 import "src:lspserver"
 import "src:platform"
 import "src:rpc"
+import "src:safety"
 import "src:session"
 import "src:symbol"
 import "src:svc"
@@ -1063,6 +1064,62 @@ relayhost_push_diagnostics_republishes_and_drops_foreign :: proc(t: ^testing.T) 
 	)
 	relayhost_push(t, p, svc.METHOD_PUSH_DIAGNOSTICS, unopened, session.handle_push_diagnostics)
 	testing.expectf(t, len(p.down.buf) == 0, "an unopened document must not republish")
+}
+
+// The daemon pushes in its canonical spelling while the view holds the
+// client's spelling through a symlinked directory — the view lookup must
+// resolve the two spellings together (POSIX-only: making a symlink needs
+// privileges on Windows).
+when ODIN_OS == .Darwin || ODIN_OS == .Linux {
+
+	@(test)
+	relayhost_push_respells_canonical_to_client_spelling :: proc(t: ^testing.T) {
+		p := relayhost_pair_init(t)
+		if p == nil {
+			return
+		}
+		defer relayhost_pair_destroy(p)
+
+		real_dir := strings.concatenate({p.tmp, "/real"}, context.temp_allocator)
+		if err := os.make_directory(real_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}); err != nil {
+			testing.expectf(t, false, "mkdir failed: %v", err)
+			return
+		}
+		link := strings.concatenate({p.tmp, "/link"}, context.temp_allocator)
+		if err := os.symlink("real", link); err != nil {
+			testing.expectf(t, false, "symlink failed: %v", err)
+			return
+		}
+		// cfg.project_root is rig-owned and freed on the ambient allocator
+		// at destroy; the swap keeps that ownership.
+		delete(p.app.cfg.project_root, context.allocator)
+		p.app.cfg.project_root = safety.pathguard_resolve_root(real_dir, context.allocator)
+
+		relayhost_arm_face(t, p)
+		doc_uri := svcrig_file_uri(link, "main.go")
+		relayhost_open(t, p, doc_uri, "go", 3, "package main\n")
+
+		canonical_main := strings.concatenate({p.app.cfg.project_root, "/main.go"}, context.temp_allocator)
+		items := `[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}},"severity":1,"message":"undeclared"}]`
+		push_params := strings.concatenate(
+			{
+				`{"uri":`,
+				jsonutil.json_quote(symbol.file_uri(canonical_main, context.temp_allocator), context.temp_allocator),
+				`,"items":`,
+				jsonutil.json_quote(items, context.temp_allocator),
+				"}",
+			},
+			context.temp_allocator,
+		)
+		relayhost_push(t, p, svc.METHOD_PUSH_DIAGNOSTICS, push_params, session.handle_push_diagnostics)
+
+		params := relayhost_read_publish(t, p)
+		testing.expectf(t, lsppub_uri(t, params) == doc_uri, "the republish must use the view's own spelling")
+		version, has_version := lsppub_version(params)
+		testing.expectf(t, has_version && version == 3, "the republish must stamp the view's version, got %d", version)
+		testing.expectf(t, lsppub_diag_count(t, params) == 1, "the pushed set republishes")
+	}
+
 }
 
 @(test)
