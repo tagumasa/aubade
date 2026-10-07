@@ -34,6 +34,12 @@ editor_file_read :: proc(user: rawptr, abs_path: string, max_bytes: i64, alloc: 
 		// size the model judges a sliced retry against.
 		return nil, .Too_Large, fmt.aprintf("file is too large (%d bytes); maximum is %d bytes", refused, max_bytes, allocator = context.temp_allocator)
 	}
+	if outcome == .Changed {
+		// A rewrite torn by the read: the bytes describe no settled state,
+		// so the reload keeps the current buffer and retries on the next
+		// probe rather than adopting them.
+		return nil, .IO, "file changed during read"
+	}
 	return nil, .IO, "read failed"
 }
 

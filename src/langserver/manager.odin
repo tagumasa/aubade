@@ -80,6 +80,16 @@ Factory :: struct {
 	create: Factory_Create_Proc,
 }
 
+// Manager_State_Proc observes one running transition of a managed
+// server: a completed start (running=true, the started server's
+// references/declaration caps) and every retire's unlink (running=false,
+// both bits false). It runs on the transitioning thread with the manager
+// mutex RELEASED — the decision is computed under the lock and the fire
+// waits for the unlock (claim-then-act, the hb_tick/child_gone shape).
+// The callback must not block and reads `language` synchronously only
+// (the caller passes a context.temp_allocator clone).
+Manager_State_Proc :: proc(user: rawptr, language: string, running, references, declaration: bool)
+
 Status_Row :: struct {
 	id:      string, // owned by the caller's allocator
 	running: bool,
@@ -111,6 +121,18 @@ Manager :: struct {
 	clock:            ^platform.Clock,
 	allocator:        mem.Allocator,
 	factory:          Factory,
+
+	// Running-state hook (nil = none): fired on every running transition
+	// the manager owns, per the Manager_State_Proc contract above. The
+	// daemon forwards the transition to its lsp-mode children.
+	on_state:      Manager_State_Proc,
+	on_state_host: rawptr,
+	// Diagnostics push port (nil = none): the production factory installs
+	// it on every client it builds, so a publishDiagnostics relay reaches
+	// the daemon's push face — the port is the dependency inversion, no
+	// daemon import here.
+	push_diagnostics: lsp.Diagnostics_Push_Proc,
+	push_host:        rawptr,
 
 	// Configuration: project-supplied settings, installed at init and
 	// swapped wholesale by the config/project-transition setters
@@ -173,11 +195,9 @@ Manager :: struct {
 	// Worker threads, stopped and joined by the destroy ladder
 	// (manager_stop_idle / manager_stop_eager).
 	idle_thread:      ^thread.Thread,
-	idle_args:        Idle_Args,
 	// started by manager_start_eager — only when the eager config bool
 	// (above, in the configuration section) is set.
 	eager_thread:     ^thread.Thread,
-	eager_args:       Eager_Args,
 }
 
 // manager_init prepares the manager. Nothing is spawned until an ensure
@@ -210,6 +230,34 @@ manager_init :: proc(
 	m.last_use_ms = make(map[string]i64, 4, a)
 	m.idle_timeout_ms = MANAGER_IDLE_TIMEOUT_MS
 	m.idle_interval_ms = MANAGER_IDLE_TICK_MS
+}
+
+// manager_state_event snapshots one transition's callback arguments while
+// m.mu is held: a temp clone of the language id (a retiring server's
+// borrowed id dies at the post-unlock teardown) and, for a running
+// transition, the caps of the server that just came up. The work is
+// skipped entirely when no hook is installed, so a nil hook stays a
+// zero-cost no-op. Reading the caps under m.mu is safe: cl.state_mu is a
+// leaf, and no path takes m.mu while holding it.
+manager_state_event :: proc(m: ^Manager, language_id: string, running: bool, client: ^lsp.Client) -> (lang: string, references, declaration: bool) {
+	if m.on_state == nil {
+		return
+	}
+	lang = strings.clone(language_id, context.temp_allocator)
+	if running && client != nil {
+		caps := lsp.client_caps(client)
+		references = caps.references
+		declaration = caps.declaration
+	}
+	return
+}
+
+// fire_state runs the state hook with m.mu released. The caller snapshots
+// the arguments under the lock (manager_state_event).
+fire_state :: proc(m: ^Manager, lang: string, running, references, declaration: bool) {
+	if m.on_state != nil {
+		m.on_state(m.on_state_host, lang, running, references, declaration)
+	}
 }
 
 // manager_destroy stops everything and frees the manager's owned state.
@@ -397,11 +445,15 @@ manager_ensure :: proc(
 		if s != nil && !server_alive(s) {
 			// Drop the corpse from the table; teardown runs outside the
 			// lock (deferred while a hand-out is still in flight) and the
-			// loop retries the start path.
+			// loop retries the start path. The unlink is the manager's
+			// not-running transition: the hook's arguments snapshot under
+			// the lock, the fire waits for the unlock.
+			lang, refs, decl := manager_state_event(m, s.language_id, false, nil)
 			delete_key(&m.servers, language_id)
 			append(&m.retiring, s)
 			sync.cond_broadcast(&m.cond)
 			sync.mutex_unlock(&m.mu)
+			fire_state(m, lang, false, refs, decl)
 			manager_sweep_retiring(m, token)
 			continue
 		}
@@ -529,7 +581,12 @@ start_language :: proc(
 	// param views the caller's memory and would rot in place.
 	m.servers[s.language_id] = s
 	last_use_note(m, s.language_id, platform.clock_now(m.clock))
+	// The completed start is the manager's running transition; the hook
+	// rides the caps the handshake just cached (snapshotted under the
+	// lock, fired after the unlock).
+	lang, refs, decl := manager_state_event(m, s.language_id, true, s.client)
 	sync.mutex_unlock(&m.mu)
+	fire_state(m, lang, true, refs, decl)
 	return nil
 }
 
@@ -779,7 +836,9 @@ manager_stop :: proc(m: ^Manager, language_id: string, token: ^platform.Cancel_T
 	delete_key(&m.servers, language_id)
 	append(&m.retiring, s)
 	sync.cond_broadcast(&m.cond)
+	lang, refs, decl := manager_state_event(m, s.language_id, false, nil)
 	sync.mutex_unlock(&m.mu)
+	fire_state(m, lang, false, refs, decl)
 	manager_sweep_retiring(m, token)
 	return nil
 }
@@ -833,11 +892,23 @@ manager_restart :: proc(
 	}
 	m.servers[fresh.language_id] = fresh
 	last_use_note(m, fresh.language_id, platform.clock_now(m.clock))
+	old_lang := ""
 	if old != nil {
 		append(&m.retiring, old)
+		old_lang, _, _ = manager_state_event(m, old.language_id, false, nil)
 	}
+	// The swap is a start the manager owns: the replacement is already the
+	// table's server at fire time, and the down-then-up pair is what lets
+	// an lsp child re-do its dynamic registration for the new server (the
+	// restart-after-death path reports the same up event through
+	// start_language).
+	fresh_lang, fresh_refs, fresh_decl := manager_state_event(m, fresh.language_id, true, fresh.client)
 	sync.cond_broadcast(&m.cond)
 	sync.mutex_unlock(&m.mu)
+	if old != nil {
+		fire_state(m, old_lang, false, false, false)
+	}
+	fire_state(m, fresh_lang, true, fresh_refs, fresh_decl)
 	manager_sweep_retiring(m, token)
 	return nil
 }
@@ -860,15 +931,19 @@ manager_reset :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) -> int {
 			victim = s
 			break
 		}
+		lang: string
+		refs, decl := false, false
 		if victim != nil {
 			delete_key(&m.servers, victim.language_id)
 			append(&m.retiring, victim)
+			lang, refs, decl = manager_state_event(m, victim.language_id, false, nil)
 		}
 		sync.mutex_unlock(&m.mu)
 		if victim == nil {
 			break
 		}
 		stopped_count += 1
+		fire_state(m, lang, false, refs, decl)
 		manager_sweep_retiring(m, token)
 	}
 	sync.mutex_lock(&m.mu)
@@ -1083,18 +1158,13 @@ manager_start_eager :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) {
 		sync.mutex_unlock(&m.mu)
 		return
 	}
-	m.eager_args = {m = m}
 	saved_allocator := context.allocator
 	defer context.allocator = saved_allocator
 	context.allocator = m.allocator // the thread handle outlives this call's frame
-	m.eager_thread = thread.create_and_start_with_data(
-		&m.eager_args, eager_thread_main, self_cleanup = false, name = "langserver-eager",
+	m.eager_thread = thread.create_and_start_with_poly_data(
+		m, eager_thread_main, self_cleanup = false, name = "langserver-eager",
 	)
 	sync.mutex_unlock(&m.mu)
-}
-
-Eager_Args :: struct {
-	m: ^Manager,
 }
 
 manager_stop_eager :: proc(m: ^Manager) {
@@ -1108,9 +1178,7 @@ manager_stop_eager :: proc(m: ^Manager) {
 	}
 }
 
-eager_thread_main :: proc(data: rawptr) {
-	ea := cast(^Eager_Args)data
-	m := ea.m
+eager_thread_main :: proc(m: ^Manager) {
 	// The thread walks its own snapshot: a later reload's set_allow frees
 	// the old slice, and this thread is joined only at destroy. The
 	// snapshot lives on the manager's allocator — the per-start
@@ -1147,12 +1215,11 @@ manager_start_idle :: proc(m: ^Manager) {
 		sync.mutex_unlock(&m.mu)
 		return
 	}
-	m.idle_args = {m = m}
 	saved_allocator := context.allocator
 	defer context.allocator = saved_allocator
 	context.allocator = m.allocator // the thread handle outlives this call's frame
-	m.idle_thread = thread.create_and_start_with_data(
-		&m.idle_args, idle_thread_main, self_cleanup = false, name = "langserver-idle",
+	m.idle_thread = thread.create_and_start_with_poly_data(
+		m, idle_thread_main, self_cleanup = false, name = "langserver-idle",
 	)
 	sync.mutex_unlock(&m.mu)
 }
@@ -1174,18 +1241,12 @@ manager_stop_idle :: proc(m: ^Manager) {
 	}
 }
 
-Idle_Args :: struct {
-	m: ^Manager,
-}
-
 // The monitor parks in short real-time cond slices (not clock_wait):
 // a stop must wake it by broadcast — a virtual clock parked in
 // clock_wait only releases on an advance nobody will make during
 // teardown. Tick arithmetic still reads the injected clock, so virtual
 // time drives the reaping cadence in tests.
-idle_thread_main :: proc(data: rawptr) {
-	ia := cast(^Idle_Args)data
-	m := ia.m
+idle_thread_main :: proc(m: ^Manager) {
 	last_tick := platform.clock_now(m.clock)
 	for {
 		sync.mutex_lock(&m.mu)
@@ -1229,15 +1290,19 @@ manager_reap_idle :: proc(m: ^Manager, now: i64, token: ^platform.Cancel_Token =
 				break
 			}
 		}
+		lang: string
+		refs, decl := false, false
 		if victim != nil {
 			delete_key(&m.servers, victim.language_id)
 			append(&m.retiring, victim)
 			sync.cond_broadcast(&m.cond)
+			lang, refs, decl = manager_state_event(m, victim.language_id, false, nil)
 		}
 		sync.mutex_unlock(&m.mu)
 		if victim == nil {
 			return
 		}
+		fire_state(m, lang, false, refs, decl)
 		manager_sweep_retiring(m, token)
 	}
 }

@@ -118,11 +118,45 @@ location is designated by `language_servers`' `path`, never there.
 
 Servers start lazily on first semantic use by default;
 `eager_language_servers: true` restores starting all of them at session
-start. Every server process is memory-contained: a multi-gigabyte ceiling per
-server, with extra headroom for gopls (cgroup v2 on Linux, an RSS
-watchdog on macOS — built-in defaults, not config keys). When a contained
-server is killed at the limit,
-the restart machinery brings it back on the next call.
+start.
+
+### Memory containment
+
+Language servers can allocate aggressively (gopls type-checking a large
+workspace is the classic case) and, left unbounded, can take the whole
+machine down with them. Aubade caps every language server process at the
+OS level:
+
+- **Linux**: each server runs in its own cgroup v2 directory with
+  `memory.max` (hard limit), `memory.swap.max=0`, and
+  `memory.oom.group=1`. Enforcement is synchronous in the kernel, so it
+  holds no matter how fast the server allocates. Requires a delegated
+  cgroup subtree (systemd user delegation).
+- **macOS**: a best-effort RSS watchdog kills the server's process tree
+  when it exceeds the limit. Polling cannot fully outrun very fast
+  allocation; it is a safety net, not a guarantee.
+- **Windows**: each server runs inside an anonymous kernel Job object
+  with a job-wide memory ceiling and kill-on-job-close: past the cap the
+  tree's allocations fail (kernel-enforced at commit time — no OOM-kill
+  flavour to ask for), and the daemon's death closes the last job
+  handle, taking every member down with it. The Job path is the newest
+  of the three and has seen the least real-world use.
+- Limits are built-in defaults, not config keys: a multi-gigabyte
+  ceiling per server, with extra headroom for gopls — which also gets a
+  soft `GOMEMLIMIT` so the Go runtime paces itself before the hard
+  ceiling.
+- When a contained server hits the limit and is killed, aubade's restart
+  machinery brings it back on the next call.
+
+Known containment caveats: without a delegated cgroup subtree — common in
+unprivileged user sessions — aubade logs a warning and runs the server
+without a hard limit rather than failing to start; and cgroup directories
+are removed when a server exits normally, but if aubade itself is
+SIGKILLed the (empty, still-limited) directories remain under the
+delegated subtree.
+
+This caps *language servers*. For aubade's own resident-memory budget,
+see [memory.md](memory.md).
 
 ## Tool visibility
 

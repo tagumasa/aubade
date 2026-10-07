@@ -2,19 +2,23 @@
 
 Rules and policy for coding agents on the Aubade codebase — not
 session records or measurements. User-facing documentation lives in
-README.md.
+README.md and docs/.
 
 # Project description
 
 ## Overview
 
-Aubade is an MCP code-intelligence server written in **Odin** (single binary
-`aubade`, entry point `src/main.odin`). One binary serves two run modes that
-share the same tool implementations:
+Aubade is a code-intelligence server written in **Odin** (single binary
+`aubade`, entry point `src/main.odin`) serving AI agents over MCP and
+code editors over LSP 3.17. One binary serves three run modes:
 
 - **Child (MCP server)** `aubade mcp --project <path>`: one lightweight
   process per MCP client session. Speaks MCP over stdio and forwards work to
   the parent over RPC.
+- **Child (LSP server)** `aubade lsp`: one process per editor window. Speaks
+  LSP 3.17 over stdio (the `src/lspserver` face) and forwards work to the
+  same parent over RPC; the VSCode extension (`editors/vscode/`) is a thin
+  launcher that starts one child per workspace folder.
 - **Parent daemon** `aubade daemon`: one per project (singleton, flock-guarded
   spawn). Owns the LSP clients, tree-sitter caches, editor buffers, SQLite,
   and shadow git. Exits when all children are gone (heartbeat liveness).
@@ -30,6 +34,7 @@ foundation: core:* / vendor:* + handwritten packages (jsonrpc, jsonutil,
   ↑ config, prompt, safety
   ↑ domain: tracker, memory, symbol, editor
   ↑ services: lsp, lsproc, langserver, web, shadow, svc, hooks
+  ↑ lspserver (the LSP 3.17 server face; foundation + lsp only)
   ↑ tools
   ↑ hosts: session, daemon, cli
 ```
@@ -168,8 +173,8 @@ just parsers go,odin      # partial grammar build (development)
   the grammars' const parse tables (`.rodata`) — compiler flags cannot
   shrink it, and unused grammars' pages never become resident.
 - The Odin compiler tracks the **latest nightly** (currently
-  `dev-2026-09-nightly:a2fb372`). CI pins the frozen dev-YYYY-MM
-  release via `setup-odin` (`release: dev-2026-09`) plus a hard
+  `dev-2026-10-nightly:84bc3fc`). CI pins the frozen dev-YYYY-MM
+  release via `setup-odin` (`release: dev-2026-10`) plus a hard
   version-assert gate; if a nightly breaks the build, re-pin both to the
   last known-good release. This nightly ships no `odin fmt`
   subcommand — there is no formatter step; re-check after a compiler
@@ -357,7 +362,7 @@ These are settled structural rules. Violations get flagged in review.
   svc RPC. Tests and `--in-process` swap in the channel transport instead —
   never fork the implementation into two paths.
 - **The rawptr+cast callback pattern**: over 200 uses of `rawptr` across
-  src/ (see the README section "Why the source is full of rawptr") are a deliberate
+  src/ (see CONTRIBUTING.md, "Why the source is full of rawptr") are a deliberate
   design decision, not bug avoidance. Two causes: (1) **Odin has no
   closures** — a proc literal cannot capture its lexical scope, so a
   callback that needs state receives it as an explicit
@@ -368,12 +373,14 @@ These are settled structural rules. Violations get flagged in review.
   boundary type-erased (one field such as `Conn.host` stores several
   concrete host types). Generics (`$T`) cannot replace them: C FFI
   (`void*` required) and the inversion fields erase by construction.
-  **Thread entries are the exception**: current core:thread ships
-  `create_and_start_with_poly_data` (`proc(data: $T)` — a typed
-  facade that still erases into `Thread.data`/`user_args` internally),
-  so every thread spawn site in src/ is to migrate to it once the
-  toolchain tracks a release newer than dev-2026-09. The few
-  theoretically generic cases (`Edit_Job` and
+  **Thread entries go through the typed facade**: every spawn site in
+  src/ (and the tests) uses `thread.create_and_start_with_poly_data`
+  (`proc(data: $T)`, with the `_poly_data2` form for two-argument
+  entries — a facade that still erases into `Thread.data`/`user_args`
+  internally); a new spawn site must not regress to the rawptr form.
+  Timer callbacks (`platform.clock_timer_add`) are C-callback APIs, not
+  thread entries — they keep the rawptr shape. The few theoretically
+  generic cases (`Edit_Job` and
   friends) would only move type safety to the call site, not through
   the framework.
 - **Struct field naming**: mutex fields are `mu` (not `mutex`), allocator
@@ -567,11 +574,18 @@ portable across all three.
   allocator, and the stranded backing surfaces as a leak WARN. Create
   dynamic arrays with `make([dynamic]T, 0, cap, a)` before appending: a
   made array carries its allocator, and later `append`s grow through it.
-- The same auto-init rule applies to **zero-value maps** (first insert grows
-  through `context.allocator`) — a long-lived struct that owns maps or
-  dynamics must `make` every collection on its own allocator in its init
-  (`tracker.fold_state_init` is the worked example; in tests the two
-  allocators coincide, so the bug only surfaces in production).
+- The same auto-init rule applies to **zero-value maps** (the first
+  insert — table creation — grows through `context.allocator`; once the
+  table exists the map carries that creating allocator, and every later
+  growth charges it, not the inserting thread's context) — a long-lived
+  struct that owns maps or dynamics must `make` every collection on its
+  own allocator in its init (`tracker.fold_state_init` is the worked
+  example; in tests the two allocators coincide, so the bug only
+  surfaces in production). A map insert whose allocation fails — the
+  first insert or a growth — is **silently dropped** (probe-verified on
+  dev-2026-10-nightly:84bc3fc: `len` unmoved, no error, no panic), so a
+  runtime-grown table must not be treated as owning an entry until the
+  insert is confirmed to have taken.
 - A plain `[]T` made with an explicit allocator carries nothing — freeing
   it needs `delete(x, that_allocator)`; `delete(x)` frees through
   `context.allocator` and is a bad free in any non-test caller.
@@ -619,11 +633,19 @@ portable across all three.
     binding
   - `builtins: $T` passed `[]Context_Def` binds T to the SLICE — write
     `builtins: []$T` to bind the element
+  - there is no anonymous struct embedding: a bare `TypeName,` in a
+    field list parses as a GROUPED field declaration sharing the next
+    field's type (`Svc_Rig, state: Opsvc_State` declares two
+    Opsvc_State fields) — embedding with promotion is a named `using`
+    field: `using rig: Svc_Rig,`
   - `append(&dyn_u8, some_slice)` is ambiguous — append strings or
     elements
-  - `fmt` treats `{` in any string it formats (including through
-    `%q`/testing.expect_value) as a parameter brace — build JSON with
-    plain concatenation and compare with `==`, not expect_value
+  - `fmt` treats `{` in a string it uses as a FORMAT as a parameter
+    brace — never splice brace-bearing text into an `expectf`/`fmt`
+    format string. Values compared through `testing.expect_value` ride
+    as `%v` arguments (core/testing passes both sides as arguments, not
+    formats), so they are safe; build JSON bodies with plain
+    concatenation regardless
   - `strings.join` returns an optional allocator error
   - `for c in some_string` iterates RUNES — index bytes (`s[i]`) when
     appending to a `[]u8` buffer

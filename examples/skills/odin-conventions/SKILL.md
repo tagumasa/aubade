@@ -62,3 +62,12 @@ Role overlays — applied on top of the base layer:
   local — `table := TOOLS` — or iterate them with a for-binding; the
   compiler rejects variable indexing straight into constant data
   ("Cannot index a constant").
+
+## Thread entries
+
+- Every thread spawn site uses `thread.create_and_start_with_poly_data`
+  (`proc(data: $T)`, the `_poly_data2` form for two-argument entries) —
+  never the rawptr `create_and_start_with_data`. Small argument bundles
+  go by value or as an argument pair, not through a heap-allocated box.
+  Timer callbacks (`platform.clock_timer_add`) are C-callback APIs, not
+  thread entries — they keep the `proc(data: rawptr)` shape.

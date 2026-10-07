@@ -4,11 +4,13 @@
 // through the typed client proxies.
 package tests
 
+import "base:intrinsics"
 import "core:encoding/json"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:testing"
+import "core:time"
 import "src:jsonrpc"
 import "src:jsonutil"
 import "src:platform"
@@ -86,6 +88,42 @@ json_int_field :: proc(v: json.Value, key: string) -> (i64, bool) {
 	return 0, false
 }
 
+// svc_symbol_quiesce_warm settles the pair's one-shot startup index warm-up
+// before a test writes fixtures, and re-arms the on-miss discovery walk.
+// daemon_run spawns the warm-up for every pair, and its whole-project crawl
+// races fixture writes two ways: a file observed inside a fixture's
+// truncate window indexes as an emptied outline — the crawl transaction
+// replaces the path's rows with nothing — and a walk whose directory
+// snapshot predates a fixture purges, at its end, the rows symbol_list
+// just committed. Either way the test's find answers 0 matches, and the
+// on-miss walk cannot recover it: the warm-up's claim release stamps the
+// last-walk time, arming the 2 s min-gap on the real clock every pair
+// runs on. After the warm-up finished no background walk runs again (it
+// is one-shot per daemon life, the refresh loop's first tick is a full
+// interval away, and the on-miss walk only fires from symbol_find), so
+// fixtures land on a quiet index. The never-walked sentinel (0) restores
+// the first miss's walk, which the discovery assertions depend on; the
+// in-flight poll precedes the reset because release stamps the last-walk
+// time before clearing the flag — a reset racing an unfinished release
+// would be overwritten. False (with the failure recorded) only on a
+// warm-up timeout.
+svc_symbol_quiesce_warm :: proc(t: ^testing.T, pair: ^Daemon_Pair) -> bool {
+	if !wait_index_warm(pair, 30_000) {
+		testing.expectf(t, false, "startup index warm-up did not complete")
+		return false
+	}
+	deadline := platform.mono_ms() + 10_000
+	for intrinsics.atomic_load_explicit(&pair.daemon.index_refresh_in_flight, .Acquire) {
+		if platform.mono_ms() >= deadline {
+			testing.expectf(t, false, "index warm-up never released its walk claim")
+			return false
+		}
+		time.sleep(2 * time.Millisecond)
+	}
+	intrinsics.atomic_store_explicit(&pair.daemon.index_refresh_last_ms, 0, .Release)
+	return true
+}
+
 @(test)
 svc_symbol_list_find_crawl :: proc(t: ^testing.T) {
 	pair := test_daemon(t, false)
@@ -93,6 +131,9 @@ svc_symbol_list_find_crawl :: proc(t: ^testing.T) {
 		return
 	}
 	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
 
 	svc_symbol_write_file(t, pair.tmp, "alpha.go", "package main\n\nfunc Alpha() int { return 1 }\n")
 	svc_symbol_write_file(t, pair.tmp, "sub/beta.go", "package sub\n\nfunc Beta() {}\n")
@@ -186,6 +227,9 @@ svc_symbol_find_refreshes_after_edit :: proc(t: ^testing.T) {
 		return
 	}
 	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
 
 	svc_symbol_write_file(t, pair.tmp, "alpha.go", "package main\n\nfunc Alpha() int { return 1 }\n")
 
@@ -238,6 +282,9 @@ svc_symbol_find_heals_disk_edit :: proc(t: ^testing.T) {
 		return
 	}
 	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
 
 	svc_symbol_write_file(t, pair.tmp, "ren.go", "package main\n\nfunc Keeper() int { return 1 }\n")
 
@@ -285,6 +332,9 @@ svc_symbol_find_failed_edit_leaves_index :: proc(t: ^testing.T) {
 		return
 	}
 	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
 
 	svc_symbol_write_file(t, pair.tmp, "stay.go", "package main\n\nfunc Stay() int { return 1 }\n")
 
@@ -319,6 +369,9 @@ svc_symbol_invalid_params :: proc(t: ^testing.T) {
 		return
 	}
 	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
 
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)

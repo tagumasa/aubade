@@ -20,6 +20,7 @@
 // a move never writes a second declaration of a name the target has.
 package svc
 
+import "base:runtime"
 import "core:mem"
 import "core:strings"
 import "src:editor"
@@ -129,10 +130,126 @@ edit_basis :: proc(ed: ^editor.Editor, rel: string, source: string, a := context
 	return read, true, nil
 }
 
+// edit_basis_in_arena moves an editor-allocator basis clone into `a` (the
+// request arena): the diff and the router's basis comparison both read the
+// bytes there, so the editor's clone is copied in and returned at once.
+// Call it only on edit_basis's owned_fallback arm.
+edit_basis_in_arena :: proc(basis: string, ed: ^editor.Editor, a: mem.Allocator) -> string {
+	cloned := strings.clone(basis, a)
+	delete(basis, ed.allocator)
+	return cloned
+}
+
 // Symbol_String_Edit is the editor face the range-only string edits
 // share: apply one string payload to the resolved symbol against its
 // parse basis.
 Symbol_String_Edit :: proc(e: ^editor.Editor, rel: string, s: ^symbol.Symbol, source: string, value: string) -> (editor.Editor_Err, string)
+
+// Symbol_Text_Edit is the off-editor twin: the same transformation applied
+// to caller-supplied source bytes (the two-writer compute's building
+// block). `lang` carries the docstring comment language ("" for the
+// range-only ops); the result is owned by `a`.
+Symbol_Text_Edit :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (text: string, err: editor.Editor_Err, msg: string)
+
+// string_edit_text_* bind the editor text variants onto the uniform
+// Symbol_Text_Edit shape (three thin adapters, one per payload family).
+string_edit_text_replace_body :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	_ = lang
+	return editor.editor_symbol_replace_body_text(e, source, s, value, a)
+}
+
+string_edit_text_insert_before :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	_ = lang
+	return editor.editor_symbol_insert_before_text(e, source, s, value, a)
+}
+
+string_edit_text_insert_after :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	_ = lang
+	return editor.editor_symbol_insert_after_text(e, source, s, value, a)
+}
+
+string_edit_text_insert_docstring :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	return editor.editor_symbol_insert_docstring_text(e, source, s, lang, value, a)
+}
+
+string_edit_text_delete_docstring :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	_ = value
+	return editor.editor_symbol_delete_docstring_text(e, source, s, lang, a)
+}
+
+string_edit_text_replace_docstring :: proc(e: ^editor.Editor, source: string, s: ^symbol.Symbol, lang: string, value: string, a: runtime.Allocator) -> (string, editor.Editor_Err, string) {
+	return editor.editor_symbol_replace_docstring_text(e, source, s, lang, value, a)
+}
+
+// String_Route_State is one routed string op's inputs. The compute
+// re-resolves on every attempt (a retry must land on the post-keystroke
+// text, not the attempt-one bytes).
+String_Route_State :: struct {
+	src:       ^TS_Source,
+	lsp_src:   ^LSP_Source,
+	ed:        ^editor.Editor,
+	name_path: string,
+	rel:       string,
+	op_name:   string,
+	value:     string,
+	text_edit: Symbol_Text_Edit,
+	keep_lang: bool, // docstring ops consume the fallback language clone
+	token:     ^platform.Cancel_Token,
+}
+
+// string_route_compute resolves the symbol against the document's current
+// state, applies the op's text twin to those bytes, and reduces the
+// whole-text transform to the one range edit that carries it. The basis
+// check in the router (compute bytes == admitted bytes) closes the
+// resolve-vs-admit race.
+string_route_compute :: proc(user: rawptr, a: mem.Allocator) -> ([]Edit_Doc_Changes, string, platform.Err) {
+	st := cast(^String_Route_State)user
+	match, _, source, lsp_lang, rerr := resolve_symbol(st.src, st.lsp_src, st.name_path, st.rel, a, st.token)
+	if rerr != nil {
+		return nil, "", rerr
+	}
+	lang := ""
+	if st.keep_lang {
+		lang, _ = symbol_docstring_lang(st.src, st.rel, lsp_lang, a)
+	} else if lsp_lang != "" {
+		delete(lsp_lang, a) // range-only op: the fallback's language clone is unused
+	}
+	basis, owned, berr := edit_basis(st.ed, st.rel, source, a)
+	if berr != nil {
+		return nil, "", berr
+	}
+	if owned {
+		// The fallback basis is an editor-allocator clone: the diff and the
+		// router's comparison both read it in the request arena.
+		basis = edit_basis_in_arena(basis, st.ed, a)
+	}
+	new_text, eerr, emsg := st.text_edit(st.ed, basis, match, lang, st.value, a)
+	if eerr != .None {
+		return nil, "", editor_err_map(st.op_name, eerr, emsg, a)
+	}
+	rng, mid, has := edit_range_of_diff(basis, new_text, a)
+	if !has {
+		return nil, "", nil // the op was a no-op on these bytes
+	}
+	edits := make([]Edit_Item, 1, a)
+	edits[0] = Edit_Item{rng = rng, new_text = mid}
+	changes := make([]Edit_Doc_Changes, 1, a)
+	changes[0] = Edit_Doc_Changes{rel_path = st.rel, edits = edits}
+	return changes, basis, nil
+}
+
+// string_route_owned runs one string op's routed arm: the state crosses
+// string_route_compute through the owner child's round trip when the
+// document is editor-owned. routed=true means the round trip owned the
+// outcome (err=nil on a confirmed apply, or nothing to change);
+// routed=false — unowned at the gate, or the owner vanished mid-route —
+// hands the outcome back and the caller falls through to its direct path.
+string_route_owned :: proc(st: ^String_Route_State, tw: ^Two_Writer, token: ^platform.Cancel_Token, a: mem.Allocator) -> (routed: bool, err: platform.Err) {
+	if !two_writer_owned(tw, st.rel) {
+		return false, nil
+	}
+	return two_writer_route(tw, st.rel, st.op_name, string_route_compute, st, token, a)
+}
 
 // symbol_docstring_lang picks the comment-syntax language for one
 // docstring op — the grammar's, or the fallback's for a grammar-less
@@ -165,10 +282,31 @@ symbol_edit_string_op :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
+	text_edit: Symbol_Text_Edit = nil,
 ) -> platform.Err {
 	rel_n := normalize_rel(rel, context.temp_allocator)
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
+	}
+	st := String_Route_State{
+		src       = src,
+		lsp_src   = lsp_src,
+		ed        = ed,
+		name_path = name_path,
+		rel       = rel_n,
+		op_name   = op_name,
+		value     = value,
+		text_edit = text_edit,
+		token     = token,
+	}
+	// The document's truth is the editor's unsaved buffer: when an lsp
+	// child owns it, the edit routes through the owner child's applyEdit,
+	// never a direct buffer write. routed=false (unowned, or the owner
+	// vanished mid-route) falls through to the direct path below.
+	routed, route_err := string_route_owned(&st, tw, token, a)
+	if routed {
+		return route_err
 	}
 	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
@@ -200,8 +338,9 @@ symbol_edit_replace_body :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
-	return symbol_edit_string_op(src, ed, name_path, rel, body, "replace_body", editor.editor_symbol_replace_body, lsp_src, a, token)
+	return symbol_edit_string_op(src, ed, name_path, rel, body, "replace_body", editor.editor_symbol_replace_body, lsp_src, a, token, tw, string_edit_text_replace_body)
 }
 
 symbol_edit_insert_before :: proc(
@@ -213,8 +352,9 @@ symbol_edit_insert_before :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
-	return symbol_edit_string_op(src, ed, name_path, rel, body, "insert_before", editor.editor_symbol_insert_before, lsp_src, a, token)
+	return symbol_edit_string_op(src, ed, name_path, rel, body, "insert_before", editor.editor_symbol_insert_before, lsp_src, a, token, tw, string_edit_text_insert_before)
 }
 
 symbol_edit_insert_after :: proc(
@@ -226,8 +366,9 @@ symbol_edit_insert_after :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
-	return symbol_edit_string_op(src, ed, name_path, rel, body, "insert_after", editor.editor_symbol_insert_after, lsp_src, a, token)
+	return symbol_edit_string_op(src, ed, name_path, rel, body, "insert_after", editor.editor_symbol_insert_after, lsp_src, a, token, tw, string_edit_text_insert_after)
 }
 
 symbol_edit_insert_docstring :: proc(
@@ -239,10 +380,29 @@ symbol_edit_insert_docstring :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
 	rel_n := normalize_rel(rel, context.temp_allocator)
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
+	}
+	st := String_Route_State{
+		src       = src,
+		lsp_src   = lsp_src,
+		ed        = ed,
+		name_path = name_path,
+		rel       = rel_n,
+		op_name   = "insert_docstring",
+		value     = comment,
+		text_edit = string_edit_text_insert_docstring,
+		keep_lang = true,
+		token     = token,
+	}
+	// routed=false (unowned, or the owner vanished mid-route) falls through
+	// to the direct path below.
+	routed, route_err := string_route_owned(&st, tw, token, a)
+	if routed {
+		return route_err
 	}
 	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
@@ -279,10 +439,28 @@ symbol_edit_delete_docstring :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
 	rel_n := normalize_rel(rel, context.temp_allocator)
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
+	}
+	st := String_Route_State{
+		src       = src,
+		lsp_src   = lsp_src,
+		ed        = ed,
+		name_path = name_path,
+		rel       = rel_n,
+		op_name   = "delete_docstring",
+		text_edit = string_edit_text_delete_docstring,
+		keep_lang = true,
+		token     = token,
+	}
+	// routed=false (unowned, or the owner vanished mid-route) falls through
+	// to the direct path below.
+	routed, route_err := string_route_owned(&st, tw, token, a)
+	if routed {
+		return route_err
 	}
 	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
@@ -318,10 +496,29 @@ symbol_edit_replace_docstring :: proc(
 	lsp_src: ^LSP_Source = nil,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> platform.Err {
 	rel_n := normalize_rel(rel, context.temp_allocator)
 	if derr, denied := state_target_denied(ed, rel_n, a); denied {
 		return derr
+	}
+	st := String_Route_State{
+		src       = src,
+		lsp_src   = lsp_src,
+		ed        = ed,
+		name_path = name_path,
+		rel       = rel_n,
+		op_name   = "replace_docstring",
+		value     = comment,
+		text_edit = string_edit_text_replace_docstring,
+		keep_lang = true,
+		token     = token,
+	}
+	// routed=false (unowned, or the owner vanished mid-route) falls through
+	// to the direct path below.
+	routed, route_err := string_route_owned(&st, tw, token, a)
+	if routed {
+		return route_err
 	}
 	match, _, source, lsp_lang, rerr := resolve_symbol(src, lsp_src, name_path, rel_n, a, token)
 	if rerr != nil {
@@ -361,6 +558,7 @@ symbol_edit_move :: proc(
 	mode: editor.Move_Mode,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> (summary: string, err: platform.Err) {
 	// Caller spellings of one file must collapse onto the canonical key
 	// before the same-file decision and the editor's buffer lookups:
@@ -375,6 +573,12 @@ symbol_edit_move :: proc(
 	}
 	if derr, denied := state_target_denied(ed, dst_rel, a); denied {
 		return "", derr
+	}
+	// The two-writer gate: an editor-owned endpoint must not take a direct
+	// write, and the move's two-file transaction is not routed through the
+	// owner child yet — an explicit refusal, never a silent buffer write.
+	if two_writer_owned(tw, src_rel) || two_writer_owned(tw, dst_rel) {
+		return "", wrapped_err(.Invalid, "symbol move does not route through an editor that holds the document open; close it there and retry", a)
 	}
 	source_lang := lang_for_file(src, src_rel)
 	if source_lang == "" {

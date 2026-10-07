@@ -1,15 +1,17 @@
 // Editor→services bridge: installs a Buffer_Listener on the editor and
 // forwards open/change/close into (a) didOpen/didChange/didClose on the
 // language server resolved for the file — through the same
-// Client_For_File_Proc port the LSP symbol source uses — (b) the L2
+// Client_For_File_Proc port the LSP symbol source uses — and (b) the L2
 // hot parse-tree cache (pin on open, incremental ts_tree_edit on change,
-// unpin on close), and (c) the symbol index: every change rewrites the
-// file's L0 rows so symbol_find answers track the committed bytes. Best
-// effort by design: a server that cannot start or a dead connection must
-// never fail the edit. The next change re-opens the document after a
-// server restart (a didChange for an unopened document degrades to a
-// didOpen with the current contents), and servers re-read files on
-// didOpen.
+// unpin on close). The L0 symbol index is fed lazily: the change path
+// writes no rows, and the first reader of a file's index rows rewrites
+// them from the editor's current bytes (the content-freshness heal on
+// the symbol_find read path), so a keystroke storm costs no parse and no
+// SQLite write while the document sits unread. Best effort by design: a
+// server that cannot start or a dead connection must never fail the
+// edit. The next change re-opens the document after a server restart (a
+// didChange for an unopened document degrades to a didOpen with the
+// current contents), and servers re-read files on didOpen.
 package svc
 
 import "base:runtime"
@@ -26,10 +28,6 @@ Editor_Sync :: struct {
 	port:         Client_For_File_Proc,
 	release:      Client_Release_Proc, // nil = the resolver pins nothing
 	hot:          ^ts.Hot_Trees, // nil = no L2 maintenance (tests)
-	// Post-edit index refresh (nil = none, the way test harnesses build
-	// the sync): every buffer change rewrites the file's L0 rows through
-	// the tree-sitter source.
-	ts_src:       ^TS_Source,
 	// Ledger of the buffer pins this sync applied (normalized rel_paths,
 	// owned clones): teardown never fires buffer-close notifications —
 	// editor_destroy releases buffers silently — so the ledger is the only
@@ -48,14 +46,12 @@ editor_sync_init :: proc(
 	a := context.allocator,
 	hot: ^ts.Hot_Trees = nil,
 	release: Client_Release_Proc = nil,
-	ts_src: ^TS_Source = nil,
 ) {
 	s^ = {
 		project_root = strings.clone(project_root, a),
 		port         = port,
 		release      = release,
 		hot          = hot,
-		ts_src       = ts_src,
 		pinned       = make([dynamic]string, 0, 8, a),
 		user         = user,
 		allocator    = a,
@@ -187,27 +183,10 @@ sync_on_change :: proc(user: rawptr, rel_path: string, contents: string) {
 			_ = lsp.doc_open(client, uri, language_id, contents)
 		}
 	}
-	sync_index_change(s, rel_path, contents)
-}
-
-// sync_index_change rewrites the file's L0 rows for the contents the
-// editor just committed. It runs inside the editor's per-file notification
-// — the file lock is held — so it must not re-enter the editor:
-// ts_source_index_contents parses the bytes handed to it and never reads
-// the file itself. Tree-sitter-served languages only: the LSP producer
-// resolves contents through editor_read_file, which would take this same
-// file's lock — languages without a grammar stay with the read-side
-// freshness heal and the symbolic-op paths. Best effort by design: a
-// failure leaves the rows to that heal or the next crawl.
-sync_index_change :: proc(s: ^Editor_Sync, rel_path: string, contents: string) {
-	if s.ts_src == nil {
-		return
-	}
-	rel := normalize_rel(rel_path, context.temp_allocator)
-	if rel == "" {
-		return
-	}
-	_, _ = ts_source_index_contents(s.ts_src, rel, contents)
+	// No L0 write here, deliberately: the change path stops at the hot
+	// tree, and the file's index rows are rewritten by its first reader
+	// (the symbol_find content-freshness heal). Consecutive changes cost
+	// no parse and no SQLite write.
 }
 
 sync_on_close :: proc(user: rawptr, rel_path: string) {

@@ -130,6 +130,7 @@ foreign ts {
 	node_end_point :: proc(self: Node) -> Point ---
 	node_is_named :: proc(self: Node) -> bool ---
 	node_is_error :: proc(self: Node) -> bool ---
+	node_is_missing :: proc(self: Node) -> bool ---
 	node_is_null :: proc(self: Node) -> bool ---
 	node_named_child :: proc(self: Node, child_index: u32) -> Node ---
 	node_named_child_count :: proc(self: Node) -> u32 ---

@@ -13,9 +13,11 @@ language servers run with the invoking user's privileges.
 
 ## Process model and local IPC
 
-One child process per MCP client session speaks MCP over stdio; one parent
+Two child kinds speak over stdio — one process per MCP client session
+(MCP) and one per editor window (LSP 3.17, `aubade lsp`); one parent
 daemon per project (flock-guarded singleton) owns the caches, language
-servers, and database. The child talks to the parent over loopback TCP:
+servers, and database. Both children talk to the parent over loopback
+TCP:
 
 - The listen port is always ephemeral (`bind(0)`) — there is no port
   configuration surface to collide with or scan for.

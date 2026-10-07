@@ -602,7 +602,7 @@ Retry_Pair :: struct {
 retry_conn_pump :: proc(conn: ^jsonrpc.Conn) -> (^thread.Thread, ^Conn_Box) {
 	box := new(Conn_Box, context.allocator)
 	box^ = {conn = conn}
-	th := thread.create_and_start_with_data(box, conn_reader_entry, self_cleanup = false)
+	th := thread.create_and_start_with_poly_data(box, conn_reader_entry, self_cleanup = false)
 	return th, box
 }
 

@@ -17,8 +17,7 @@ Send_Job :: struct {
 	done:   chan.Chan(bool),
 }
 
-send_blocked_until_closed :: proc(data: rawptr) {
-	job := cast(^Send_Job)data
+send_blocked_until_closed :: proc(job: ^Send_Job) {
 	// Blocks while the queue is full; must return false once closed.
 	_ = chan.send(chan.as_send(job.frames), []u8{3})
 	chan.send(chan.as_send(job.done), true)
@@ -42,7 +41,7 @@ chan_close_wakes_blocked_sender :: proc(t: ^testing.T) {
 	defer free(job, context.allocator)
 	job^ = {frames = frames, done = done}
 
-	th := thread.create_and_start_with_data(job, send_blocked_until_closed, self_cleanup = false)
+	th := thread.create_and_start_with_poly_data(job, send_blocked_until_closed, self_cleanup = false)
 	chan.close(send) // the wake under test
 	got, ok := chan.recv(chan.as_recv(done))
 	testing.expect(t, ok && got, "blocked sender must wake on close")

@@ -107,6 +107,18 @@ kind_name :: proc(k: Symbol_Kind) -> string {
 	}
 }
 
+// kind_from_name recovers a kind from kind_name's spelling. The scan runs
+// over the enum against kind_name itself, so the two directions can never
+// drift; a name nothing renders (including "") is .Unknown.
+kind_from_name :: proc(name: string) -> Symbol_Kind {
+	for k in Symbol_Kind {
+		if kind_name(k) == name {
+			return k
+		}
+	}
+	return .Unknown
+}
+
 // Symbol is one node of the unified symbol tree. Optional fields are
 // nil-able pointers (range/selection_range/location) or a sentinel
 // (overload_idx = -1 means "no index", has_body gates body).

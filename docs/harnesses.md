@@ -1,7 +1,9 @@
 # Harness Setup (AI clients)
 
-Aubade speaks MCP over stdio, so any MCP-capable client can run it.
-First-class registration is a single command:
+Aubade speaks MCP over stdio, so any MCP-capable AI client can run it
+(code editors are served over LSP instead — see
+[lsp-server.md](lsp-server.md)). First-class registration is a single
+command:
 
 ```bash
 aubade setup claudecode     # or: codex / opencode / qwen / zcode

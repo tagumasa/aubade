@@ -49,7 +49,27 @@ handle_langserver_start :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.
 	if serr := langserver.manager_start(d.ls, lang, ctx.allocator, ctx.token); serr != nil {
 		return nil, serr
 	}
-	return svc.langserver_result(ctx.allocator), nil
+	// The child-triggered start learns its caps synchronously:
+	// manager_start returns after the handshake, so the snapshot carries
+	// the fresh server. A concurrent stop between the start and this
+	// snapshot is a legitimate race — the answer reads both bits false
+	// rather than failing. Each snapshot entry's hand-out pin is released
+	// only after its caps read (the pin is what keeps the client alive).
+	references, declaration := false, false
+	running := langserver.manager_running_clients(d.ls, ctx.allocator)
+	defer delete(running)
+	for rc in running {
+		if rc.language_id == lang {
+			caps := lsp.client_caps(rc.client)
+			references = caps.references
+			declaration = caps.declaration
+		}
+		langserver.manager_release(d.ls, rc.client)
+	}
+	out := jsonutil.json_object(2, ctx.allocator)
+	jsonutil.obj_set(&out, "references", jsonutil.json_bool(references))
+	jsonutil.obj_set(&out, "declaration", jsonutil.json_bool(declaration))
+	return json.Value(json.Object(out)), nil
 }
 
 handle_langserver_stop :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {

@@ -1,0 +1,8 @@
+# The packaged vsix ships out/extension.js, README.md and package.json only.
+src/**
+node_modules/**
+out/**/*.map
+tsconfig.json
+package-lock.json
+package-vsix.sh
+.gitignore

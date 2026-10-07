@@ -14,6 +14,7 @@
 // edit scope.
 package editor
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "src:platform"
@@ -172,8 +173,8 @@ count_trailing_newlines :: proc(text: string) -> int {
 // ---------------------------------------------------------------------------
 
 // Insert_Lines_Job inserts whole lines at a line index — the ctx form of
-// the single-action insert the before/above edits used to go through
-// edit_file for, so they share the moved-source guard.
+// the single-action insert, sharing the moved-source guard with the
+// before/above edits.
 Insert_Lines_Job :: struct {
 	line: int,
 	text: string, // borrowed for the call's duration
@@ -274,23 +275,13 @@ editor_symbol_replace_body :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 // insert before/after
 // ---------------------------------------------------------------------------
 
-// editor_symbol_insert_after appends `body` directly below the symbol,
-// normalising surrounding empty lines. `source` is the bytes the symbol's
-// positions were resolved against; the transaction refuses when the
-// buffer moved since.
-editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
-	if s.has_body && s.body == s.name {
-		return .Invalid_Symbol, strings.concatenate({
-			"cannot insert after this symbol (not a function, class or method): ",
-			s.name, ". Consider using insert_before_symbol instead",
-		}, context.temp_allocator)
-	}
-
-	_, _, el, _, ok := symbol_positions(s)
-	if !ok {
-		return .Position, "body end position not available"
-	}
-
+// insert_after_payload builds the text an insert-after writes below the
+// definition: newline-terminate the body, keep the caller's leading blank
+// lines up to the separated kind's one-blank-line floor, strip the tail
+// blank lines, and terminate with a single newline. The transactional arm
+// and the routed compute arm both build through this proc so the two
+// paths provably write the same bytes; scratch on context.temp_allocator.
+insert_after_payload :: proc(s: ^symbol.Symbol, body: string) -> string {
 	text := body
 	if !strings.has_suffix(text, "\n") {
 		text = strings.concatenate({text, "\n"}, context.temp_allocator)
@@ -308,20 +299,16 @@ editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symb
 	}
 	text = strings.trim_right(text, "\r\n")
 	text = strings.concatenate({text, "\n"}, context.temp_allocator)
-
-	job := Insert_After_Job{line = el + 1, text = text}
-	return editor_edit_ctx(e, rel_path, {apply = insert_after_step, user = &job, source = source})
+	return text
 }
 
-// editor_symbol_insert_before prepends `body` directly above the symbol.
-// `source` is the bytes the symbol's positions were resolved against; the
-// transaction refuses when the buffer moved since.
-editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
-	sl, _, _, _, ok := symbol_positions(s)
-	if !ok {
-		return .Position, "body start position not available"
-	}
-
+// insert_before_payload builds the text an insert-before writes above the
+// definition: strip the body's trailing whitespace, newline-terminate it,
+// and keep the caller's trailing blank lines (minus the terminator) up to
+// the separated kind's one-blank-line floor. The transactional arm and the
+// routed compute arm both build through this proc so the two paths
+// provably write the same bytes; scratch on context.temp_allocator.
+insert_before_payload :: proc(s: ^symbol.Symbol, body: string) -> string {
 	original_trailing := count_trailing_newlines(body) - 1
 	if original_trailing < 0 {
 		original_trailing = 0
@@ -338,8 +325,40 @@ editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Sym
 		suffix := strings.repeat("\n", num_trailing, context.temp_allocator)
 		text = strings.concatenate({text, suffix}, context.temp_allocator)
 	}
+	return text
+}
 
-	job := Insert_Lines_Job{line = sl, text = text}
+// editor_symbol_insert_after appends `body` directly below the symbol,
+// normalising surrounding empty lines. `source` is the bytes the symbol's
+// positions were resolved against; the transaction refuses when the
+// buffer moved since.
+editor_symbol_insert_after :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
+	if s.has_body && s.body == s.name {
+		return .Invalid_Symbol, strings.concatenate({
+			"cannot insert after this symbol (not a function, class or method): ",
+			s.name, ". Consider using insert_before_symbol instead",
+		}, context.temp_allocator)
+	}
+
+	_, _, el, _, ok := symbol_positions(s)
+	if !ok {
+		return .Position, "body end position not available"
+	}
+
+	job := Insert_After_Job{line = el + 1, text = insert_after_payload(s, body)}
+	return editor_edit_ctx(e, rel_path, {apply = insert_after_step, user = &job, source = source})
+}
+
+// editor_symbol_insert_before prepends `body` directly above the symbol.
+// `source` is the bytes the symbol's positions were resolved against; the
+// transaction refuses when the buffer moved since.
+editor_symbol_insert_before :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, body: string) -> (err: Editor_Err, msg: string) {
+	sl, _, _, _, ok := symbol_positions(s)
+	if !ok {
+		return .Position, "body start position not available"
+	}
+
+	job := Insert_Lines_Job{line = sl, text = insert_before_payload(s, body)}
 	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
 }
 
@@ -376,6 +395,18 @@ delete_docstring_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_Er
 // refusal message.
 DOCSTRING_UNMARKED_MSG :: "comment text is written verbatim and carries no comment marker for this file (include the language's marker, e.g. // or #)"
 
+// docstring_ensure_newline newline-terminates comment text that lacks its
+// own trailing newline: a docstring write lands as whole lines above the
+// definition, so the text must terminate its last line. Shared by the
+// transactional arms and the routed compute arm so both provably write
+// the same bytes; scratch on context.temp_allocator.
+docstring_ensure_newline :: proc(text: string) -> string {
+	if strings.has_suffix(text, "\n") {
+		return text
+	}
+	return strings.concatenate({text, "\n"}, context.temp_allocator)
+}
+
 editor_symbol_insert_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.Symbol, source: string, lang: string, comment: string) -> (err: Editor_Err, msg: string) {
 	sl, _, _, _, ok := symbol_positions(s)
 	if !ok {
@@ -387,11 +418,7 @@ editor_symbol_insert_docstring :: proc(e: ^Editor, rel_path: string, s: ^symbol.
 	if !comment_text_marked(comment, lang) {
 		return .Invalid, DOCSTRING_UNMARKED_MSG
 	}
-	text := comment
-	if !strings.has_suffix(text, "\n") {
-		text = strings.concatenate({text, "\n"}, context.temp_allocator)
-	}
-	job := Insert_Lines_Job{line = sl, text = text}
+	job := Insert_Lines_Job{line = sl, text = docstring_ensure_newline(comment)}
 	return editor_edit_ctx(e, rel_path, {apply = insert_lines_step, user = &job, source = source})
 }
 
@@ -425,11 +452,7 @@ replace_docstring_step :: proc(ef: ^Edited_File, user: rawptr) -> (err: Editor_E
 	if strings.trim_space(job.comment) == "" {
 		return .None, ""
 	}
-	text := job.comment
-	if !strings.has_suffix(text, "\n") {
-		text = strings.concatenate({text, "\n"}, context.temp_allocator)
-	}
-	return edited_insert_text(ef, comment_line, 0, text)
+	return edited_insert_text(ef, comment_line, 0, docstring_ensure_newline(job.comment))
 }
 
 // editor_symbol_replace_docstring swaps the preceding comment block for
@@ -717,4 +740,132 @@ editor_symbol_move :: proc(
 	return strings.concatenate({
 		"Successfully ", verb, " symbol \"", name_path, "\" from ", source_rel, " to ", target_rel,
 	}, context.temp_allocator), .None, ""
+}
+
+// ---------------------------------------------------------------------------
+// Off-editor scratch application (the two-writer compute)
+// ---------------------------------------------------------------------------
+
+// editor_job_text applies `job` to a scratch snapshot of `source` and
+// returns the transformed text, WITHOUT touching any real buffer: the
+// two-writer compute runs an op's job locally to learn the whole-text
+// transform it describes (old = source, new = the result), which the
+// router then reduces to one range edit and routes through the owner
+// editor (svc/two_writer). The job's steps are deterministic in the text
+// they see — the same bytes a live transaction would have shown it. The
+// result is owned by `a`: the scratch buffer clones into `a` on init and
+// every step re-clones into it (file_buffer_set_contents), so the return
+// hands over the buffer's own bytes — the buffer is a local never
+// destroyed, and its lines/line_seps scratch dies with `a`. The job steps
+// scratch on the calling thread's context.temp_allocator (run on a frame
+// whose temp is bounded).
+editor_job_text :: proc(source: string, job: Edit_Job, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	buf: File_Buffer
+	file_buffer_init(&buf, "", source, a)
+	ef := Edited_File{buf = &buf}
+	if ferr, fmsg := job.apply(&ef, job.user); ferr != .None {
+		return "", ferr, fmsg
+	}
+	return buf.contents, .None, ""
+}
+
+// ---------------------------------------------------------------------------
+// Text variants of the symbol edits (the routed arms' compute half)
+// ---------------------------------------------------------------------------
+
+// Each variant applies the same transformation its buffer twin applies,
+// but to caller-supplied source bytes through editor_job_text — the
+// two-writer compute's building block. The buffer twins stay the
+// transactional path; the pairs share the per-op job shapes and the
+// per-op payload builders above.
+
+editor_symbol_replace_body_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, body: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, sc, el, ec, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body start position not available"
+	}
+	trimmed := strings.trim_space(body)
+	normalised := normalise_line_endings(e, trimmed, context.temp_allocator)
+	job := Replace_Body_Job{sl = sl, sc = sc, el = el, ec = ec, body = normalised}
+	return editor_job_text(source, {apply = replace_body_step, user = &job, source = source}, a)
+}
+
+editor_symbol_insert_after_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, body: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	if s.has_body && s.body == s.name {
+		return "", .Invalid_Symbol, strings.concatenate({
+			"cannot insert after this symbol (not a function, class or method): ",
+			s.name, ". Consider using insert_before_symbol instead",
+		}, context.temp_allocator)
+	}
+	_, _, el, _, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body end position not available"
+	}
+	job := Insert_After_Job{line = el + 1, text = insert_after_payload(s, body)}
+	return editor_job_text(source, {apply = insert_after_step, user = &job, source = source}, a)
+}
+
+editor_symbol_insert_before_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, body: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, _, _, _, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body start position not available"
+	}
+	job := Insert_Lines_Job{line = sl, text = insert_before_payload(s, body)}
+	return editor_job_text(source, {apply = insert_lines_step, user = &job, source = source}, a)
+}
+
+editor_symbol_insert_docstring_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, lang: string, comment: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, _, _, _, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body start position not available"
+	}
+	if strings.trim_space(comment) == "" {
+		// A no-op: the twin returns success unchanged. Still clone — the
+		// result contract hands back `a`-owned bytes, and `source` is the
+		// caller's.
+		return strings.clone(source, a), .None, ""
+	}
+	if !comment_text_marked(comment, lang) {
+		return "", .Invalid, DOCSTRING_UNMARKED_MSG
+	}
+	job := Insert_Lines_Job{line = sl, text = docstring_ensure_newline(comment)}
+	return editor_job_text(source, {apply = insert_lines_step, user = &job, source = source}, a)
+}
+
+editor_symbol_delete_docstring_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, lang: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, _, _, _, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body start position not available"
+	}
+	job := Delete_Docstring_Job{sl = sl, lang = lang}
+	return editor_job_text(source, {apply = delete_docstring_step, user = &job, source = source}, a)
+}
+
+editor_symbol_replace_docstring_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, lang: string, comment: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, _, _, _, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body start position not available"
+	}
+	if strings.trim_space(comment) != "" && !comment_text_marked(comment, lang) {
+		return "", .Invalid, DOCSTRING_UNMARKED_MSG
+	}
+	job := Replace_Docstring_Job{sl = sl, lang = lang, comment = comment}
+	return editor_job_text(source, {apply = replace_docstring_step, user = &job, source = source}, a)
+}
+
+editor_symbol_delete_text :: proc(e: ^Editor, source: string, s: ^symbol.Symbol, include_comments: bool, lang: string, a: runtime.Allocator) -> (text: string, err: Editor_Err, msg: string) {
+	sl, sc, el, ec, ok := symbol_positions(s)
+	if !ok {
+		return "", .Position, "body positions not available"
+	}
+	if include_comments {
+		el, ec = el+1, 0
+	}
+	job := Delete_Symbol_Job{
+		start_line = sl, start_col = sc,
+		end_line = el, end_col = ec,
+		with_comments = include_comments,
+		lang = lang,
+	}
+	return editor_job_text(source, {apply = delete_symbol_step, user = &job, source = source}, a)
 }

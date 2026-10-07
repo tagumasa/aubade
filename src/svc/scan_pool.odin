@@ -117,7 +117,7 @@ scan_run :: proc(
 		context.allocator = a
 		handles := make([]^thread.Thread, n, a)
 		for i in 0..<n {
-			handles[i] = thread.create_and_start_with_data(
+			handles[i] = thread.create_and_start_with_poly_data(
 				ws[i], scan_worker_main, self_cleanup = false, name = "aubade-scan",
 			)
 		}
@@ -150,8 +150,7 @@ scan_auto_workers :: proc(count: int) -> int {
 // below (own arenas, own context.temp_allocator) makes the inline path
 // identical to a spawned one, which is what keeps one body
 // implementation for both.
-scan_worker_main :: proc(data: rawptr) {
-	w := cast(^Scan_Worker)data
+scan_worker_main :: proc(w: ^Scan_Worker) {
 	p := w.pool
 	mem.dynamic_arena_init(&w.scratch, p.allocator)
 	mem.dynamic_arena_init(&w.result, p.allocator)

@@ -733,8 +733,14 @@ file_read :: proc(
 // file_write creates or overwrites rel with content, creating missing
 // parent directories. The payload goes through the editor's save (project
 // encoding + line endings); any open buffer for the target is dropped so
-// subsequent reads see the new content.
-file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allocator) -> (overwrote: bool, err: platform.Err) {
+// subsequent reads see the new content. A document an lsp child owns
+// routes instead: one version-pinned whole-range applyEdit through
+// the owner child, the disk commit staying the editor's save — the routed
+// answer carries the same overwrote fact the direct path would have. The
+// routed round trip honors `token` (nil where the caller has none, like
+// the hostless constructions); it sits last, the position the sibling
+// route signatures give their tokens.
+file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allocator, tw: ^Two_Writer = nil, token: ^platform.Cancel_Token = nil) -> (overwrote: bool, err: platform.Err) {
 	abs, perr, preason := editor.safe_path(ed, rel)
 	if perr != .None {
 		return false, wrapped_err(
@@ -756,6 +762,14 @@ file_write :: proc(ed: ^editor.Editor, rel: string, content: string, a: mem.Allo
 			)
 		}
 		overwrote = true
+	}
+	if tw != nil && two_writer_owned(tw, rel) {
+		routed, rerr := two_writer_write_file(tw, rel, content, token, a)
+		if routed {
+			return overwrote, rerr
+		}
+		// Owned no more (raced a close/disconnect): the direct write below
+		// is the resumed non-open path.
 	}
 	parent, _ := filepath.split(abs)
 	if parent != "" {

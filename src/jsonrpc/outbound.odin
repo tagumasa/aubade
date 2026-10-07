@@ -65,7 +65,7 @@ conn_start_outbound :: proc(c: ^Conn, frames_cap: int, bytes_cap: int) -> bool {
 	// would otherwise hand teardown an unfreeable handle.
 	thread_alloc := context.allocator
 	context.allocator = out.allocator
-	out.thread = thread.create_and_start_with_data(
+	out.thread = thread.create_and_start_with_poly_data(
 		out, outbound_thread_main, self_cleanup = false, name = "jsonrpc-outbound",
 	)
 	context.allocator = thread_alloc
@@ -126,8 +126,7 @@ outbound_post :: proc(c: ^Conn, body: string, deadline_ms: i64) -> bool {
 	}
 }
 
-outbound_thread_main :: proc(data: rawptr) {
-	out := cast(^Outbound)data
+outbound_thread_main :: proc(out: ^Outbound) {
 	c := out.conn
 	for {
 		sync.mutex_lock(&out.mu)

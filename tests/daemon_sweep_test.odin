@@ -16,8 +16,7 @@ import "src:daemon"
 import "src:platform"
 import "src:store"
 
-sweep_loop_test_entry :: proc(data: rawptr) {
-	d := cast(^daemon.Daemon)data
+sweep_loop_test_entry :: proc(d: ^daemon.Daemon) {
 	daemon.sweep_loop(d)
 }
 
@@ -70,7 +69,7 @@ daemon_daily_sweep_fires :: proc(t: ^testing.T) {
 	d.root = &root
 	d.db = db
 
-	sweeper := thread.create_and_start_with_data(d, sweep_loop_test_entry, self_cleanup = false, name = "sweep-test")
+	sweeper := thread.create_and_start_with_poly_data(d, sweep_loop_test_entry, self_cleanup = false, name = "sweep-test")
 	defer {
 		// Fire, then advance: the sweeper waits on the virtual clock's
 		// cond in 250 ms slices, and only an advance (not the fire) wakes

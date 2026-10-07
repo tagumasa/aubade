@@ -213,7 +213,7 @@ handle_file_write :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value,
 		return nil, cerr
 	}
 
-	overwrote, werr := svc.file_write(d.ed, rel, content, ctx.allocator)
+	overwrote, werr := svc.file_write(d.ed, rel, content, ctx.allocator, d.edit_tw, ctx.token)
 	if werr != nil {
 		return nil, werr
 	}

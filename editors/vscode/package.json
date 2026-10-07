@@ -1,0 +1,55 @@
+{
+  "name": "aubade",
+  "displayName": "Aubade",
+  "description": "Thin launcher for the aubade LSP server: semantic tokens and syntax diagnostics for the bundled tree-sitter grammars, plus relayed language-server intelligence.",
+  "version": "0.1.0",
+  "publisher": "tagumasa",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tagumasa/aubade"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Aubade",
+      "properties": {
+        "aubade.path": {
+          "type": "string",
+          "default": "aubade",
+          "description": "Path to the aubade binary to launch. The extension runs `<aubade.path> lsp` per workspace folder; the binary must be a v1.1 or newer build."
+        },
+        "aubade.diagnostics.disabledLanguages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Language IDs for which aubade suppresses its own diagnostics (example: `[\"go\"]`). Use this for languages where a dedicated language-server extension already publishes diagnostics, so squiggles are not duplicated."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "compile": "npm run typecheck && npm run bundle"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.91.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vscode-languageclient": "^10.1.2"
+  }
+}

@@ -920,3 +920,88 @@ client_web_search :: proc(conn: ^jsonrpc.Conn, query: string, count: int, range_
 	}
 	return client_call(conn, METHOD_WEB_SEARCH, json.Value(json.Object(params)), arena, deadline_ms, token)
 }
+
+// --- doc sync -------------------------------------------------------------------
+
+client_doc_open :: proc(
+	conn: ^jsonrpc.Conn,
+	rel: string,
+	language_id: string,
+	version: i32,
+	content: string,
+	arena: mem.Allocator,
+	deadline_ms: i64,
+	token: ^platform.Cancel_Token = nil,
+	apply_edit: bool = false,
+	document_changes: bool = false,
+) -> Client_Call {
+	params := jsonutil.json_object(6, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	jsonutil.obj_set(&params, "language_id", jsonutil.json_string(language_id))
+	jsonutil.obj_set(&params, "version", jsonutil.json_int(i64(version)))
+	jsonutil.obj_set(&params, "content", jsonutil.json_string(content))
+	// The editor's applyEdit capability bits: the apply form is fixed at
+	// the editor's initialize, and the child re-declares it here, where
+	// the daemon link already exists. Absent bits keep the open unowned for
+	// routing — the daemon refuses edits to such documents at its gate
+	// instead of sending an apply the editor cannot take.
+	jsonutil.obj_set(&params, "apply_edit", jsonutil.json_bool(apply_edit))
+	jsonutil.obj_set(&params, "document_changes", jsonutil.json_bool(document_changes))
+	return client_call(conn, METHOD_DOC_OPEN, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+client_doc_change :: proc(
+	conn: ^jsonrpc.Conn,
+	rel: string,
+	version: i32,
+	content: string,
+	arena: mem.Allocator,
+	deadline_ms: i64,
+	token: ^platform.Cancel_Token = nil,
+) -> Client_Call {
+	params := jsonutil.json_object(3, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	jsonutil.obj_set(&params, "version", jsonutil.json_int(i64(version)))
+	jsonutil.obj_set(&params, "content", jsonutil.json_string(content))
+	return client_call(conn, METHOD_DOC_CHANGE, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+client_doc_close :: proc(conn: ^jsonrpc.Conn, rel: string, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	params := jsonutil.json_object(1, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	return client_call(conn, METHOD_DOC_CLOSE, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+client_doc_highlights :: proc(conn: ^jsonrpc.Conn, rel: string, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	params := jsonutil.json_object(1, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	return client_call(conn, METHOD_DOC_HIGHLIGHTS, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+client_doc_diagnostics :: proc(conn: ^jsonrpc.Conn, rel: string, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	params := jsonutil.json_object(1, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	return client_call(conn, METHOD_DOC_DIAGNOSTICS, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+// --- two-writer edit apply ------------------------------------------------------
+
+// client_edit_apply sends svc.edit/apply to an lsp child: the two-writer
+// round trip's request leg. `document_changes` is the rendered
+// TextDocumentEdit array (two_writer_changes_json); the result carries the
+// editor's {applied, reason?} verdict.
+client_edit_apply :: proc(
+	conn: ^jsonrpc.Conn,
+	document_changes: json.Value,
+	label: string,
+	arena: mem.Allocator,
+	deadline_ms: i64,
+	token: ^platform.Cancel_Token = nil,
+) -> Client_Call {
+	params := jsonutil.json_object(2, arena)
+	if label != "" {
+		jsonutil.obj_set(&params, "label", jsonutil.json_string(label))
+	}
+	jsonutil.obj_set(&params, "document_changes", document_changes)
+	return client_call(conn, METHOD_EDIT_APPLY, json.Value(json.Object(params)), arena, deadline_ms, token)
+}

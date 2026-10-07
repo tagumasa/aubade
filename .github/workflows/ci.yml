@@ -13,26 +13,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-26.04-arm, macos-latest, macos-15-intel, windows-latest]
+        os: [ubuntu-latest, ubuntu-26.04-arm, macos-latest, windows-latest]
     steps:
       # lexbor (third_party/lexbor) is a git submodule the build compiles
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      # The nightly distribution replaces assets under the same date key
-      # (verified: the listed sha1 no longer matches the served object),
-      # so consecutive runs can silently test different compilers — one
-      # run linked a bare `libSystem.dylib` operand that no shipped core
-      # source contains. The dev-YYYY-MM GitHub releases are frozen
-      # assets; dev-2026-09 is exactly dev-2026-09-nightly:a2fb372, the
-      # build this repository is developed against. Re-pin deliberately
-      # when bumping the toolchain.
-      - name: Set up Odin (dev-2026-09)
+      # The nightly distribution replaces assets under the same date key,
+      # so consecutive runs can silently test different compilers; the
+      # dev-YYYY-MM releases are frozen assets. dev-2026-10 is exactly
+      # dev-2026-10-nightly:84bc3fc, the build this repository is developed
+      # against. Re-pin deliberately when bumping the toolchain.
+      - name: Set up Odin (dev-2026-10)
         uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release: dev-2026-09
+          release: dev-2026-10
 
       # Hard gate: anything other than the pinned toolchain fails the job
       # here. The setup action's failure modes (missing token, missing
@@ -40,18 +37,16 @@ jobs:
       # revision, which reintroduces exactly the moving-compiler problem
       # the pin exists to prevent — a fallback must be visible, not
       # discovered from link errors three steps later.
-      - name: Assert Odin toolchain (dev-2026-09-nightly:a2fb372)
+      - name: Assert Odin toolchain (dev-2026-10-nightly:84bc3fc)
         shell: bash
         run: |
           odin version
-          odin version | grep -q 'dev-2026-09-nightly:a2fb372'
+          odin version | grep -q 'dev-2026-10-nightly:84bc3fc'
 
       # Odin invokes `clang` from PATH for every link. The setup action
       # prepends Homebrew LLVM directories to PATH on darwin and the
       # runner's toolchain layout changes over time, so which clang answers
-      # is environment state we do not control — and the compiler itself
-      # provably never passes a bare libSystem.dylib operand (its darwin
-      # defaults are `-lm` plus `-l`-style foreign imports). Odin honors
+      # is environment state we do not control. Odin honors
       # ODIN_CLANG_PATH; pin it to the Apple toolchain's own clang and log
       # the toolchain facts for diagnosis.
       - name: Pin Odin's linker to the Apple toolchain (macOS)
@@ -85,8 +80,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # vcpkg's curl port has no [schannel] feature any more —
-          # Schannel is its default TLS backend on Windows.
+          # vcpkg's curl port builds Schannel as its default TLS backend
+          # on Windows — there is no [schannel] feature to request.
           vcpkg install curl:x64-windows-static-md
           $odinDir = Split-Path (Split-Path (Get-Command odin).Source)
           New-Item -ItemType Directory -Force "$odinDir\vendor\curl\lib" | Out-Null
@@ -130,3 +125,53 @@ jobs:
 
       - name: Build binary
         run: just build-binary
+
+      # Real-binary E2E on every leg — the lsp face is exactly the part
+      # whose platform behavior (stdio framing, process tree, teardown)
+      # differs per OS, so the ARM and Windows legs are the point. The
+      # driver spawns ./aubade (aubade.exe on Windows) and needs no
+      # language server: its fake LS runs on the driver's own interpreter
+      # (sys.executable) — python3 on the unix legs, the [windows]
+      # e2e-lspserver variant's `python` on the Windows leg. The driver's
+      # internal deadlines cannot reach a wedged pipe read, so the step
+      # timeout is the hang kill-line.
+      - name: LSP server E2E
+        timeout-minutes: 10
+        run: just e2e-lspserver
+
+  # The vsix is OS-independent TypeScript — esbuild bundles the launcher
+  # and vscode-languageclient into one out/extension.js with no native
+  # pieces — so a single linux leg proves the package builds. The E2E
+  # step in the odin job above is matrix-wide for the same reason this
+  # is not: what it exercises is the aubade binary itself, whose
+  # behavior is what differs per OS.
+  vscode-extension:
+    name: VSCode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to a major like the Odin toolchain above: the runner
+      # image's node moves under us otherwise.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # `just` is not preinstalled on GitHub-hosted runner images (see
+      # the odin job).
+      - name: Set up just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # package-vsix.sh resolves npm from PATH (setup-node put it there)
+      # and bundles vscode-languageclient away with --no-dependencies,
+      # so there is nothing platform-specific to provision.
+      - name: Package extension
+        run: just vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: editors/vscode/*.vsix

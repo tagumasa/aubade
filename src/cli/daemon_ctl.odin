@@ -85,19 +85,13 @@ resolve_control_target :: proc(cmd: string, g: ^Globals) -> (endpoint_path: stri
 	return path, project, 0
 }
 
-Control_Box :: struct {
-	conn: ^jsonrpc.Conn,
-}
-
-control_reader_entry :: proc(data: rawptr) {
-	b := cast(^Control_Box)data
-	jsonrpc.conn_read_loop(b.conn)
+control_reader_entry :: proc(conn: ^jsonrpc.Conn) {
+	jsonrpc.conn_read_loop(conn)
 }
 
 Control_Link :: struct {
 	conn:   ^jsonrpc.Conn,
 	stream: ^rpc.Stream,
-	box:    ^Control_Box,
 	reader: ^thread.Thread,
 	token:  string, // borrowed from the caller's Endpoint_Info
 }
@@ -113,9 +107,7 @@ connect_control :: proc(info: daemon.Endpoint_Info) -> (^Control_Link, bool) {
 	writer := rpc.to_writer(stream)
 	jsonrpc.conn_init(c, reader, writer, context.allocator)
 
-	box := new(Control_Box, context.allocator)
-	box^ = {conn = c}
-	rthr := thread.create_and_start_with_data(box, control_reader_entry, self_cleanup = false)
+	rthr := thread.create_and_start_with_poly_data(c, control_reader_entry, self_cleanup = false)
 
 	params := jsonutil.json_object(2, context.temp_allocator)
 	jsonutil.obj_set(&params, "client_pid", jsonutil.json_int(i64(daemon.own_pid())))
@@ -129,28 +121,27 @@ connect_control :: proc(info: daemon.Endpoint_Info) -> (^Control_Link, bool) {
 			"aubade: control svc.hello failed: %v code=%d msg=%q\n",
 			cerr, i32(code), msg,
 		)
-		close_control_link(c, stream, box, rthr)
+		close_control_link(c, stream, rthr)
 		return nil, false
 	}
 
 	link := new(Control_Link, context.allocator)
-	link^ = {conn = c, stream = stream, box = box, reader = rthr, token = info.token}
+	link^ = {conn = c, stream = stream, reader = rthr, token = info.token}
 	return link, true
 }
 
 close_control :: proc(link: ^Control_Link) {
-	close_control_link(link.conn, link.stream, link.box, link.reader)
+	close_control_link(link.conn, link.stream, link.reader)
 	free(link, context.allocator)
 }
 
-close_control_link :: proc(c: ^jsonrpc.Conn, stream: ^rpc.Stream, box: ^Control_Box, rthr: ^thread.Thread) {
+close_control_link :: proc(c: ^jsonrpc.Conn, stream: ^rpc.Stream, rthr: ^thread.Thread) {
 	jsonrpc.conn_close(c)
 	stream.close(stream)
 	if rthr != nil {
 		thread.join(rthr)
 		free(rthr, context.allocator)
 	}
-	free(box, context.allocator)
 	jsonrpc.conn_destroy(c)
 	free(c, context.allocator)
 	// The dialed stream frees last, after every user has left it: the

@@ -51,7 +51,7 @@ symbol_find_exact_match_by_default :: proc(t: ^testing.T) {
 	defer mem.dynamic_arena_destroy(&arena)
 	a := mem.dynamic_arena_allocator(&arena)
 
-	freshness_write_file(t, f, "a.go")
+	freshness_write_file(t, f, "a.go", "body")
 	semantics_seed(t, f, "a.go", "h1", []store.Symbol_Name_Row{
 		{name = "mono_ns", kind = "Proc", line = 1, parent = ""},
 		{name = "mono_clock", kind = "Proc", line = 9, parent = ""},
@@ -93,7 +93,7 @@ symbol_find_glob_discovery :: proc(t: ^testing.T) {
 	defer mem.dynamic_arena_destroy(&arena)
 	a := mem.dynamic_arena_allocator(&arena)
 
-	freshness_write_file(t, f, "a.go")
+	freshness_write_file(t, f, "a.go", "body")
 	semantics_seed(t, f, "a.go", "h1", []store.Symbol_Name_Row{
 		{name = "mono_ns", kind = "Proc", line = 1, parent = ""},
 		{name = "mono_clock", kind = "Proc", line = 9, parent = ""},
@@ -142,19 +142,19 @@ symbol_find_name_path_chain :: proc(t: ^testing.T) {
 	// chain.go: A at the top level; other.go: the same names under X;
 	// deep.go: A nested one level under Outer. The same-name rows across
 	// files force the parent-chain walk to decide, not the seed query.
-	freshness_write_file(t, f, "chain.go")
+	freshness_write_file(t, f, "chain.go", "body")
 	semantics_seed(t, f, "chain.go", "h1", []store.Symbol_Name_Row{
 		{name = "A", kind = "Struct", line = 1, parent = ""},
 		{name = "B", kind = "Struct", line = 2, parent = "A"},
 		{name = "c", kind = "Proc", line = 3, parent = "B"},
 	})
-	freshness_write_file(t, f, "other.go")
+	freshness_write_file(t, f, "other.go", "body")
 	semantics_seed(t, f, "other.go", "h1", []store.Symbol_Name_Row{
 		{name = "X", kind = "Struct", line = 1, parent = ""},
 		{name = "B", kind = "Struct", line = 2, parent = "X"},
 		{name = "c", kind = "Proc", line = 3, parent = "B"},
 	})
-	freshness_write_file(t, f, "deep.go")
+	freshness_write_file(t, f, "deep.go", "body")
 	semantics_seed(t, f, "deep.go", "h1", []store.Symbol_Name_Row{
 		{name = "Outer", kind = "Struct", line = 1, parent = ""},
 		{name = "A", kind = "Struct", line = 2, parent = "Outer"},
@@ -231,7 +231,7 @@ symbol_find_rejects_malformed_patterns :: proc(t: ^testing.T) {
 	defer mem.dynamic_arena_destroy(&arena)
 	a := mem.dynamic_arena_allocator(&arena)
 
-	freshness_write_file(t, f, "a.go")
+	freshness_write_file(t, f, "a.go", "body")
 	semantics_seed(t, f, "a.go", "h1", []store.Symbol_Name_Row{
 		{name = "bar", kind = "Proc", line = 1, parent = "Foo"},
 	})
@@ -366,7 +366,7 @@ symbol_find_chain_same_name_multiple_parents :: proc(t: ^testing.T) {
 	// under Q (itself under P). Both seed rows share the (path, name)
 	// pair, so the per-request parents memo serves them one query whose
 	// parent set is the union {P, Q}; the walk must still see both.
-	freshness_write_file(t, f, "one.go")
+	freshness_write_file(t, f, "one.go", "body")
 	semantics_seed(t, f, "one.go", "h1", []store.Symbol_Name_Row{
 		{name = "P", kind = "Struct", line = 1, parent = ""},
 		{name = "c", kind = "Proc", line = 2, parent = "P"},

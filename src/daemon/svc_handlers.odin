@@ -41,6 +41,9 @@ svc_table_init :: proc(t: ^svc.Table, d: ^Daemon) {
 	register_shadow_methods(t)
 	register_web_methods(t)
 	register_config_methods(t)
+	register_doc_sync_methods(t)
+	register_doc_highlights_methods(t)
+	register_doc_diagnostics_methods(t)
 }
 
 // require_rpc_token enforces the loopback endpoint's possession proof on
@@ -79,14 +82,25 @@ handle_hello :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, plat
 
 	client_pid := int(jsonutil.obj_get_int(params, "client_pid"))
 
+	// mode is the child's frontend declaration: only "lsp" children
+	// receive the daemon→child push family (MCP children never register
+	// handlers for those notifications).
+	mode, _, mode_err := file_opt_str(ctx, params, "mode")
+	if mode_err != nil {
+		return nil, mode_err
+	}
+
 	// client_pid is shared Child state; write it under the owning mutex so
 	// the heartbeat thread's iteration never races the store. is_hello_seen
-	// opens the svc surface for this connection (the glue's hello gate).
+	// opens the svc surface for this connection (the glue's hello gate);
+	// is_lsp subscribes the child to the push family. Both share the same
+	// critical section.
 	sync.mutex_lock(&d.children_mu)
 	child := find_child_locked(d, ctx.conn_id)
 	if child != nil {
 		child.client_pid = client_pid
 		child.is_hello_seen = true
+		child.is_lsp = mode == "lsp"
 	}
 	sync.mutex_unlock(&d.children_mu)
 	if child == nil {

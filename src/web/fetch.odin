@@ -478,10 +478,8 @@ extract_plain_text :: proc(body: string, a := context.allocator) -> string {
 
 // find_close_tag scans for the closing tag case-insensitively from
 // `from`, returning the offset just past it (-1 when absent). The scan
-// compares in place — the previous implementation lowercased a copy of
-// the ENTIRE body per script/style block, so a page with N blocks cost
-// N full-body allocations. HTML tag names are ASCII, so an ASCII fold is
-// the exact comparison.
+// folds and compares in place: HTML tag names are ASCII, so an ASCII
+// fold is the exact comparison and no body copy is needed.
 find_close_tag :: proc(body: string, from: int) -> int {
 	needle := "</script>"
 	if tag_prefix_fold_eq(body[from:], "<style") {

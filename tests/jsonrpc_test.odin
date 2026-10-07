@@ -401,8 +401,7 @@ Loopback :: struct {
 	pipe: ^Pipe,
 }
 
-loopback_serve :: proc(data: rawptr) {
-	lb := cast(^Loopback)data
+loopback_serve :: proc(lb: ^Loopback) {
 	jsonrpc.conn_read_loop(lb.conn)
 }
 
@@ -428,7 +427,7 @@ conn_request_response_roundtrip :: proc(t: ^testing.T) {
 
 	lb := new(Loopback, context.allocator)
 	lb^ = {conn = c, pipe = &p}
-	thr := thread.create_and_start_with_data(lb, loopback_serve, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(lb, loopback_serve, self_cleanup = false)
 
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
@@ -496,8 +495,7 @@ conn_call_timeout_and_close :: proc(t: ^testing.T) {
 	defer free(blocked, context.allocator)
 	blocked^ = {conn = c}
 
-	blocked_caller :: proc(data: rawptr) {
-		b := cast(^Blocked)data
+	blocked_caller :: proc(b: ^Blocked) {
 		_, _, _, err := jsonrpc.conn_call(b.conn, "svc.blocked", nil, context.temp_allocator, 0)
 		sync.mutex_lock(&b.mu)
 		b.result = err
@@ -505,7 +503,7 @@ conn_call_timeout_and_close :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&b.cond)
 		sync.mutex_unlock(&b.mu)
 	}
-	bthr := thread.create_and_start_with_data(blocked, blocked_caller, self_cleanup = false)
+	bthr := thread.create_and_start_with_poly_data(blocked, blocked_caller, self_cleanup = false)
 
 	// Give the caller a moment to post the request, then cut the conn.
 	deadline2 := platform.mono_ms() + 500
@@ -555,7 +553,7 @@ conn_reader_eof_fails_pending :: proc(t: ^testing.T) {
 	w: jsonrpc.Writer
 	jsonrpc.writer_init(&w, pipe_write, up)
 	jsonrpc.conn_init(c, r, w, ca)
-	thr := thread.create_and_start_with_data(c, lsp_reader_entry, self_cleanup = false, name = "jsonrpc-eof-reader")
+	thr := thread.create_and_start_with_poly_data(c, lsp_reader_entry, self_cleanup = false, name = "jsonrpc-eof-reader")
 
 	Eof_Result :: struct {
 		conn: ^jsonrpc.Conn,
@@ -566,8 +564,7 @@ conn_reader_eof_fails_pending :: proc(t: ^testing.T) {
 	}
 	res := new(Eof_Result, context.allocator)
 	res^ = {conn = c}
-	eof_caller :: proc(data: rawptr) {
-		e := cast(^Eof_Result)data
+	eof_caller :: proc(e: ^Eof_Result) {
 		_, _, _, err := jsonrpc.conn_call(e.conn, "svc.hang", nil, context.temp_allocator, platform.mono_ms() + 5000)
 		sync.mutex_lock(&e.mu)
 		e.err = err
@@ -575,7 +572,7 @@ conn_reader_eof_fails_pending :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&e.cond)
 		sync.mutex_unlock(&e.mu)
 	}
-	caller := thread.create_and_start_with_data(res, eof_caller, self_cleanup = false)
+	caller := thread.create_and_start_with_poly_data(res, eof_caller, self_cleanup = false)
 
 	// Wait until the request is parked (it crossed into the up pipe).
 	gate := platform.mono_ms() + 500

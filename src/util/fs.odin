@@ -88,6 +88,7 @@ Read_Outcome :: enum {
 	Not_Regular,
 	Too_Large,
 	Unreadable,
+	Changed,
 }
 
 // read_bounded_file reads one regular file whole under `max_bytes`, the
@@ -99,13 +100,17 @@ Read_Outcome :: enum {
 // refused rather than opened: a FIFO or device would block or misbehave
 // on open, not just over-read. Unreadable means the node existed and was
 // regular, but the open or a read still failed (vanished mid-call,
-// permissions, IO error). size_at_refusal is the byte count observed when
-// the budget refused the read — the stat size at the entry rejection, or
-// the bytes that had accumulated when growth tripped the loop — and is
-// zero on every other outcome; the refusal message names it, so no
-// caller re-stats.
+// permissions, IO error). Changed means the file's (size, mtime) moved
+// between the entry stat and the read's completion — an in-place rewrite
+// (open+truncate+write) torn by the read — so the collected bytes describe
+// no settled state and must not be committed anywhere as the file's
+// content; callers treat it like any refusal and re-read later.
+// size_at_refusal is the byte count observed when the budget refused the
+// read — the stat size at the entry rejection, or the bytes that had
+// accumulated when growth tripped the loop — and is zero on every other
+// outcome; the refusal message names it, so no caller re-stats.
 read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) -> (data: []u8, outcome: Read_Outcome, size_at_refusal: i64) {
-	kind, size, ok := stat_kind_size(path)
+	kind, size, mtime_ns, ok := stat_kind_size_mtime(path)
 	if !ok {
 		return nil, .Missing, 0
 	}
@@ -151,5 +156,19 @@ read_bounded_file :: proc(path: string, max_bytes: i64, a := context.allocator) 
 		resize(&buf, old + n)
 		copy(buf[old:], chunk[:n])
 	}
+	if !stat_unchanged_since(path, size, mtime_ns) {
+		delete(buf)
+		return nil, .Changed, 0
+	}
 	return buf[:], .Ok, 0
+}
+
+// stat_unchanged_since reports whether the file still carries the
+// (size, mtime_ns) an earlier stat observed — the torn-read verdict
+// read_bounded_file consults after its bytes are collected. A vanished
+// path counts as changed: absence after a successful read means the file
+// moved too.
+stat_unchanged_since :: proc(path: string, size, mtime_ns: i64) -> bool {
+	_, size_now, mtime_now, ok := stat_kind_size_mtime(path)
+	return ok && size_now == size && mtime_now == mtime_ns
 }

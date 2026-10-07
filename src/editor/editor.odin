@@ -119,6 +119,12 @@ File_Buffer :: struct {
 	disk_mtime_ns: i64,
 	disk_size:     i64,
 	has_disk_stat:    bool,
+	// The buffer is a synced document's client text (set by buffer_adopt):
+	// while the document is open, the client's editor owns the file's truth,
+	// unsaved state included — the reload probe and the edit-rollback path
+	// must not adopt disk bytes over it. The didChange stream carries the
+	// document's truth until the buffer closes (the ordinary drop path).
+	is_synced:     bool,
 	version:       int,
 	ed:            ^Editor, // owning editor; nil = standalone untracked buffer (the ledger hook)
 	allocator:     runtime.Allocator,
@@ -511,14 +517,20 @@ editor_prune_buffers :: proc(e: ^Editor, keep: string) {
 // ---------------------------------------------------------------------------
 
 // buffer_reload_if_changed adopts external disk bytes into a live buffer
-// (the file lock must be held). Saves are synchronous, so a held buffer
-// is never dirty: whenever the decoded disk read differs from the
-// buffer, the disk carries a newer external state — adopt it, keeping
-// reads, edits, and the sync listeners on one view instead of silently
-// reverting the external change on the next save. A failed probe read
+// (the file lock must be held). Saves are synchronous, so a held buffer that
+// is not a synced document is never dirty: whenever the decoded disk read
+// differs from the buffer, the disk carries a newer external state — adopt
+// it, keeping reads, edits, and the sync listeners on one view instead of
+// silently reverting the external change on the next save. A synced
+// document's buffer is the exception: its text is the client's unsaved
+// state, so the probe never runs for it (the client's editor resolves disk
+// drift and reports it through the didChange stream). A failed probe read
 // keeps the buffer as-is (the disk may be gone; the caller's own
 // existence checks decide).
 buffer_reload_if_changed :: proc(e: ^Editor, rel_path: string, buf: ^File_Buffer) {
+	if buf.is_synced {
+		return
+	}
 	// One stat decides whether the disk can have moved since the bytes
 	// this buffer last synced against: a matching (mtime_ns, size) skips
 	// the full read+decode+compare the probe otherwise pays on every
@@ -574,7 +586,17 @@ editor_read_file :: proc(e: ^Editor, rel_path: string) -> (contents: string, err
 	defer file_release(e, rel_path)
 	sync.mutex_lock(&h.mu)
 	defer sync.mutex_unlock(&h.mu)
+	return editor_read_file_locked(e, rel_path)
+}
 
+// editor_read_file_locked is the locked half of editor_read_file for
+// callers that must hold the file's lock across a read AND other work
+// (the highlights face reads the bytes and the document version under one
+// hold). The caller has taken the per-file lock — file_lock/file_release
+// with h.mu locked between — and the containment check has run (the
+// wrapper's safe_path); this procedure locks only e.mu. The result is
+// owned by the editor's allocator; the caller frees it.
+editor_read_file_locked :: proc(e: ^Editor, rel_path: string) -> (contents: string, err: Editor_Err, msg: string) {
 	sync.mutex_lock(&e.mu)
 	buf, ok := e.buffers[platform.path_fold(rel_path, context.temp_allocator)]
 	if ok {
@@ -824,6 +846,58 @@ buffer_acquire :: proc(e: ^Editor, rel_path: string) -> (^File_Buffer, Editor_Er
 	return buf, .None, ""
 }
 
+// buffer_adopt is buffer_acquire's content-bearing twin: instead of
+// reading the disk on first open it adopts `contents` as the buffer text —
+// a synced document's current bytes live in its editor, not on the disk,
+// so the first open of an unsaved buffer and every re-open after an LRU
+// eviction must take the caller's text. A live buffer adopts the text only
+// when it differs (an equal adopt is a no-op: no version bump, no ledger
+// charge, no change notification). Like buffer_acquire, the caller holds
+// the file lock for rel_path and validates the path; the create path fires
+// the same open notification (and a differing adopt the same change
+// notification) a disk-loaded buffer would, so the one installed listener
+// sees a paired event stream. Callers that adopt repeatedly prune with
+// editor_prune_buffers outside every editor lock, as the edit paths do.
+buffer_adopt :: proc(e: ^Editor, rel_path: string, contents: string) -> ^File_Buffer {
+	key := platform.path_fold(rel_path, context.temp_allocator)
+	sync.mutex_lock(&e.mu)
+	buf, ok := e.buffers[key]
+	if ok {
+		lru_touch(e, buf)
+	}
+	sync.mutex_unlock(&e.mu)
+	if ok {
+		// The adopt marks the client as the buffer's truth even when the
+		// bytes already match: from the open on, the reload probe and the
+		// rollback path must leave this buffer to the didChange stream.
+		buf.is_synced = true
+		if buf.contents != contents {
+			file_buffer_set_contents(buf, contents)
+			buffer_notify_change(e, rel_path, buf.contents)
+		}
+		return buf
+	}
+	buf = new(File_Buffer, e.allocator)
+	file_buffer_init(buf, rel_path, contents, e.allocator)
+	buf.ed = e
+	buf.is_synced = true
+	// No disk stat is recorded: is_synced already keeps the reload probe
+	// away from this buffer for its lifetime, and a fabricated stat could
+	// never honestly pair adopted bytes with the disk they did not come
+	// from.
+	buf.key = strings.clone(key, e.allocator)
+	sync.mutex_lock(&e.mu)
+	// Key by the buffer's own folded clone, as buffer_acquire does: the
+	// caller's spelling may be request-scratch, and case-varied spellings
+	// of one file must land on this one buffer (file_buffer_destroy frees
+	// the key bytes).
+	e.buffers[buf.key] = buf
+	lru_insert(e, buf)
+	sync.mutex_unlock(&e.mu)
+	buffer_notify_open(e, rel_path, buf.contents)
+	return buf
+}
+
 // edit_file runs one edit under the file lock with snapshot rollback:
 // the action edits the buffer; on action or save failure the buffer is
 // restored from the snapshot (re-reading the disk when possible), so a
@@ -847,13 +921,18 @@ edit_file :: proc(e: ^Editor, rel_path: string, action: Edit_Action) -> (err: Ed
 
 // rollback_buffer restores a buffer to a known-good state after a failed
 // edit or save, preferring a disk re-read so the buffer matches reality.
+// A synced document's buffer never takes the disk branch: its known-good
+// state is the client text the snapshot captured, and the disk (which the
+// client's editor commits on save) is not authoritative for it.
 rollback_buffer :: proc(e: ^Editor, buf: ^File_Buffer, rel_path: string, original: string) {
-	if data, had_bom, derr, _ := read_file_bytes(e, rel_path); derr == .None {
-		buf.has_utf8_bom = had_bom
-		file_buffer_set_contents(buf, data)
-		delete(data, e.allocator)
-		buffer_notify_change(e, rel_path, buf.contents)
-		return
+	if !buf.is_synced {
+		if data, had_bom, derr, _ := read_file_bytes(e, rel_path); derr == .None {
+			buf.has_utf8_bom = had_bom
+			file_buffer_set_contents(buf, data)
+			delete(data, e.allocator)
+			buffer_notify_change(e, rel_path, buf.contents)
+			return
+		}
 	}
 	file_buffer_set_contents(buf, original)
 	buffer_notify_change(e, rel_path, buf.contents)

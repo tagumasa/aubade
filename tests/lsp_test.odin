@@ -317,8 +317,7 @@ Lsp_Pair :: struct {
 	allocator: mem.Allocator,
 }
 
-lsp_reader_entry :: proc(data: rawptr) {
-	c := cast(^jsonrpc.Conn)data
+lsp_reader_entry :: proc(c: ^jsonrpc.Conn) {
 	jsonrpc.conn_read_loop(c)
 }
 
@@ -375,7 +374,7 @@ lsp_pair_init :: proc(t: ^testing.T, virtual_clock := false) -> ^Lsp_Pair {
 	p.client = new(lsp.Client, context.allocator)
 	lsp.client_init(p.client, p.conn, clock, "go", p.allocator)
 
-	p.freader = thread.create_and_start_with_data(fake.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-fake-reader")
+	p.freader = thread.create_and_start_with_poly_data(fake.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-fake-reader")
 	if p.freader == nil {
 		// Unwind the pair exactly the way the second failure path below
 		// does — the half-built pair owns conns, pipes, and the client,
@@ -383,7 +382,7 @@ lsp_pair_init :: proc(t: ^testing.T, virtual_clock := false) -> ^Lsp_Pair {
 		lsp_pair_shutdown(p)
 		return nil
 	}
-	p.creader = thread.create_and_start_with_data(p.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-client-reader")
+	p.creader = thread.create_and_start_with_poly_data(p.conn, lsp_reader_entry, self_cleanup = false, name = "lsp-client-reader")
 	if p.creader == nil {
 		// The fake reader is already draining: unwind the pair exactly
 		// the way lsp_pair_shutdown does, or the leaked reader thread
@@ -472,8 +471,7 @@ lsp_concurrent_calls_correlate :: proc(t: ^testing.T) {
 		results: ^Results,
 	}
 
-	lsp_call_worker :: proc(data: rawptr) {
-		args := cast(^Call_Args)data
+	lsp_call_worker :: proc(args: ^Call_Args) {
 		params := jsonutil.json_object(1, context.temp_allocator)
 		jsonutil.obj_set(&params, "n", jsonutil.json_int(cast(i64)args.index))
 		result, _, _, cerr := lsp.client_call(args.client, "test/echo", json.Value(json.Object(params)), context.temp_allocator)
@@ -499,7 +497,7 @@ lsp_concurrent_calls_correlate :: proc(t: ^testing.T) {
 	threads := make([dynamic]^thread.Thread, 0, N, context.allocator)
 	for i in 0..<N {
 		args[i] = {client = p.client, index = i, results = results}
-		thr := thread.create_and_start_with_data(&args[i], lsp_call_worker, self_cleanup = false)
+		thr := thread.create_and_start_with_poly_data(&args[i], lsp_call_worker, self_cleanup = false)
 		if thr == nil {
 			continue
 		}
@@ -609,8 +607,7 @@ lsp_cancel_propagates_to_server :: proc(t: ^testing.T) {
 	defer free(blocked, context.allocator)
 	blocked^ = {client = p.client, token = task}
 
-	blocked_caller :: proc(data: rawptr) {
-		b := cast(^Blocked)data
+	blocked_caller :: proc(b: ^Blocked) {
 		_, _, _, cerr := lsp.client_call(b.client, "test/slow", nil, context.temp_allocator, b.token)
 		sync.mutex_lock(&b.mu)
 		b.result = cerr
@@ -618,7 +615,7 @@ lsp_cancel_propagates_to_server :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&b.cond)
 		sync.mutex_unlock(&b.mu)
 	}
-	thr := thread.create_and_start_with_data(blocked, blocked_caller, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(blocked, blocked_caller, self_cleanup = false)
 
 	// Deterministic arrival sync: the fake's handler takes its ticket
 	// before holding the reply.
@@ -683,8 +680,7 @@ lsp_server_request_queue_overflow_replies_failed :: proc(t: ^testing.T) {
 	defer free(first, context.allocator)
 	first^ = {conn = p.fake.conn}
 
-	first_caller :: proc(data: rawptr) {
-		fc := cast(^First_Call)data
+	first_caller :: proc(fc: ^First_Call) {
 		_, _, _, cerr := jsonrpc.conn_call(
 			fc.conn, lsp.METHOD_WORKSPACE_CONFIGURATION, nil,
 			context.temp_allocator, platform.mono_ms() + 10_000,
@@ -695,7 +691,7 @@ lsp_server_request_queue_overflow_replies_failed :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&fc.cond)
 		sync.mutex_unlock(&fc.mu)
 	}
-	thr1 := thread.create_and_start_with_data(first, first_caller, self_cleanup = false)
+	thr1 := thread.create_and_start_with_poly_data(first, first_caller, self_cleanup = false)
 
 	// Park point: the provider entered (worker occupied, chan empty).
 	provider_gate_wait_entered(gate)
@@ -731,8 +727,7 @@ lsp_server_request_queue_overflow_replies_failed :: proc(t: ^testing.T) {
 	defer free(fan, context.allocator)
 	fan^ = {conn = p.fake.conn, failed_code = .None}
 
-	fan_caller :: proc(data: rawptr) {
-		fc := cast(^Fan_Call)data
+	fan_caller :: proc(fc: ^Fan_Call) {
 		_, code, _, cerr := jsonrpc.conn_call(
 			fc.conn, lsp.METHOD_WORKSPACE_CONFIGURATION, nil,
 			context.temp_allocator, platform.mono_ms() + 10_000,
@@ -755,7 +750,7 @@ lsp_server_request_queue_overflow_replies_failed :: proc(t: ^testing.T) {
 	fan_threads := make([dynamic]^thread.Thread, 0, FAN_CALLS, context.allocator)
 	for i in 0..<FAN_CALLS {
 		fan_calls[i] = {conn = p.fake.conn, fan = fan}
-		thr := thread.create_and_start_with_data(&fan_calls[i], fan_caller, self_cleanup = false)
+		thr := thread.create_and_start_with_poly_data(&fan_calls[i], fan_caller, self_cleanup = false)
 		if thr == nil {
 			continue
 		}
@@ -865,8 +860,7 @@ lsp_close_releases_pending_waiters :: proc(t: ^testing.T) {
 	defer free(blocked, context.allocator)
 	blocked^ = {client = p.client}
 
-	blocked_caller :: proc(data: rawptr) {
-		b := cast(^Blocked)data
+	blocked_caller :: proc(b: ^Blocked) {
 		_, _, _, cerr := lsp.client_call(b.client, "test/slow", nil, context.temp_allocator)
 		sync.mutex_lock(&b.mu)
 		b.result = cerr
@@ -874,7 +868,7 @@ lsp_close_releases_pending_waiters :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&b.cond)
 		sync.mutex_unlock(&b.mu)
 	}
-	thr := thread.create_and_start_with_data(blocked, blocked_caller, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(blocked, blocked_caller, self_cleanup = false)
 
 	fake_gate_wait_arrival(&p.fake.slow) // the request is in the fake's hands
 
@@ -1447,8 +1441,7 @@ lsp_crossref_wait_fallback_virtual_clock :: proc(t: ^testing.T) {
 	defer free(w, context.allocator)
 	w^ = {client = p.client}
 
-	wait_worker :: proc(data: rawptr) {
-		wj := cast(^Wait_Job)data
+	wait_worker :: proc(wj: ^Wait_Job) {
 		outcome := lsp.client_wait_cross_file_refs(wj.client)
 		sync.mutex_lock(&wj.mu)
 		wj.outcome = outcome
@@ -1456,7 +1449,7 @@ lsp_crossref_wait_fallback_virtual_clock :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&wj.cond)
 		sync.mutex_unlock(&wj.mu)
 	}
-	thr := thread.create_and_start_with_data(w, wait_worker, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(w, wait_worker, self_cleanup = false)
 
 	// Pump virtual time until the waiter reports: the 5 s event window
 	// needs enough advances to pass, then the 1 s fallback clock_wait
@@ -1521,8 +1514,7 @@ lsp_crossref_wait_cancel_during_fallback :: proc(t: ^testing.T) {
 	defer free(w, context.allocator)
 	w^ = {client = p.client, token = task}
 
-	wait_worker :: proc(data: rawptr) {
-		wj := cast(^Wait_Job)data
+	wait_worker :: proc(wj: ^Wait_Job) {
 		outcome := lsp.client_wait_cross_file_refs(wj.client, wj.token)
 		sync.mutex_lock(&wj.mu)
 		wj.outcome = outcome
@@ -1530,7 +1522,7 @@ lsp_crossref_wait_cancel_during_fallback :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&wj.cond)
 		sync.mutex_unlock(&wj.mu)
 	}
-	thr := thread.create_and_start_with_data(w, wait_worker, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(w, wait_worker, self_cleanup = false)
 
 	// Pass the event window so the waiter falls into the settle wait, then
 	// fire the token and keep pumping so the sliced fallback wait reaches
@@ -1850,8 +1842,7 @@ lsp_crossref_wait_diag_during_fallback_upgrades_outcome :: proc(t: ^testing.T) {
 	defer free(w, context.allocator)
 	w^ = {client = p.client}
 
-	wait_worker :: proc(data: rawptr) {
-		wj := cast(^Wait_Job)data
+	wait_worker :: proc(wj: ^Wait_Job) {
 		outcome := lsp.client_wait_cross_file_refs(wj.client)
 		sync.mutex_lock(&wj.mu)
 		wj.outcome = outcome
@@ -1859,7 +1850,7 @@ lsp_crossref_wait_diag_during_fallback_upgrades_outcome :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&wj.cond)
 		sync.mutex_unlock(&wj.mu)
 	}
-	thr := thread.create_and_start_with_data(w, wait_worker, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(w, wait_worker, self_cleanup = false)
 
 	// Bounded settle so the mid-park arrival is the common case; if the
 	// waiter ever completes first, the check below fails the test loudly

@@ -122,3 +122,19 @@ e2e-shadow *args:
 
 e2e-daemon *args:
     python3 tools/e2e/daemon_e2e.py {{args}}
+
+[unix]
+e2e-lspserver *args:
+    python3 tools/e2e/lspserver_e2e.py {{args}}
+
+# Windows guarantees the interpreter under the name `python` — same
+# driver, only the interpreter name differs.
+[windows]
+e2e-lspserver *args:
+    python tools/e2e/lspserver_e2e.py {{args}}
+
+# Package the VSCode extension into editors/vscode/*.vsix (resolves npm
+# through nvm when it is off the non-interactive PATH)
+[unix]
+vsix *args:
+    editors/vscode/package-vsix.sh {{args}}

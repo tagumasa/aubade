@@ -783,6 +783,7 @@ symbol_lsp_rename :: proc(
 	new_name: string,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> (summary: string, err: platform.Err) {
 	if ed == nil {
 		return "", wrapped_err(.Internal, "editor unavailable", a)
@@ -836,7 +837,6 @@ symbol_lsp_rename :: proc(
 		}
 		delete(by_file)
 	}
-	applied := 0
 	for e in edits {
 		if e.rel_path == "" {
 			continue
@@ -858,7 +858,62 @@ symbol_lsp_rename :: proc(
 		)
 	}
 
+	// The two-writer gate: when the rename touches a document an lsp child
+	// owns, the OWNED subset of the WorkspaceEdit crosses the owner child's
+	// applyEdit (one atomic documentChanges call, each entry pinned to its
+	// file's observed version). The edits come from the server's mirror, so
+	// the compute's basis is empty and the per-document version pin alone
+	// guards each apply; a retry re-requests the rename against the mirror's
+	// fresh text. Files no child owns land through the direct loop below,
+	// which re-truths their daemon state — the editor's disk write would
+	// strand it.
+	routed_round_trip := false
+	landed: []string
+	if tw != nil && two_writer_owned_any(tw, files[:]) {
+		st := Rename_Route_State{
+			src       = src,
+			name_path = name_path,
+			rel       = rel,
+			new_name  = new_name,
+			token     = token,
+		}
+		routed, route_landed, route_err := two_writer_route_multi(tw, "rename", rename_route_compute, &st, token, a)
+		if routed {
+			if route_err != nil {
+				return "", route_err
+			}
+			routed_round_trip = true
+			landed = route_landed
+			// Fall through: the loop below covers only the files the round
+			// trip did not land. A landed file is skipped even when its
+			// ownership vanished after the apply — a direct re-apply would
+			// replay pre-round-trip ranges. A file owned at loop time but
+			// absent from the landed set (ownership appeared mid-trip) is
+			// skipped too — never a second writer on an open document —
+			// and it counts as applied for neither.
+		}
+		// routed=false: no file is owned anymore (raced a close or
+		// disconnect) — the direct per-file path re-reads every basis.
+	}
+
+	applied := 0
+	if routed_round_trip {
+		// The editor-applied edits count toward the summary too (the loop
+		// below skips their files): the landed set, not live ownership,
+		// decides what this rename already wrote.
+		for e in edits {
+			if e.rel_path != "" && landed_contains(landed, e.rel_path) {
+				applied += 1
+			}
+		}
+	}
 	for f in files {
+		if routed_round_trip && landed_contains(landed, f) {
+			continue // landed through the owner child's applyEdit above
+		}
+		if routed_round_trip && two_writer_owned(tw, f) {
+			continue // owned now but not landed: never direct-write an open document
+		}
 		// Per-file cancellation checkpoint: the apply stage writes and
 		// re-truths file by file, so a fired token stops between files
 		// with the partial count in the message.
@@ -928,6 +983,92 @@ symbol_lsp_rename :: proc(
 	return summary, nil
 }
 
+// landed_contains reports whether rel is in the routed round trip's landed
+// set (rename file sets are small; a scan beats a map).
+landed_contains :: proc(landed: []string, rel: string) -> bool {
+	for l in landed {
+		if l == rel {
+			return true
+		}
+	}
+	return false
+}
+
+// Rename_Route_State is the routed rename's compute input; every attempt
+// re-resolves and re-requests the rename so a retry lands on the mirror's
+// fresh text.
+Rename_Route_State :: struct {
+	src:       ^LSP_Source,
+	name_path: string,
+	rel:       string,
+	new_name:  string,
+	token:     ^platform.Cancel_Token,
+}
+
+// rename_route_compute produces one attempt's WorkspaceEdit from a fresh
+// rename request. Basis stays empty: the edits derive from the server's
+// mirror, not from daemon-side bytes, so the router's per-document version
+// pins are the guard.
+rename_route_compute :: proc(user: rawptr, a: mem.Allocator) -> ([]Edit_Doc_Changes, string, platform.Err) {
+	st := cast(^Rename_Route_State)user
+	match, client, uri, resolve_lang, rerr := symbol_lsp_resolve(st.src, st.name_path, st.rel, a, st.token)
+	if resolve_lang != "" {
+		delete(resolve_lang, a)
+	}
+	if rerr != nil {
+		return nil, "", rerr
+	}
+	defer lsp_source_release(st.src, client, uri)
+	line, col, pok := symbol_selection_position(match)
+	if !pok {
+		return nil, "", wrapped_err(
+			.Invalid,
+			strings.concatenate({"symbol \"", st.name_path, "\" does not have a valid position in file for renaming"}, a),
+			a,
+		)
+	}
+	edits, rrerr := lsp.request_rename(client, uri, line, col, st.new_name, a, st.token)
+	if rrerr != nil {
+		return nil, "", rrerr
+	}
+	if len(edits) == 0 {
+		return nil, "", wrapped_err(
+			.Invalid,
+			strings.concatenate(
+				{"language server returned no rename edits for symbol \"", st.name_path, "\"; the symbol might not support renaming"},
+				a,
+			),
+			a,
+		)
+	}
+	seen := make(map[string]bool, 4, a)
+	defer delete(seen)
+	changes := make([dynamic]Edit_Doc_Changes, 0, 4, a)
+	for e in edits {
+		if e.rel_path == "" || seen[e.rel_path] {
+			continue
+		}
+		seen[e.rel_path] = true
+		items := make([dynamic]Edit_Item, 0, 4, a)
+		for f in edits {
+			if f.rel_path != e.rel_path {
+				continue
+			}
+			append(&items, Edit_Item{
+				rng      = Edit_Range{
+					sl = int(f.range.start.line),
+					sc = int(f.range.start.character),
+					el = int(f.range.end.line),
+					ec = int(f.range.end.character),
+				},
+				new_text = f.new_text,
+			})
+		}
+		append(&changes, Edit_Doc_Changes{rel_path = e.rel_path, edits = items[:]})
+	}
+	return changes[:], "", nil
+}
+
 // ---------------------------------------------------------------------------
 // delete (references-checked)
 // ---------------------------------------------------------------------------
@@ -944,6 +1085,7 @@ symbol_lsp_delete :: proc(
 	include_comments: bool,
 	a := context.allocator,
 	token: ^platform.Cancel_Token = nil,
+	tw: ^Two_Writer = nil,
 ) -> (refusal: string, err: platform.Err) {
 	if ed == nil {
 		return "", wrapped_err(.Internal, "editor unavailable", a)
@@ -999,6 +1141,25 @@ symbol_lsp_delete :: proc(
 		return refusal, nil
 	}
 
+	// The two-writer gate: an owned document routes the delete through the
+	// owner child's applyEdit. The references refusal above already ran
+	// (it is read-only); the routed arm re-resolves on every attempt so a
+	// retry lands on the post-keystroke text.
+	if tw != nil && two_writer_owned(tw, rel) {
+		st := Delete_Route_State{
+			src              = src,
+			ed               = ed,
+			name_path        = name_path,
+			rel              = rel,
+			include_comments = include_comments,
+			token            = token,
+		}
+		routed, route_err := two_writer_route(tw, rel, "delete", delete_route_compute, &st, token, a)
+		if routed {
+			return "", route_err
+		}
+	}
+
 	// The LSP mirror's ranges have no byte basis of their own: read the
 	// editor's view here so the editor transaction can refuse the splice
 	// when the buffer moves again before it runs (advisory — strict
@@ -1013,6 +1174,56 @@ symbol_lsp_delete :: proc(
 		return "", wrapped_err(.Internal, dmsg, a)
 	}
 	return "", nil
+}
+
+// Delete_Route_State is the routed delete's compute input.
+Delete_Route_State :: struct {
+	src:              ^LSP_Source,
+	ed:               ^editor.Editor,
+	name_path:        string,
+	rel:              string,
+	include_comments: bool,
+	token:            ^platform.Cancel_Token,
+}
+
+// delete_route_compute re-resolves the symbol through the same LSP path
+// the direct delete uses (the mirror's outline), applies the delete to the
+// editor's current bytes off-editor (with the resolved comment language),
+// and reduces the transform to its one range edit.
+delete_route_compute :: proc(user: rawptr, a: mem.Allocator) -> ([]Edit_Doc_Changes, string, platform.Err) {
+	st := cast(^Delete_Route_State)user
+	match, client, uri, language_id, rerr := symbol_lsp_resolve(st.src, st.name_path, st.rel, a, st.token)
+	if rerr != nil {
+		return nil, "", rerr
+	}
+	defer lsp_source_release(st.src, client, uri)
+	source, bserr, _ := editor.editor_read_file(st.ed, st.rel)
+	if bserr != .None {
+		if language_id != "" {
+			delete(language_id, a)
+		}
+		return nil, "", wrapped_err(.Internal, "symbol delete: could not read the file to edit", a)
+	}
+	// The read is an editor-allocator clone (edit_basis's fallback arm):
+	// move it into the request arena — the router compares the returned
+	// basis against its own read, and the diff runs there too.
+	basis := edit_basis_in_arena(source, st.ed, a)
+	new_text, eerr, emsg := editor.editor_symbol_delete_text(st.ed, basis, match, st.include_comments, language_id, a)
+	if language_id != "" {
+		delete(language_id, a) // consumed synchronously by the text twin
+	}
+	if eerr != .None {
+		return nil, "", wrapped_err(.Internal, emsg, a)
+	}
+	rng, mid, has := edit_range_of_diff(basis, new_text, a)
+	if !has {
+		return nil, "", nil
+	}
+	edits := make([]Edit_Item, 1, a)
+	edits[0] = Edit_Item{rng = rng, new_text = mid}
+	changes := make([]Edit_Doc_Changes, 1, a)
+	changes[0] = Edit_Doc_Changes{rel_path = st.rel, edits = edits}
+	return changes, basis, nil
 }
 
 // delete_refusal renders the "cannot delete" answer: the symbol's name

@@ -126,7 +126,7 @@ lsproc_spawn :: proc(l: Launch, clock: ^platform.Clock, a := context.allocator) 
 		_ = platform_containment_setup(p, l.memory_limit_mb, l.language_id)
 	}
 
-	p.watcher = thread.create_and_start_with_data(
+	p.watcher = thread.create_and_start_with_poly_data(
 		p, watch_entry, self_cleanup = false, name = "lsproc-watch",
 	)
 	if p.watcher == nil {
@@ -149,8 +149,7 @@ lsproc_spawn :: proc(l: Launch, clock: ^platform.Clock, a := context.allocator) 
 // callers read containment state — they must never observe exited with
 // containment still engaged (the release touches only platform state,
 // so it needs no p.mu ordering).
-watch_entry :: proc(data: rawptr) {
-	p := cast(^Proc)data
+watch_entry :: proc(p: ^Proc) {
 	code := platform_wait_exit(p)
 	platform_containment_release(p)
 	sync.mutex_lock(&p.mu)

@@ -14,11 +14,12 @@ import "core:strings"
 import "src:util"
 
 Grammar_Entry :: struct {
-	name:       string,
-	aliases:    []string,
-	extensions: []string,              // file extensions this grammar serves (".go", ...)
-	language:   proc "c" () -> rawptr, // generated bindings use the C convention
-	tags_query: string,                // outline/tags source; "" when the grammar ships none
+	name:             string,
+	aliases:          []string,
+	extensions:       []string,              // file extensions this grammar serves (".go", ...)
+	language:         proc "c" () -> rawptr, // generated bindings use the C convention
+	tags_query:       string,                // outline/tags source; "" when the grammar ships none
+	highlights_query: string,                // highlights source; "" when the grammar ships none
 }
 
 // registry_lookup resolves a language name (or alias, case-insensitive)

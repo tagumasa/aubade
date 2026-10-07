@@ -502,9 +502,8 @@ keyed_transport_outcome :: proc(err_kind: Web_Err) -> Attempt_Outcome {
 }
 
 // keyed_status_error renders a non-200 provider answer and its retry
-// outcome. One message shape for every keyed provider: the per-provider
-// copies this replaces had already drifted apart (one dropped its status
-// code entirely), which is what a shared home prevents.
+// outcome. One message shape for every keyed provider, so per-provider
+// renderings cannot drift apart.
 keyed_status_error :: proc(provider: string, status: int, body: string, a := context.allocator) -> (string, Attempt_Outcome) {
 	status_err := strings.concatenate({
 		provider, " api error (status ", util.int_to_dec(status, a), "): ",

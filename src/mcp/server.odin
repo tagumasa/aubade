@@ -1,5 +1,5 @@
-// mcp: the MCP server layer over jsonrpc (self-made implementation; protocol
-// baseline 2025-11-25). Transport-agnostic: the host injects a jsonrpc.Conn.
+// mcp: the MCP server layer over jsonrpc (protocol baseline 2025-11-25).
+// Transport-agnostic: the host injects a jsonrpc.Conn.
 // v1 scope: initialize/instructions, ping, tools/list, tools/call,
 // notifications/tools/list_changed, notifications/cancelled. No
 // elicitation, structured output values, resource links, icons values, or

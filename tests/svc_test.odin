@@ -39,8 +39,7 @@ Conn_Box :: struct {
 	conn: ^jsonrpc.Conn,
 }
 
-conn_reader_entry :: proc(data: rawptr) {
-	b := cast(^Conn_Box)data
+conn_reader_entry :: proc(b: ^Conn_Box) {
 	jsonrpc.conn_read_loop(b.conn)
 }
 
@@ -220,7 +219,7 @@ test_daemon_with_configs :: proc(
 		testing.expect(t, false, "channel_pair failed")
 		return nil
 	}
-	run_thread := thread.create_and_start_with_data(d, daemon_run_entry, self_cleanup = false)
+	run_thread := thread.create_and_start_with_poly_data(d, daemon_run_entry, self_cleanup = false)
 	if daemon.daemon_in_process_accept(d, e_daemon) == nil {
 		// The run thread owns the daemon's cleanup from here (its exit
 		// path runs daemon_cleanup): wake it, join it, release the rest.
@@ -245,7 +244,7 @@ test_daemon_with_configs :: proc(
 
 	box := new(Conn_Box, context.allocator)
 	box^ = {conn = c}
-	reader := thread.create_and_start_with_data(box, conn_reader_entry, self_cleanup = false)
+	reader := thread.create_and_start_with_poly_data(box, conn_reader_entry, self_cleanup = false)
 
 	pair := new(Daemon_Pair, context.allocator)
 	pair^ = {
@@ -263,8 +262,7 @@ test_daemon_with_configs :: proc(
 	return pair
 }
 
-daemon_run_entry :: proc(data: rawptr) {
-	d := cast(^daemon.Daemon)data
+daemon_run_entry :: proc(d: ^daemon.Daemon) {
 	daemon.daemon_run(d)
 }
 
@@ -420,8 +418,7 @@ Slow_Result :: struct {
 	cond:     sync.Cond,
 }
 
-slow_caller_entry :: proc(data: rawptr) {
-	box := cast(^struct {pair: ^Daemon_Pair, res: ^Slow_Result})data
+slow_caller_entry :: proc(box: ^Slow_Call_Box) {
 	_, code, _, cerr := jsonrpc.conn_call(
 		box.pair.conn,
 		"svc.test/slow",
@@ -453,7 +450,7 @@ svc_cancel_fires_parent_token :: proc(t: ^testing.T) {
 	res^ = {}
 	box := new(Slow_Call_Box, context.allocator)
 	box^ = {pair = pair, res = res}
-	sthr := thread.create_and_start_with_data(box, slow_caller_entry, self_cleanup = false)
+	sthr := thread.create_and_start_with_poly_data(box, slow_caller_entry, self_cleanup = false)
 
 	// Wait until the slow handler is actually running on the daemon (its
 	// request token is registered by then), then cancel — the arrival event
@@ -501,8 +498,7 @@ Cancel_Call_Box :: struct {
 	res:   ^Slow_Result,
 }
 
-cancel_caller_entry :: proc(data: rawptr) {
-	box := cast(^Cancel_Call_Box)data
+cancel_caller_entry :: proc(box: ^Cancel_Call_Box) {
 	_, code, _, cerr := jsonrpc.conn_call(
 		box.pair.conn,
 		"svc.test/slow2",
@@ -537,7 +533,7 @@ svc_cancel_propagates_from_a_blocked_child_call :: proc(t: ^testing.T) {
 	res := new(Slow_Result, context.allocator)
 	box := new(Cancel_Call_Box, context.allocator)
 	box^ = {pair = pair, token = task, res = res}
-	sthr := thread.create_and_start_with_data(box, cancel_caller_entry, self_cleanup = false)
+	sthr := thread.create_and_start_with_poly_data(box, cancel_caller_entry, self_cleanup = false)
 
 	// Once the daemon is inside the handler, firing the caller's token
 	// must both unblock the child and abort the daemon side. Bounded the
@@ -739,7 +735,7 @@ svc_glue_rejects_fired_token_at_entry :: proc(t: ^testing.T) {
 
 	lb := new(Loopback, context.allocator)
 	lb^ = {conn = c, pipe = &p}
-	thr := thread.create_and_start_with_data(lb, loopback_serve, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(lb, loopback_serve, self_cleanup = false)
 
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
@@ -802,7 +798,7 @@ svc_glue_refuses_mutating_methods_when_read_only :: proc(t: ^testing.T) {
 
 	lb := new(Loopback, context.allocator)
 	lb^ = {conn = c, pipe = &p}
-	thr := thread.create_and_start_with_data(lb, loopback_serve, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(lb, loopback_serve, self_cleanup = false)
 
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)
@@ -890,7 +886,7 @@ svc_glue_gates_requests_until_hello :: proc(t: ^testing.T) {
 
 	lb := new(Loopback, context.allocator)
 	lb^ = {conn = c, pipe = &p}
-	thr := thread.create_and_start_with_data(lb, loopback_serve, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(lb, loopback_serve, self_cleanup = false)
 
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena, context.allocator)

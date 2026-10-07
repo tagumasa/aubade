@@ -56,7 +56,7 @@ conn_start_request_queue :: proc(c: ^Conn, cap: int = REQUEST_QUEUE_CAP, a := co
 	// would otherwise hand teardown an unfreeable handle.
 	thread_alloc := context.allocator
 	context.allocator = a
-	q.worker = thread.create_and_start_with_data(q, queue_worker_entry, self_cleanup = false, name = "aubade-req-queue")
+	q.worker = thread.create_and_start_with_poly_data(q, queue_worker_entry, self_cleanup = false, name = "aubade-req-queue")
 	context.allocator = thread_alloc
 	if q.worker == nil {
 		chan.destroy(q.recv)
@@ -95,8 +95,7 @@ queue_stop :: proc(c: ^Conn) {
 	free(q, q.allocator)
 }
 
-queue_worker_entry :: proc(data: rawptr) {
-	q := cast(^Request_Queue)data
+queue_worker_entry :: proc(q: ^Request_Queue) {
 	c := q.conn
 	for {
 		entry, ok := chan.recv(q.recv)

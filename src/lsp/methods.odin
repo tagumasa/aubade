@@ -24,6 +24,7 @@ METHOD_PREPARE_CALL_HIERARCHY :: "textDocument/prepareCallHierarchy"
 METHOD_INCOMING_CALLS  :: "callHierarchy/incomingCalls"
 METHOD_OUTGOING_CALLS  :: "callHierarchy/outgoingCalls"
 METHOD_DOCUMENT_DIAGNOSTIC :: "textDocument/diagnostic"
+METHOD_SEMANTIC_TOKENS_FULL  :: "textDocument/semanticTokens/full"
 
 // --- client -> server (notifications) ---
 
@@ -33,10 +34,12 @@ METHOD_CANCEL_REQUEST :: "$/cancelRequest"
 METHOD_DID_OPEN      :: "textDocument/didOpen"
 METHOD_DID_CHANGE    :: "textDocument/didChange"
 METHOD_DID_CLOSE     :: "textDocument/didClose"
+METHOD_DID_SAVE      :: "textDocument/didSave"
 
 // --- server -> client (requests the client must answer) ---
 
 METHOD_WORKSPACE_CONFIGURATION     :: "workspace/configuration"
+METHOD_APPLY_EDIT                  :: "workspace/applyEdit"
 METHOD_REGISTER_CAPABILITY         :: "client/registerCapability"
 METHOD_UNREGISTER_CAPABILITY       :: "client/unregisterCapability"
 METHOD_WORK_DONE_PROGRESS_CREATE   :: "window/workDoneProgress/create"

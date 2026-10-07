@@ -120,7 +120,7 @@ conn_trace_hook_sees_both_directions :: proc(t: ^testing.T) {
 
 	lb := new(Loopback, context.allocator)
 	lb^ = {conn = c, pipe = &p}
-	thr := thread.create_and_start_with_data(lb, loopback_serve, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(lb, loopback_serve, self_cleanup = false)
 	// Teardown is defer-protected from the moment the thread exists: the
 	// early return below (and any failure path) must still unblock and
 	// reap the loopback, or the leaked runner thread corrupts the

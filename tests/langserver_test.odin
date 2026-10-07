@@ -39,6 +39,13 @@ when ODIN_OS == .Windows {
 
 Fake_Peer :: struct {
 	up, down: Pipe,
+	// The fabricated client side of the pair (set by fake_ls_create; nil
+	// when the factory never ran). Harnesses that must complete a
+	// server->client round trip (the daemon's documentSymbol request
+	// against the fake) read the request frames off `up` through their own
+	// reader and dispatch the reply into this conn — the fake itself has
+	// no reader thread by design.
+	conn: ^jsonrpc.Conn,
 }
 
 Fake_Factory :: struct {
@@ -156,6 +163,7 @@ fake_ls_create :: proc(
 
 	client := new(lsp.Client, a)
 	lsp.client_init(client, client_conn, clock, entry.id, a)
+	peer.conn = client_conn
 	// The fabricated handshake: initialized with a plausible capability
 	// view. No reader thread exists, so nothing would answer a real
 	// initialize request — by design (see the block comment above).
@@ -1444,8 +1452,7 @@ Park_Worker :: struct {
 	err:  platform.Err,
 }
 
-park_worker_main :: proc(data: rawptr) {
-	w := cast(^Park_Worker)data
+park_worker_main :: proc(w: ^Park_Worker) {
 	_, w.err = langserver.manager_ensure(w.m, "tst", context.temp_allocator, nil)
 	sync.atomic_store(&w.done, true)
 }
@@ -1475,7 +1482,7 @@ manager_ensure_park_is_deadline_capped :: proc(t: ^testing.T) {
 	w := new(Park_Worker, context.allocator)
 	w^ = {m = lt.m}
 	defer free(w, context.allocator)
-	th := thread.create_and_start_with_data(w, park_worker_main, self_cleanup = false, name = "ensure-park-worker")
+	th := thread.create_and_start_with_poly_data(w, park_worker_main, self_cleanup = false, name = "ensure-park-worker")
 	if th == nil {
 		testing.expectf(t, false, "worker thread failed to start")
 		return
@@ -1661,8 +1668,7 @@ langserver_manager_restart_after_destroy_refuses_insert :: proc(t: ^testing.T) {
 	defer free(w, context.allocator)
 	w^ = {m = lt.m}
 
-	restart_worker_main :: proc(data: rawptr) {
-		rw := cast(^Restart_Worker)data
+	restart_worker_main :: proc(rw: ^Restart_Worker) {
 			err := langserver.manager_restart(rw.m, "tst", context.temp_allocator)
 			sync.mutex_lock(&rw.mu)
 		rw.err = err
@@ -1670,7 +1676,7 @@ langserver_manager_restart_after_destroy_refuses_insert :: proc(t: ^testing.T) {
 		sync.cond_broadcast(&rw.cond)
 		sync.mutex_unlock(&rw.mu)
 	}
-	thr := thread.create_and_start_with_data(w, restart_worker_main, self_cleanup = false)
+	thr := thread.create_and_start_with_poly_data(w, restart_worker_main, self_cleanup = false)
 	if thr == nil {
 		testing.expectf(t, false, "worker thread failed to start")
 		return
