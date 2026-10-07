@@ -12,6 +12,7 @@ package tests
 
 import "core:encoding/json"
 import "core:mem"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -855,7 +856,7 @@ opsvc_arena :: proc(a: ^mem.Dynamic_Arena) -> mem.Allocator {
 // from the rig's raw temp spelling on macOS (/var -> /private/var).
 opsvc_canonical_uri :: proc(p: ^Opsvc_Pair, name: string) -> string {
 	root := safety.pathguard_resolve_root(p.tmp, context.temp_allocator)
-	return strings.concatenate({"file://", root, "/", name}, context.temp_allocator)
+	return svcrig_file_uri(root, name)
 }
 
 // --- tests: the host half -----------------------------------------------------
@@ -873,7 +874,7 @@ opsvc_format_roundtrip :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	req := lspserver.Ops_Request{kind = .Formatting, uri = doc_uri, tab_size = 8, insert_spaces = false}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expectf(t, !res.failed, "format must not fail: %s", res.err_message)
@@ -904,7 +905,7 @@ opsvc_code_actions_respell_uris :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	req := lspserver.Ops_Request{kind = .Code_Actions, uri = doc_uri, start_line = 0, start_col = 1, end_line = 2, end_col = 3}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expectf(t, !res.failed, "code actions must not fail: %s", res.err_message)
@@ -944,7 +945,7 @@ opsvc_inlay_hints_roundtrip :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	req := lspserver.Ops_Request{kind = .Inlay_Hints, uri = doc_uri, start_line = 0, start_col = 0, end_line = 9, end_col = 0}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expectf(t, !res.failed, "inlay hints must not fail: %s", res.err_message)
@@ -983,7 +984,7 @@ opsvc_prepare_walks_the_outline :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.cr"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.cr")
 	req := lspserver.Ops_Request{kind = .Prepare_Call_Hierarchy, uri = doc_uri, start_line = 2, start_col = 4}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expectf(t, !res.failed, "prepare must not fail: %s", res.err_message)
@@ -1021,7 +1022,7 @@ opsvc_edges_direction_and_conversion :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	req := lspserver.Ops_Request{kind = .Call_Edges, uri = doc_uri, start_line = 5, start_col = 6, incoming = true}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expectf(t, !res.failed, "edges must not fail: %s", res.err_message)
@@ -1051,7 +1052,11 @@ opsvc_edges_direction_and_conversion :: proc(t: ^testing.T) {
 	req2 := lspserver.Ops_Request{kind = .Call_Edges, uri = doc_uri, start_line = 5, start_col = 6, incoming = false}
 	res2 := session.host_lsp_ops(p.host, req2, a)
 	testing.expectf(t, !res2.failed, "outgoing must not fail: %s", res2.err_message)
-	testing.expectf(t, len(p.state.calls) == 2 && p.state.calls[1].direction == "outgoing", "the outgoing direction must ride the params, got %s", p.state.calls[len(p.state.calls)-1].direction)
+	outgoing := ""
+	if len(p.state.calls) == 2 {
+		outgoing = p.state.calls[1].direction
+	}
+	testing.expectf(t, len(p.state.calls) == 2 && outgoing == "outgoing", "the outgoing direction must ride the params, got %s", outgoing)
 }
 
 @(test)
@@ -1070,12 +1075,61 @@ opsvc_link_down_fails :: proc(t: ^testing.T) {
 	a := opsvc_arena(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
 
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	req := lspserver.Ops_Request{kind = .Formatting, uri = doc_uri, tab_size = 4, insert_spaces = true}
 	res := session.host_lsp_ops(p.host, req, a)
 	testing.expect(t, res.failed, "a down link must fail the fetch")
 	testing.expect(t, res.err_message == "the daemon link is down", "the failure must name the cause")
 	testing.expectf(t, len(p.state.calls) == 0, "a down link must not reach the daemon")
+}
+
+when ODIN_OS == .Darwin || ODIN_OS == .Linux {
+
+	// The canonical root and the client's uri spelling can differ by a
+	// symlinked directory: the lexical root compare misses and the
+	// resolver must land the document (POSIX-only — making a symlink
+	// needs privileges on Windows).
+	@(test)
+	opsvc_rel_path_resolves_symlinked_spelling :: proc(t: ^testing.T) {
+		p := opsvc_pair_init(t)
+		if p == nil {
+			return
+		}
+		defer opsvc_pair_destroy(p)
+
+		real_dir := strings.concatenate({p.tmp, "/real"}, context.temp_allocator)
+		if err := os.make_directory(real_dir, os.Permissions{.Read_User, .Write_User, .Execute_User}); err != nil {
+			testing.expectf(t, false, "mkdir failed: %v", err)
+			return
+		}
+		link := strings.concatenate({p.tmp, "/link"}, context.temp_allocator)
+		if err := os.symlink("real", link); err != nil {
+			testing.expectf(t, false, "symlink failed: %v", err)
+			return
+		}
+
+		// The session holds the canonical spelling while the client
+		// spells through the link — the resolve-on-miss compare must
+		// accept it. cfg.project_root is rig-owned and the destroy path
+		// frees it on the ambient allocator, so the swap keeps that
+		// ownership: the init clone is freed here and the canonical root
+		// is cloned onto the same allocator.
+		delete(p.app.cfg.project_root, context.allocator)
+		p.app.cfg.project_root = safety.pathguard_resolve_root(real_dir, context.allocator)
+		p.state.answer = `{"items":[]}`
+
+		arena: mem.Dynamic_Arena
+		a := opsvc_arena(&arena)
+		defer mem.dynamic_arena_destroy(&arena)
+
+		doc_uri := svcrig_file_uri(link, "main.go")
+		req := lspserver.Ops_Request{kind = .Formatting, uri = doc_uri, tab_size = 4, insert_spaces = true}
+		res := session.host_lsp_ops(p.host, req, a)
+		testing.expectf(t, !res.failed, "format through the link must not fail: %s", res.err_message)
+		testing.expectf(t, len(p.state.calls) == 1 && p.state.calls[0].rel == "main.go",
+			"the symlinked spelling must land as the canonical rel, got %d calls", len(p.state.calls))
+	}
+
 }
 
 // opsrelay_dto_range reads one flattened DTO range block.
@@ -1106,7 +1160,7 @@ opsrelay_sweep_registers_langserver_faces :: proc(t: ^testing.T) {
 	p.daemon_state.start_references = true
 	p.daemon_state.start_declaration = false
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	// The push makes go Ready, and the starter pass must register the four

@@ -654,10 +654,10 @@ def main():
             pass
         # Sweep the daemon for this throwaway project, plus any fake-server
         # straggler (its exe is python, so the binary match cannot see it).
-        # /proc walking is POSIX-only; on Windows the daemon exits on its
-        # own once every child is gone, and the rmtree retry below waits it
-        # out.
-        if os.name == "posix":
+        # /proc exists only on Linux; everywhere else the daemon exits on
+        # its own once every child is gone, and the rmtree retry below
+        # waits it out.
+        if sys.platform.startswith("linux"):
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 for pid in os.listdir("/proc"):
                     if not pid.isdigit():

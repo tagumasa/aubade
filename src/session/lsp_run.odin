@@ -973,12 +973,27 @@ lsp_rel_path :: proc(h: ^Lsp_Host, uri: string) -> string {
 		lsp_log(fmt.aprintf("document URI is not a file URI: %s", uri, allocator = context.temp_allocator))
 		return ""
 	}
-	rel := lsp.rel_path_for_root(h.app.cfg.project_root, path)
+	rel := lsp_path_rel_for_root(h, path, context.temp_allocator)
 	if rel == "" {
 		lsp_log(fmt.aprintf("document %s is outside the project root; dropped", uri, allocator = context.temp_allocator))
 		return ""
 	}
 	return rel
+}
+
+// lsp_path_rel_for_root strips the project root from a decoded document
+// path. The lexical compare answers the common spelling; a miss resolves
+// the path's symlinks and compares once more, so a client spelling that
+// differs from the canonical root still lands (a root behind a symlink
+// is spelled either way by clients — macOS temp trees: /var vs
+// /private/var). The walk runs only on the miss — an in-root document
+// never pays it.
+lsp_path_rel_for_root :: proc(h: ^Lsp_Host, path: string, a: mem.Allocator) -> string {
+	if rel := lsp.rel_path_for_root(h.app.cfg.project_root, path); rel != "" {
+		return rel
+	}
+	resolved, _ := safety.pathguard_resolve_symlinks(path, "", a)
+	return lsp.rel_path_for_root(h.app.cfg.project_root, resolved)
 }
 
 // lsp_parent_conn snapshots the current parent link under its mutex.
@@ -1304,7 +1319,7 @@ relay_uri_table_build :: proc(h: ^Lsp_Host, arena: mem.Allocator) -> Relay_Uri_T
 	rels := make([]string, len(uris), arena)
 	for u, i in uris {
 		if p, ok := lsp.uri_to_path(u, arena); ok {
-			rels[i] = lsp.rel_path_for_root(h.app.cfg.project_root, p)
+			rels[i] = lsp_path_rel_for_root(h, p, arena)
 		}
 	}
 	return Relay_Uri_Table{uris = uris, rels = rels}

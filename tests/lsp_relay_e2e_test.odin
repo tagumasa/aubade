@@ -49,6 +49,7 @@ import "src:lspserver"
 import "src:platform"
 import "src:safety"
 import "src:session"
+import "src:symbol"
 import "src:svc"
 
 // The fixture document (crystal) and the hierarchical DocumentSymbol
@@ -494,7 +495,7 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 
 	// (a) initialize with the real project root; the reply must carry the
 	// static faces and the negotiated encoding.
-	root_uri := strings.concatenate({"file://", root}, context.temp_allocator)
+	root_uri := symbol.file_uri(root, context.temp_allocator)
 	init_params := strings.concatenate(
 		{
 			`"rootUri":`,
@@ -536,7 +537,7 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	lspe2e_notify(t, r, lsp.METHOD_INITIALIZED, "")
 
 	svc_symbol_write_file(t, root, "main.cr", LSPE2E_DOC_TEXT)
-	doc_uri := strings.concatenate({"file://", root, "/main.cr"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(root, "main.cr")
 	open_params := strings.concatenate(
 		{
 			`"textDocument":{"uri":`,

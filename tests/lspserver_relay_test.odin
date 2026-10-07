@@ -24,6 +24,7 @@ import "src:lspserver"
 import "src:platform"
 import "src:rpc"
 import "src:session"
+import "src:symbol"
 import "src:svc"
 
 // --- face-side readers ------------------------------------------------------
@@ -669,6 +670,15 @@ Svc_Rig :: struct {
 	tmp:  string, // the project root (owned clone)
 }
 
+// svcrig_file_uri spells one document uri through the product's single
+// encoder — hand-splicing "file://" onto a platform path builds uris no
+// client sends (Windows drive letters and backslashes both miss), and the
+// encoder keeps the decode round trip exact on every platform.
+svcrig_file_uri :: proc(root: string, name: string) -> string {
+	path := strings.concatenate({root, "/", name}, context.temp_allocator)
+	return symbol.file_uri(path, context.temp_allocator)
+}
+
 // svc_rig_init builds the core in the real session's order: temp root,
 // token and clock, the App, the channel pair, the daemon conn (dispatch
 // host and handlers before its reader thread starts), the child conn and
@@ -1013,7 +1023,7 @@ relayhost_push_diagnostics_republishes_and_drops_foreign :: proc(t: ^testing.T) 
 	defer relayhost_pair_destroy(p)
 
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 7, "package main\n")
 
 	// A push for the open document republishes under the view's spelling
@@ -1044,7 +1054,7 @@ relayhost_push_diagnostics_republishes_and_drops_foreign :: proc(t: ^testing.T) 
 	unopened := strings.concatenate(
 		{
 			`{"uri":`,
-			jsonutil.json_quote(strings.concatenate({"file://", p.tmp, "/other.go"}, context.temp_allocator), context.temp_allocator),
+			jsonutil.json_quote(svcrig_file_uri(p.tmp, "other.go"), context.temp_allocator),
 			`,"items":`,
 			jsonutil.json_quote(items, context.temp_allocator),
 			"}",
@@ -1067,7 +1077,7 @@ relayhost_langserver_state_registers_capabilities :: proc(t: ^testing.T) {
 	p.daemon_state.start_references = true
 	p.daemon_state.start_declaration = false
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	// The didOpen armed the language; a running=true push makes it Ready
@@ -1111,7 +1121,7 @@ relayhost_start_notfound_latches_noserver :: proc(t: ^testing.T) {
 
 	p.daemon_state.start_ok = false // the daemon answers Method_Not_Found
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.rb"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.rb")
 	relayhost_open(t, p, doc_uri, "ruby", 1, "class A\nend\n")
 
 	// The pass can run synchronously here: the start fails, so nothing
@@ -1141,7 +1151,7 @@ relayhost_running_false_unregisters :: proc(t: ^testing.T) {
 	p.daemon_state.start_references = true
 	p.daemon_state.start_declaration = true
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true,"declaration":true}`, session.handle_push_langserver_state)
@@ -1184,7 +1194,7 @@ relayhost_doc_open_fail_records_no_language :: proc(t: ^testing.T) {
 
 	p.daemon_state.doc_open_fail = true
 	relayhost_arm_face(t, p)
-	doc_uri := strings.concatenate({"file://", p.tmp, "/main.go"}, context.temp_allocator)
+	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	testing.expectf(t, p.daemon_state.doc_open_calls == 1, "the doc open must reach the daemon")
