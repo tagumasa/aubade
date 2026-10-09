@@ -20,13 +20,20 @@ What you get once `aubade` is running:
 
 ## Prerequisite
 
-`aubade` must be on PATH and must be a **v1.1 or newer build** (the `lsp`
+The extension must find an **`aubade` that is a v1.1 or newer build** (the `lsp`
 subcommand does not exist before v1.1). Build and install it from the
 repository root:
 
 ```sh
 scripts/build_install.sh
 ```
+
+With `aubade.path` unset (the default), the extension resolves the launch
+command itself: an executable `aubade` on the editor's PATH first, then the
+documented install locations — `~/.local/bin/aubade` on Linux/macOS,
+`%LOCALAPPDATA%\Programs\aubade\aubade.exe` on Windows. This matters for
+GUI-launched editors, which often do not inherit the login shell's PATH; set
+`aubade.path` to an absolute path to override the whole ladder.
 
 ## Installing
 
@@ -64,7 +71,7 @@ Uninstall with `codium --uninstall-extension tagumasa.aubade`.
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `aubade.path` | `"aubade"` | Path to the aubade binary to launch (`<path> lsp`). |
+| `aubade.path` | `"aubade"` | Path to the aubade binary to launch (`<path> lsp`). An explicit value is used verbatim; the default resolves from PATH, then the documented install locations. |
 | `aubade.diagnostics.disabledLanguages` | `[]` | Language IDs for which aubade suppresses its own diagnostics. |
 
 ### Per-language diagnostics toggle
