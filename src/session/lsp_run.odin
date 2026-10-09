@@ -1531,9 +1531,7 @@ lsp_relay_unregister :: proc(h: ^Lsp_Host, language: string, a: mem.Allocator) {
 // what was registered: references behind the server's capability bit, and
 // the four langserver faces unconditionally — the handshake's capability
 // view carries no bits for them, so an unsupported face fails at call
-// time into an empty answer. definition and declaration are absent: the
-// resolver answers them out of the daemon's own index, statically
-// advertised at initialize, with no server lifecycle to follow.
+// time into an empty answer.
 lsp_relay_batch :: proc(e: Relay_Lang, language: string, a: mem.Allocator) -> []lspserver.Capability_Registration {
 	regs := make([dynamic]lspserver.Capability_Registration, 0, 5, a)
 	if e.references {
@@ -1547,8 +1545,8 @@ lsp_relay_batch :: proc(e: Relay_Lang, language: string, a: mem.Allocator) -> []
 }
 
 // lsp_ops_registration builds one registration record from its method and
-// id basename — the shape lsp_relay_registration maps the position-relay
-// kinds onto, shared so the id namespace stays one spelling.
+// id basename — every registration goes through it so the id namespace
+// stays one spelling.
 lsp_ops_registration :: proc(language: string, method, base: string, a: mem.Allocator) -> lspserver.Capability_Registration {
 	return lspserver.Capability_Registration{
 		id       = strings.concatenate({RELAY_REGISTRATION_PREFIX, language, ".", base}, a),
@@ -1562,13 +1560,12 @@ lsp_ops_registration :: proc(language: string, method, base: string, a: mem.Allo
 // ---------------------------------------------------------------------------
 
 // host_lsp_relay answers one position-keyed navigation request.
-// definition and declaration resolve through the daemon's own outline and
-// name index (svc.symbol/find_definition) — no language server involved,
-// so the jump works with none running; references are the one navigation
-// an index cannot answer and forward to the file's live server through
-// svc.langserver/references. Misses and failures answer empty locations —
-// the editor's request is never answered with an error response; failures
-// log once per request through Relay_Result.failed.
+// definition and declaration resolve through the daemon's outline and
+// name index (svc.symbol/find_definition); references forward to the
+// file's live server through svc.langserver/references. Misses and
+// failures answer empty locations — the editor's request is never
+// answered with an error response; failures log once per request through
+// Relay_Result.failed.
 host_lsp_relay :: proc(host: rawptr, uri: string, line: int, col_utf16: int, include_declaration: bool, kind: lspserver.Relay_Kind, arena: mem.Allocator) -> lspserver.Relay_Result {
 	r: lspserver.Relay_Result
 	h := cast(^Lsp_Host)host
@@ -1602,9 +1599,8 @@ host_lsp_relay :: proc(host: rawptr, uri: string, line: int, col_utf16: int, inc
 		cc := svc.client_symbol_find_definition(conn, rel, line, col_utf16, arena, platform.mono_ms() + LSP_RELAY_CALL_DEADLINE_MS, guard.token)
 		r.locations = relay_locations_from_svc(h, cc, views, arena, &r)
 	case .References:
-		// The ops-class budget: a cold project's first references answer
-		// spends package loads on top of the handshake the start face
-		// already paid.
+		// The ops-class budget: a cold first references answer spends
+		// package loads on top of the start handshake.
 		cc := svc.client_langserver_references(conn, rel, line, col_utf16, include_declaration, arena, platform.mono_ms() + LSP_OPS_CALL_DEADLINE_MS, guard.token)
 		r.locations = relay_locations_from_svc(h, cc, views, arena, &r)
 	}
@@ -1659,7 +1655,7 @@ relay_locations_from_svc :: proc(h: ^Lsp_Host, cc: svc.Client_Call, views: Relay
 // deepest selectionRange containing the position, then the deepest full
 // range, then the first symbol whose range starts exactly at it — nil when
 // no symbol sits at the position. The name path comes back with the hit.
-// ops_host_prepare ranks its candidates by this one rule.
+// ops_host_prepare ranks its candidates by this rule.
 relay_pick_hit :: proc(w: ^Relay_Walk) -> (hit: json.Value, hit_path: string) {
 	hit, hit_path = w.best_sel, w.best_sel_path
 	if hit == nil {

@@ -423,10 +423,9 @@ handle_initialize :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 	jsonutil.obj_set_object(&caps, "textDocumentSync", sync_cap)
 	jsonutil.obj_set_object(&caps, "semanticTokensProvider", tokens_cap)
 	jsonutil.obj_set(&caps, "documentSymbolProvider", jsonutil.json_bool(true))
-	// The definition/declaration jump is advertised statically: the daemon
-	// answers it out of its own outline and name index, with no language
-	// server lifecycle to follow (references stays dynamically registered
-	// behind a live server — an index cannot answer it).
+	// definition/declaration are answered by the daemon's outline and name
+	// index and advertised statically; references stays behind the dynamic
+	// registration (it needs a live server).
 	jsonutil.obj_set(&caps, "definitionProvider", jsonutil.json_bool(true))
 	jsonutil.obj_set(&caps, "declarationProvider", jsonutil.json_bool(true))
 	// The negotiated encoding lives inside capabilities (LSP 3.17

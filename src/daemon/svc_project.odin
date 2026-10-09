@@ -677,15 +677,13 @@ symbol_find_live_rows :: proc(
 }
 
 // handle_symbol_find_definition resolves an editor's jump at a position
-// without any language server: the identifier under the cursor is read
-// off the file's current contents — the same parse basis the outline was
-// resolved against, so the two can never disagree — the file's own
-// outline answers same-file jumps with full selection ranges, and the
-// name index tops an otherwise-empty answer up cross-file through the
-// same freshness pipeline symbol/find uses. The answer is name-exact:
-// scope-precise resolution is the language servers' business, and this
-// face never starts one. An identifier the outline and the index do not
-// know (a keyword, a local, a stdlib name) answers empty.
+// from the file's current contents — the same parse basis the outline
+// was resolved against — with no language server: the file's own outline
+// answers same-file jumps with full selection ranges, and the name index
+// tops an otherwise-empty answer up cross-file through the same
+// freshness pipeline symbol/find uses. The answer is name-exact; an
+// identifier the outline and the index do not know (a keyword, a local,
+// a stdlib name) answers empty.
 handle_symbol_find_definition :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	d := cast(^Daemon)ctx.user
 
@@ -703,9 +701,8 @@ handle_symbol_find_definition :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> 
 		return nil, serr
 	}
 	locs := make([dynamic]symbol.Location, 0, 8, ctx.allocator)
-	// No grammar serves the file: an outline-less language has no
-	// same-file answer and no honest index rows to verify against — the
-	// ordinary empty answer, not a refusal.
+	// No grammar serves the file: no source, no identifier to resolve —
+	// the ordinary empty answer, not a refusal.
 	if source == "" {
 		return symbol_definition_result(locs[:], ctx)
 	}
@@ -742,10 +739,8 @@ handle_symbol_find_definition :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> 
 	}
 
 	// Cross-file top-up, only when the file itself does not declare the
-	// name: the file's own declaration is the jump the click almost
-	// always means. Rows render as line-anchored points — the index
-	// carries no columns — bounded so a common name cannot answer a
-	// list longer than a peek list can serve.
+	// name. Rows render as line-anchored points — the index carries no
+	// columns.
 	rows, missing, lerr := symbol_find_live_rows(ctx, d, ident, ctx.allocator)
 	if lerr != nil {
 		return nil, lerr
@@ -776,8 +771,8 @@ symbol_definition_result :: proc(locs: []symbol.Location, ctx: ^svc.Svc_Ctx) -> 
 }
 
 // The cross-file top-up's bound: a common name in a large tree would
-// answer a list longer than an editor's peek list serves — same-file
-// hits stay uncapped (one file's outline is small by nature).
+// answer a list longer than an editor's peek list serves. Same-file hits
+// stay uncapped.
 SYMBOL_DEFINITION_CROSS_FILE_MAX :: 50
 
 // symbol_definition_ident reads the identifier around one LSP position

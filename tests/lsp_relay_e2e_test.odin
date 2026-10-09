@@ -20,8 +20,8 @@
 // helper thread (svc.langserver/start against the swapped-in fake, then
 // the client/registerCapability round trip answered from the test
 // thread), textDocument/definition at a USE site answered by the daemon's
-// own outline and name index — no language server involved; the fake
-// never sees a definition request — and the diagnostics relay: a
+// own outline and name index (the fake never sees a definition request),
+// and the diagnostics relay: a
 // publishDiagnostics dispatched into the fake server's client arrives on
 // the editor pipe under the view's uri spelling and version.
 package tests
@@ -546,9 +546,8 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	}
 
 	// (d) the definition relay at a USE site: the request resolves through
-	// the daemon's outline and name index — the running fake is never
-	// asked (nothing arms it), which is itself the assertion that no
-	// language server sits under the jump.
+	// the daemon's outline and name index; the running fake is never
+	// asked.
 	def_params := strings.concatenate(
 		{
 			`"textDocument":{"uri":`,

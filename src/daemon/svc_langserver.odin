@@ -450,11 +450,8 @@ handle_langserver_call_hierarchy :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) 
 }
 
 // handle_langserver_references forwards the request position to the
-// file's running server: references are the one navigation a name index
-// cannot answer, so the relay registers the references capability only
-// behind a live server and lands here. Failures surface as the typed
-// error (the LSP child's relay renders them as one log line plus an
-// empty answer, never an editor-facing error response).
+// file's running server. Failures surface as the typed error; the LSP
+// child's relay renders them as one log line plus an empty answer.
 handle_langserver_references :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
 	line, col, perr := file_require_position(ctx, params)
 	if perr != nil {

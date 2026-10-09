@@ -727,9 +727,8 @@ lspface_initialize_capabilities :: proc(t: ^testing.T) {
 	_, found = jsonutil.obj_get(caps, "documentSymbolProvider")
 	testing.expect(t, found, "documentSymbolProvider must be advertised")
 	// The definition/declaration jump is answered out of the daemon's own
-	// index — statically advertised, no server lifecycle to follow.
-	// references stays dynamically registered behind a live server (an
-	// index cannot answer it).
+	// index and advertised statically; references stays dynamically
+	// registered behind a live server.
 	def_v, def_found := jsonutil.obj_get(caps, "definitionProvider")
 	testing.expectf(t, def_found && jsonutil.value_bool(def_v), "definitionProvider must be advertised statically")
 	decl_v, decl_found := jsonutil.obj_get(caps, "declarationProvider")

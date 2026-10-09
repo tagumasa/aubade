@@ -14,8 +14,8 @@ Verified behaviors:
    capabilities (LSP 3.17 ServerCapabilities.positionEncoding), and the
    static capabilities — textDocumentSync Full(1) with openClose and save,
    semanticTokensProvider with a non-empty legend, documentSymbolProvider,
-   definitionProvider and declarationProvider (the index answers them; no
-   language server involved).
+   definitionProvider and declarationProvider, both answered by the
+   daemon's index.
 2. semanticTokens/full on an open go document: non-empty data, a multiple of
    5, non-negative deltas, every reconstructed (line, col) inside the
    document, token types inside the legend (pipeline shape, not content).
@@ -154,8 +154,7 @@ while True:
 # The registration batch lsp_relay_batch issues for a Ready language whose
 # server declared the references provider (src/session/lsp_run.odin):
 # references behind the capability bit, the four langserver faces
-# unconditionally — 5 registrations. definition/declaration are statically
-# advertised (the daemon's own index answers them; no server involved).
+# unconditionally — 5 registrations.
 EXPECTED_REGS = {
     "aubade.relay.go.references": "textDocument/references",
     "aubade.relay.go.formatting": "textDocument/formatting",
@@ -344,10 +343,8 @@ def check_initialize(init):
     else:
         ok("documentSymbolProvider advertised")
 
-    # The jump pair is static: the daemon's own index answers definition
-    # and declaration, with no server lifecycle to follow. references is
-    # NOT here — it stays behind the dynamic registration (an index
-    # cannot answer it).
+    # definition/declaration are static (the daemon's index answers
+    # them); references stays behind the dynamic registration.
     if caps.get("definitionProvider") is not True:
         fail("definitionProvider", f"{caps.get('definitionProvider')}")
     else:
@@ -462,11 +459,9 @@ def check_registration_batch(conn, timeout=30.0):
 
 def check_definition(conn, clean_uri):
     # A USE site: character 8 inside `Greeter` on line 13 (`g := Greeter{...}`).
-    # The daemon's own outline and name index answer — no language server is
-    # involved (the fake has no definition handler; a server-routed answer
-    # would come back empty and fail here) — so the range is the type's
-    # declaration identifier exactly, converted to the utf-8 connection's
-    # byte columns (the document is ASCII, so they coincide).
+    # The daemon's outline and name index answer; the range is the type's
+    # declaration identifier, converted to the utf-8 connection's byte
+    # columns (the document is ASCII, so they coincide).
     resp = conn.request("textDocument/definition", {
         "textDocument": {"uri": clean_uri},
         "position": {"line": 13, "character": 8},
