@@ -13,7 +13,9 @@ Verified behaviors:
    utf-8 chosen from a ["utf-16", "utf-8"] offer and reported inside
    capabilities (LSP 3.17 ServerCapabilities.positionEncoding), and the
    static capabilities — textDocumentSync Full(1) with openClose and save,
-   semanticTokensProvider with a non-empty legend, documentSymbolProvider.
+   semanticTokensProvider with a non-empty legend, documentSymbolProvider,
+   definitionProvider and declarationProvider, both answered by the
+   daemon's index.
 2. semanticTokens/full on an open go document: non-empty data, a multiple of
    5, non-negative deltas, every reconstructed (line, col) inside the
    document, token types inside the legend (pipeline shape, not content).
@@ -150,13 +152,11 @@ while True:
 '''
 
 # The registration batch lsp_relay_batch issues for a Ready language whose
-# server declared both position providers (src/session/lsp_run.odin):
-# definition always, references/declaration behind the server's capability
-# bits, and the four langserver faces unconditionally — 7 registrations.
+# server declared the references provider (src/session/lsp_run.odin):
+# references behind the capability bit, the four langserver faces
+# unconditionally — 5 registrations.
 EXPECTED_REGS = {
-    "aubade.relay.go.definition": "textDocument/definition",
     "aubade.relay.go.references": "textDocument/references",
-    "aubade.relay.go.declaration": "textDocument/declaration",
     "aubade.relay.go.formatting": "textDocument/formatting",
     "aubade.relay.go.codeAction": "textDocument/codeAction",
     "aubade.relay.go.inlayHint": "textDocument/inlayHint",
@@ -342,6 +342,19 @@ def check_initialize(init):
         fail("documentSymbolProvider", f"{caps.get('documentSymbolProvider')}")
     else:
         ok("documentSymbolProvider advertised")
+
+    # definition/declaration are static (the daemon's index answers
+    # them); references stays behind the dynamic registration.
+    if caps.get("definitionProvider") is not True:
+        fail("definitionProvider", f"{caps.get('definitionProvider')}")
+    else:
+        ok("definitionProvider advertised statically")
+    if caps.get("declarationProvider") is not True:
+        fail("declarationProvider", f"{caps.get('declarationProvider')}")
+    else:
+        ok("declarationProvider advertised statically")
+    if "referencesProvider" in caps:
+        fail("referencesProvider", "must stay dynamically registered, not static")
     return {"types": types}
 
 
@@ -445,12 +458,13 @@ def check_registration_batch(conn, timeout=30.0):
 
 
 def check_definition(conn, clean_uri):
-    # The relay resolves the position through the document outline; the
-    # Greeter identifier's own position (line 4, byte column 5 under the
-    # utf-8 connection) is the outline-grounded hit.
+    # A USE site: character 8 inside `Greeter` on line 13 (`g := Greeter{...}`).
+    # The daemon's outline and name index answer; the range is the type's
+    # declaration identifier, converted to the utf-8 connection's byte
+    # columns (the document is ASCII, so they coincide).
     resp = conn.request("textDocument/definition", {
         "textDocument": {"uri": clean_uri},
-        "position": {"line": 4, "character": 5},
+        "position": {"line": 13, "character": 8},
     })
     if "error" in resp:
         fail("definition relay", f"error response: {resp['error']}")
@@ -469,14 +483,13 @@ def check_definition(conn, clean_uri):
     if not same_doc(loc.get("uri", ""), clean_uri):
         fail("definition relay", f"uri {loc.get('uri')} != {clean_uri}")
         return
-    # The range must cover the definition identifier (4,5)..(4,12):
-    # inclusive start, exclusive end — the relay's own containment rule.
-    if (sl, sc) > (4, 5) or (el, ec) <= (4, 5):
+    if (sl, sc, el, ec) != (4, 5, 4, 12):
         fail("definition relay",
-             f"range ({sl},{sc})..({el},{ec}) does not cover the Greeter identifier")
+             f"range ({sl},{sc})..({el},{ec}) != the Greeter declaration "
+             f"(4,5)..(4,12)")
         return
-    ok(f"definition relayed to the Greeter definition "
-       f"({sl},{sc})..({el},{ec})")
+    ok("definition at the Greeter use site answered from the index "
+       f"(4,5)..(4,12)")
 
 
 def check_broken_publish(conn, broken_uri, timeout=15.0):

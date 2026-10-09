@@ -26,19 +26,18 @@ push_diagnostics_to_lsp_children :: proc(user: rawptr, uri: string, items_json: 
 }
 
 // push_langserver_state_to_lsp_children relays one real-LS running
-// transition; the capability bits ride along and are meaningful only
-// while running is true.
+// transition; the references capability bit rides along and is meaningful
+// only while running is true.
 push_langserver_state_to_lsp_children :: proc(
 	user: rawptr,
 	language: string,
-	running, references, declaration: bool,
+	running, references: bool,
 ) {
 	d := cast(^Daemon)user
-	params := jsonutil.json_object(4, context.temp_allocator)
+	params := jsonutil.json_object(3, context.temp_allocator)
 	jsonutil.obj_set(&params, "language", jsonutil.json_string(language))
 	jsonutil.obj_set(&params, "running", jsonutil.json_bool(running))
 	jsonutil.obj_set(&params, "references", jsonutil.json_bool(references))
-	jsonutil.obj_set(&params, "declaration", jsonutil.json_bool(declaration))
 	push_lsp_children(d, svc.METHOD_PUSH_LANGSERVER_STATE, json.Value(json.Object(params)))
 }
 

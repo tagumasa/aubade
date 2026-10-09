@@ -15,21 +15,18 @@
 // is_root_bound, exactly as run_lsp_session's --project flow behaves).
 //
 // Driven over the editor pipes in wire order: initialize (the static
-// capability faces), didOpen (the doc sync lands in the daemon's editor
-// buffers), one starter pass on a helper thread (svc.langserver/start
-// against the swapped-in fake, then the client/registerCapability round
-// trip answered from the test thread), textDocument/definition resolved
-// through svc.symbol/list — crystal's bundled grammar ships an empty tags
-// query, so the daemon's source order falls through the tree-sitter
-// producer to the LSP producer and the fake peer must answer
-// documentSymbol (a pump thread serves the preset; the shared fake's only
-// change is the recorded client conn) — and the diagnostics relay: a
+// capability faces, definition/declaration among them), didOpen (the doc
+// sync lands in the daemon's editor buffers), one starter pass on a
+// helper thread (svc.langserver/start against the swapped-in fake, then
+// the client/registerCapability round trip answered from the test
+// thread), textDocument/definition at a USE site answered by the daemon's
+// own outline and name index (the fake never sees a definition request),
+// and the diagnostics relay: a
 // publishDiagnostics dispatched into the fake server's client arrives on
 // the editor pipe under the view's uri spelling and version.
 package tests
 
 import "core:encoding/json"
-import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -52,22 +49,14 @@ import "src:session"
 import "src:symbol"
 import "src:svc"
 
-// The fixture document (crystal) and the hierarchical DocumentSymbol
-// preset the fake peer answers documentSymbol with. The selectionRange
-// rows name the symbols the definition relay must resolve: the request at
-// (2,4) sits inside `greet`'s full range, the walk picks the deepest
-// containing symbol, and the answer is `greet`'s selectionRange
-// (1,6)-(1,11) — utf-16 columns that pass through the utf-16 connection
-// unchanged.
-LSPE2E_DOC_TEXT :: "class Greeter\n  def greet\n    \"hello\"\n  end\nend\n\nGreeter.new.greet\n"
-
-LSPE2E_DOC_SYMBOL_PRESET :: `[{"name":"Greeter","kind":5,` +
-	`"range":{"start":{"line":0,"character":0},"end":{"line":4,"character":3}},` +
-	`"selectionRange":{"start":{"line":0,"character":6},"end":{"line":0,"character":13}},` +
-	`"children":[{"name":"greet","kind":6,` +
-	`"range":{"start":{"line":1,"character":2},"end":{"line":3,"character":5}},` +
-	`"selectionRange":{"start":{"line":1,"character":6},"end":{"line":1,"character":11}},` +
-	`"children":[]}]}]`
+// The fixture document (go — the grammar's symbol query feeds the
+// daemon's index resolver) declares the Greeter type at line 2, its
+// identifier at characters 5-12, and uses it at line 7 (`g :=
+// Greeter{...}`, `Greeter` at characters 6-13). The definition check
+// clicks character 8 of the use; the resolver must answer the type's
+// declaration extent (2,5)-(2,12) — utf-16 columns, and the connection is
+// utf-16, so they pass through unchanged.
+LSPE2E_DOC_TEXT :: "package main\n\ntype Greeter struct {\n\tName string\n}\n\nfunc main() {\n\tg := Greeter{Name: \"e2e\"}\n\t_ = g\n}\n"
 
 // --- the rig ------------------------------------------------------------------
 
@@ -94,11 +83,11 @@ Lspe2e_Rig :: struct {
 }
 
 lspe2e_rig_init :: proc(t: ^testing.T) -> ^Lspe2e_Rig {
-	// crystal's argv override pins an existing binary: the manager's
-	// override path skips the entry's runtime probe (the fake answers the
-	// handshake without a process, so the command itself never runs).
+	// go's argv override pins an existing binary: the manager's override
+	// path skips the entry's runtime probe (the fake answers the handshake
+	// without a process, so the command itself never runs).
 	config_jsonc := strings.concatenate(
-		{`{"language_server_commands": {"crystal": ["`, SH_NAME, `"]}}`},
+		{`{"language_server_commands": {"go": ["`, SH_NAME, `"]}}`},
 		context.temp_allocator,
 	)
 	pair := test_daemon_with_project(t, false, config_jsonc)
@@ -387,76 +376,6 @@ lspe2e_run_pass :: proc(
 	return ok_seen
 }
 
-// --- the fake peer pump --------------------------------------------------------
-
-// Lspe2e_Pump completes the fake LS's server->client round trips while a
-// daemon-side producer waits on one: the daemon's documentSymbol request
-// lands on the fake peer's up pipe, the pump answers with the preset and
-// dispatches the reply into the fake client's conn (the pending slot's
-// waiter — a daemon pool worker — wakes). The pump owns its readers
-// exclusively; peer.up's read deadline bounds every idle wake so the stop
-// flag is observed without a close.
-Lspe2e_Pump :: struct {
-	req_reader:   jsonrpc.Reader, // over peer.up (the fake client's outbound frames)
-	reply_writer: jsonrpc.Writer, // into peer.down (the fake client's inbound)
-	client:       ^lsp.Client,
-	stop:         bool, // atomic flag (sync.atomic_*)
-}
-
-lspe2e_frame_id_text :: proc(v: json.Value) -> string {
-	id, ok := jsonutil.obj_get(v, "id")
-	if !ok {
-		return "null"
-	}
-	#partial switch x in id {
-	case i64:
-		return fmt.aprintf("%d", x, allocator = context.temp_allocator)
-	case string:
-		return jsonutil.json_quote(x, context.temp_allocator)
-	case:
-	}
-	return "null"
-}
-
-lspe2e_pump_entry :: proc(p: ^Lspe2e_Pump) {
-	for !sync.atomic_load(&p.stop) {
-		frame, rerr := jsonrpc.read_frame(&p.req_reader, context.temp_allocator)
-		if rerr == .None {
-			v, perr := json.parse_bytes(frame, spec = .JSON, parse_integers = true, allocator = context.temp_allocator)
-			if perr == nil {
-				method := ""
-				if mv, ok := jsonutil.obj_get(v, "method"); ok {
-					method = jsonutil.value_str(mv)
-				}
-				// Notifications (the producer's didOpen/didClose pair) are
-				// dropped; only requests need the preset answer.
-				if method == lsp.METHOD_DOCUMENT_SYMBOL {
-					reply := strings.concatenate(
-						{
-							`{"jsonrpc":"2.0","id":`,
-							lspe2e_frame_id_text(v),
-							`,"result":`,
-							LSPE2E_DOC_SYMBOL_PRESET,
-							"}",
-						},
-						context.temp_allocator,
-					)
-					werr := jsonrpc.write_frame(&p.reply_writer, json_bytes(reply))
-					if werr == .None {
-						got, gerr := jsonrpc.read_frame(&p.client.conn.reader, context.temp_allocator)
-						if gerr == .None {
-							jsonrpc.conn_handle_body(p.client.conn, got, context.temp_allocator)
-						}
-					}
-				}
-			}
-		}
-		// Per-iteration scratch (frames, the parsed view, the reply) must
-		// not accumulate on this long-lived thread.
-		free_all(context.temp_allocator)
-	}
-}
-
 // --- the test ------------------------------------------------------------------
 
 @(test)
@@ -536,13 +455,13 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	// is what arms the language's relay record).
 	lspe2e_notify(t, r, lsp.METHOD_INITIALIZED, "")
 
-	svc_symbol_write_file(t, root, "main.cr", LSPE2E_DOC_TEXT)
-	doc_uri := svcrig_file_uri(root, "main.cr")
+	svc_symbol_write_file(t, root, "main.go", LSPE2E_DOC_TEXT)
+	doc_uri := svcrig_file_uri(root, "main.go")
 	open_params := strings.concatenate(
 		{
 			`"textDocument":{"uri":`,
 			jsonutil.json_quote(doc_uri, context.temp_allocator),
-			`,"languageId":"crystal","version":7,"text":`,
+			`,"languageId":"go","version":7,"text":`,
 			jsonutil.json_quote(LSPE2E_DOC_TEXT, context.temp_allocator),
 			"}",
 		},
@@ -550,11 +469,11 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	)
 	lspe2e_notify(t, r, lsp.METHOD_DID_OPEN, open_params)
 
-	rec, rec_ok := lspe2e_relay_record(r, "crystal")
+	rec, rec_ok := lspe2e_relay_record(r, "go")
 	testing.expectf(
 		t,
 		rec_ok && rec.state == .Pending,
-		"the accepted didOpen must arm crystal Pending (ok=%v)",
+		"the accepted didOpen must arm go Pending (ok=%v)",
 		rec_ok,
 	)
 	if !rec_ok {
@@ -562,7 +481,7 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	}
 
 	// (c) one starter pass: svc.langserver/start against the running fake
-	// (refs+declaration caps), then the caps-gated registration batch.
+	// (the references cap), then the caps-gated registration batch.
 	args := new(Lspe2e_Pass_Args, context.allocator)
 	args.h = r.host
 	done, derr := chan.create_buffered(chan.Chan(bool), 1, context.allocator)
@@ -584,26 +503,24 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 			regs_v, regs_ok := jsonutil.obj_get(params, "registrations")
 			if regs_ok {
 				regs, _ := jsonutil.as_array(regs_v)
-				testing.expectf(t, len(regs) == 7, "one batch of seven (three relays + the four langserver faces), got %d", len(regs))
+				testing.expectf(t, len(regs) == 5, "one batch of five (the references relay + the four langserver faces), got %d", len(regs))
 			}
-			lsprelay_assert_registration(t, params, 0, "aubade.relay.crystal.definition", lsp.METHOD_DEFINITION, "crystal")
-			lsprelay_assert_registration(t, params, 1, "aubade.relay.crystal.references", lsp.METHOD_REFERENCES, "crystal")
-			lsprelay_assert_registration(t, params, 2, "aubade.relay.crystal.declaration", lsp.METHOD_DECLARATION, "crystal")
-			lsprelay_assert_registration(t, params, 3, "aubade.relay.crystal.formatting", lsp.METHOD_FORMATTING, "crystal")
-			lsprelay_assert_registration(t, params, 4, "aubade.relay.crystal.codeAction", lsp.METHOD_CODE_ACTION, "crystal")
-			lsprelay_assert_registration(t, params, 5, "aubade.relay.crystal.inlayHint", lsp.METHOD_INLAY_HINT, "crystal")
-			lsprelay_assert_registration(t, params, 6, "aubade.relay.crystal.prepareCallHierarchy", lsp.METHOD_PREPARE_CALL_HIERARCHY, "crystal")
+			lsprelay_assert_registration(t, params, 0, "aubade.relay.go.references", lsp.METHOD_REFERENCES, "go")
+			lsprelay_assert_registration(t, params, 1, "aubade.relay.go.formatting", lsp.METHOD_FORMATTING, "go")
+			lsprelay_assert_registration(t, params, 2, "aubade.relay.go.codeAction", lsp.METHOD_CODE_ACTION, "go")
+			lsprelay_assert_registration(t, params, 3, "aubade.relay.go.inlayHint", lsp.METHOD_INLAY_HINT, "go")
+			lsprelay_assert_registration(t, params, 4, "aubade.relay.go.prepareCallHierarchy", lsp.METHOD_PREPARE_CALL_HIERARCHY, "go")
 		}
 	}
 	completed := lspe2e_run_pass(t, r, args, th, check)
 	testing.expect(t, completed, "the starter pass must complete")
 	free(args, context.allocator)
 
-	rec, rec_ok = lspe2e_relay_record(r, "crystal")
+	rec, rec_ok = lspe2e_relay_record(r, "go")
 	testing.expectf(
 		t,
-		rec_ok && rec.state == .Ready && rec.is_registered && rec.references && rec.declaration,
-		"the pass must leave crystal Ready and registered with both caps (ok=%v state=%v reg=%v)",
+		rec_ok && rec.state == .Ready && rec.is_registered && rec.references,
+		"the pass must leave go Ready and registered with the references cap (ok=%v state=%v reg=%v)",
 		rec_ok, rec.state, rec.is_registered,
 	)
 	if !rec_ok || !rec.is_registered {
@@ -617,58 +534,30 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 	client: ^lsp.Client = nil
 	running := langserver.manager_running_clients(r.pair.daemon.ls, context.temp_allocator)
 	for rc in running {
-		if rc.language_id == "crystal" {
+		if rc.language_id == "go" {
 			client = rc.client
 		}
 		langserver.manager_release(r.pair.daemon.ls, rc.client)
 	}
 	delete(running)
-	testing.expectf(t, client != nil, "crystal client missing after the pass")
+	testing.expectf(t, client != nil, "go client missing after the pass")
 	if client == nil {
 		return
 	}
 
-	// (d) the definition relay. crystal carries an empty tags query, so
-	// the daemon's symbol source order falls through tree-sitter to the
-	// LSP producer, which asks the running fake for documentSymbol: arm
-	// the pump that answers it, then send the request over the editor
-	// pipe.
-	sync.mutex_lock(&r.ff.mu)
-	peer: ^Fake_Peer = nil
-	if len(r.ff.peers) > 0 {
-		peer = r.ff.peers[0]
-	}
-	sync.mutex_unlock(&r.ff.mu)
-	testing.expectf(t, peer != nil && peer.conn != nil, "the fake peer (with its client conn) is missing")
-	if peer == nil || peer.conn == nil {
-		return
-	}
-	peer.up.read_deadline_ms = 30
-
-	pump := new(Lspe2e_Pump, context.allocator)
-	jsonrpc.reader_init(&pump.req_reader, pipe_read, &peer.up, 64 * 1024, context.allocator)
-	jsonrpc.writer_init(&pump.reply_writer, pipe_write, &peer.down)
-	pump.client = client
-	pump_th := thread.create_and_start_with_poly_data(pump, lspe2e_pump_entry, self_cleanup = false)
-
+	// (d) the definition relay at a USE site: the request resolves through
+	// the daemon's outline and name index; the running fake is never
+	// asked.
 	def_params := strings.concatenate(
 		{
 			`"textDocument":{"uri":`,
 			jsonutil.json_quote(doc_uri, context.temp_allocator),
-			`},"position":{"line":2,"character":4}`,
+			`},"position":{"line":7,"character":8}`,
 		},
 		context.temp_allocator,
 	)
 	def_body := lspe2e_request(t, r, "2", lsp.METHOD_DEFINITION, def_params)
 	items := lsprelay_result_locations(t, def_body)
-
-	// The pump's work is done once the reply is in hand (the documentSymbol
-	// answer happens-before the svc reply): stop it before the teardown.
-	sync.atomic_store(&pump.stop, true)
-	thread.join(pump_th)
-	free(pump_th, context.allocator)
-	jsonrpc.reader_destroy(&pump.req_reader)
-	free(pump, context.allocator)
 
 	testing.expectf(t, len(items) == 1, "definition must answer one location, got %d", len(items))
 	if len(items) == 1 {
@@ -676,8 +565,8 @@ lspe2e_aggregation_relay_end_to_end :: proc(t: ^testing.T) {
 		testing.expectf(t, uri == doc_uri, "the answer must use the view's uri, got %s", uri)
 		testing.expectf(
 			t,
-			sl == 1 && sc == 6 && el == 1 && ec == 11,
-			"the answer must be greet's selectionRange (1,6)-(1,11) in utf-16 columns, got (%d,%d)-(%d,%d)",
+			sl == 2 && sc == 5 && el == 2 && ec == 12,
+			"the answer must be the Greeter type's declaration (2,5)-(2,12) in utf-16 columns, got (%d,%d)-(%d,%d)",
 			sl, sc, el, ec,
 		)
 	}

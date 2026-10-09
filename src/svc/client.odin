@@ -461,6 +461,27 @@ client_langserver_call_hierarchy :: proc(conn: ^jsonrpc.Conn, rel: string, line,
 	return client_call(conn, METHOD_LANGSERVER_CALL_HIERARCHY, json.Value(json.Object(params)), arena, deadline_ms, token)
 }
 
+// point_params builds the relative_path + line/col block the
+// position-keyed requests send (the references relay, the definition
+// resolver).
+point_params :: proc(rel: string, line, col: int, arena: mem.Allocator) -> map[string]json.Value {
+	params := jsonutil.json_object(3, arena)
+	jsonutil.obj_set(&params, "relative_path", jsonutil.json_string(rel))
+	jsonutil.obj_set(&params, "line", jsonutil.json_int(i64(line)))
+	jsonutil.obj_set(&params, "col", jsonutil.json_int(i64(col)))
+	return params
+}
+
+client_langserver_references :: proc(conn: ^jsonrpc.Conn, rel: string, line, col: int, include_declaration: bool, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	params := point_params(rel, line, col, arena)
+	jsonutil.obj_set(&params, "include_declaration", jsonutil.json_bool(include_declaration))
+	return client_call(conn, METHOD_LANGSERVER_REFERENCES, json.Value(json.Object(params)), arena, deadline_ms, token)
+}
+
+client_symbol_find_definition :: proc(conn: ^jsonrpc.Conn, rel: string, line, col: int, arena: mem.Allocator, deadline_ms: i64, token: ^platform.Cancel_Token = nil) -> Client_Call {
+	return client_call(conn, METHOD_SYMBOL_FIND_DEFINITION, json.Value(json.Object(point_params(rel, line, col, arena))), arena, deadline_ms, token)
+}
+
 // --- svc.memory/* proxies -----------------------------------------------------
 
 client_symbol_find_references :: proc(

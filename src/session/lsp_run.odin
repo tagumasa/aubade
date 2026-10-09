@@ -1058,8 +1058,7 @@ Relay_State :: enum {
 
 Relay_Lang :: struct {
 	state:         Relay_State,
-	references:    bool, // the running server's capability bits (meaningful while Ready)
-	declaration:   bool,
+	references:    bool, // the running server's references capability (meaningful while Ready)
 	is_registered: bool,
 }
 
@@ -1255,7 +1254,6 @@ handle_push_langserver_state :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope
 	}
 	running := jsonutil.obj_get_bool(env.params, "running")
 	references := jsonutil.obj_get_bool(env.params, "references")
-	declaration := jsonutil.obj_get_bool(env.params, "declaration")
 	running_state: Relay_State = .Failed
 	if running {
 		running_state = .Ready
@@ -1266,7 +1264,6 @@ handle_push_langserver_state :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope
 		if running {
 			e.state = .Ready
 			e.references = references
-			e.declaration = declaration
 		} else {
 			e.state = .Failed
 		}
@@ -1276,7 +1273,7 @@ handle_push_langserver_state :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope
 		// A transition for a language this child never opened: record it,
 		// so a later didOpen starts from the live state instead of a guess.
 		key := strings.clone(language, h.app.allocator)
-		h.relay[key] = Relay_Lang{state = running_state, references = references, declaration = declaration}
+		h.relay[key] = Relay_Lang{state = running_state, references = references}
 		h.relay_dirty = true
 	}
 	sync.mutex_unlock(&h.mu)
@@ -1466,12 +1463,10 @@ lsp_relay_start :: proc(h: ^Lsp_Host, language: string, a: mem.Allocator) {
 		return
 	}
 	references := jsonutil.obj_get_bool(cc.result, "references")
-	declaration := jsonutil.obj_get_bool(cc.result, "declaration")
 	sync.mutex_lock(&h.mu)
 	if e, ok := h.relay[language]; ok && e.state == .Starting {
 		e.state = .Ready
 		e.references = references
-		e.declaration = declaration
 		h.relay[language] = e
 		h.relay_dirty = true
 	}
@@ -1533,19 +1528,14 @@ lsp_relay_unregister :: proc(h: ^Lsp_Host, language: string, a: mem.Allocator) {
 
 // lsp_relay_batch lists one language's full registration set — the batch
 // the register and unregister sweeps share, so a withdrawal always mirrors
-// what was registered: definition always, references/declaration behind
-// the server's capability bits, and the four langserver faces
-// (formatting, code actions, inlay hints, call hierarchy) unconditionally
-// — the handshake's capability view carries no bits for them, so an
-// unsupported face fails at call time into an empty answer.
+// what was registered: references behind the server's capability bit, and
+// the four langserver faces unconditionally — the handshake's capability
+// view carries no bits for them, so an unsupported face fails at call
+// time into an empty answer.
 lsp_relay_batch :: proc(e: Relay_Lang, language: string, a: mem.Allocator) -> []lspserver.Capability_Registration {
-	regs := make([dynamic]lspserver.Capability_Registration, 0, 7, a)
-	append(&regs, lsp_relay_registration(language, .Definition, a))
+	regs := make([dynamic]lspserver.Capability_Registration, 0, 5, a)
 	if e.references {
-		append(&regs, lsp_relay_registration(language, .References, a))
-	}
-	if e.declaration {
-		append(&regs, lsp_relay_registration(language, .Declaration, a))
+		append(&regs, lsp_ops_registration(language, lsp.METHOD_REFERENCES, "references", a))
 	}
 	append(&regs, lsp_ops_registration(language, lsp.METHOD_FORMATTING, "formatting", a))
 	append(&regs, lsp_ops_registration(language, lsp.METHOD_CODE_ACTION, "codeAction", a))
@@ -1554,24 +1544,9 @@ lsp_relay_batch :: proc(e: Relay_Lang, language: string, a: mem.Allocator) -> []
 	return regs[:]
 }
 
-// lsp_relay_registration builds one registration/unregistration record:
-// id aubade.relay.<language>.<base>.
-lsp_relay_registration :: proc(language: string, kind: lspserver.Relay_Kind, a: mem.Allocator) -> lspserver.Capability_Registration {
-	method, base := "", ""
-	switch kind {
-	case .Definition:
-		method, base = lsp.METHOD_DEFINITION, "definition"
-	case .References:
-		method, base = lsp.METHOD_REFERENCES, "references"
-	case .Declaration:
-		method, base = lsp.METHOD_DECLARATION, "declaration"
-	}
-	return lsp_ops_registration(language, method, base, a)
-}
-
 // lsp_ops_registration builds one registration record from its method and
-// id basename — the shape lsp_relay_registration maps the position-relay
-// kinds onto, shared so the id namespace stays one spelling.
+// id basename — every registration goes through it so the id namespace
+// stays one spelling.
 lsp_ops_registration :: proc(language: string, method, base: string, a: mem.Allocator) -> lspserver.Capability_Registration {
 	return lspserver.Capability_Registration{
 		id       = strings.concatenate({RELAY_REGISTRATION_PREFIX, language, ".", base}, a),
@@ -1584,12 +1559,13 @@ lsp_ops_registration :: proc(language: string, method, base: string, a: mem.Allo
 // The Relay_Host implementations
 // ---------------------------------------------------------------------------
 
-// host_lsp_relay resolves one position into the daemon's symbol inventory:
-// svc.symbol/list for the document (one round trip), the position walked
-// down the outline JSON tree to a symbol, then the per-kind face on top.
-// Misses and failures answer empty locations — the editor's request is
-// never answered with an error response; failures log once per request
-// through Relay_Result.failed.
+// host_lsp_relay answers one position-keyed navigation request.
+// definition and declaration resolve through the daemon's outline and
+// name index (svc.symbol/find_definition); references forward to the
+// file's live server through svc.langserver/references. Misses and
+// failures answer empty locations — the editor's request is never
+// answered with an error response; failures log once per request through
+// Relay_Result.failed.
 host_lsp_relay :: proc(host: rawptr, uri: string, line: int, col_utf16: int, include_declaration: bool, kind: lspserver.Relay_Kind, arena: mem.Allocator) -> lspserver.Relay_Result {
 	r: lspserver.Relay_Result
 	h := cast(^Lsp_Host)host
@@ -1603,162 +1579,49 @@ host_lsp_relay :: proc(host: rawptr, uri: string, line: int, col_utf16: int, inc
 		r.err_message = "the daemon link is down"
 		return r
 	}
-	// One guard brackets the whole request, not just the first call: the
-	// conn snapshot above is re-used by the References/Declaration legs
-	// after the unbounded outline walk, and the guard's registry entry is
-	// what keeps that conn provably alive across the walk — retire_link
-	// drains the registry (waiting for this entry's deregister) before it
-	// may destroy the conn, so a teardown landing mid-request cannot free
-	// it. The legs take this guard and begin none of their own.
+	// One guard brackets the whole request, not just the svc call: the conn
+	// snapshot above is re-used when the answer's locations re-spell below,
+	// and the guard's registry entry is what keeps that conn provably alive
+	// across the round trip — retire_link drains the registry (waiting for
+	// this entry's deregister) before it may destroy the conn, so a teardown
+	// landing mid-request cannot free it.
 	guard := lsp_call_begin(h)
 	defer lsp_call_end(h, guard)
-	cc := svc.client_symbol_list(conn, rel, arena, platform.mono_ms() + LSP_RELAY_CALL_DEADLINE_MS, guard.token)
-	if cc.call_err != .None {
-		r.failed = true
-		r.err_message = cc.err_message
-		return r
-	}
-	symbols_v, ok := jsonutil.obj_get(cc.result, "symbols")
-	if !ok {
-		return r
-	}
-	roots, is_arr := jsonutil.as_array(symbols_v)
-	if !is_arr {
-		return r
-	}
-
-	// The position ladder, mirroring the daemon's symbol_at_position
-	// semantics exactly: the deepest selectionRange containing the
-	// position wins, then the deepest full range containing it, then the
-	// first symbol whose range starts exactly at it (selection starts
-	// before full-range starts). Deepest = the candidate whose range
-	// starts latest — a child's range never starts before its parent's.
-	// The name path builds during the descent ("/"-joined,
-	// outermost-first, empty names skipped — the spelling
-	// symbol_full_name_path renders daemon-side), so the hit resolves
-	// through the existing symbol faces without a second walk.
-	walk := Relay_Walk{arena = arena, line = line, col = col_utf16}
-	relay_walk(roots, "", &walk)
-
-	hit, hit_path := relay_pick_hit(&walk)
-	if hit == nil {
-		return r // no symbol at the position: an ordinary empty answer
-	}
 
 	// The answer spellings resolve against one snapshot of the open-view
-	// set, however many locations the legs below produce.
+	// set, however many locations the answer carries.
 	views := relay_uri_table_build(h, arena)
 
+	// The svc face speaks UTF-16 (col_utf16) and answers UTF-16 items; the
+	// face converts to the connection's encoding.
 	switch kind {
-	case .Definition:
-		// The hit symbol's own location: its selection range (the
-		// identifier) when the outline carries one, its full range
-		// otherwise — has_end carries a real range here.
-		node_rel := rel
-		if lv, have_loc := jsonutil.obj_get(hit, "location"); have_loc {
-			if rp, found := jsonutil.obj_get(lv, "rel_path"); found {
-				if s := jsonutil.value_str(rp); s != "" {
-					node_rel = s
-				}
-			}
-		}
-		answer_rng := relay_hit_range(hit)
-		if answer_rng == nil {
-			return r
-		}
-		loc: lspserver.Relay_Location
-		loc.line, loc.col, loc.end_line, loc.end_col = relay_range_bounds(answer_rng)
-		loc.has_end = true
-		loc.uri = lsp_relay_client_uri(h, views, node_rel, arena)
-		if loc.uri == "" {
-			return r
-		}
-		locs := make([dynamic]lspserver.Relay_Location, 0, 1, arena)
-		append(&locs, loc)
-		r.locations = locs[:]
+	case .Definition, .Declaration:
+		cc := svc.client_symbol_find_definition(conn, rel, line, col_utf16, arena, platform.mono_ms() + LSP_RELAY_CALL_DEADLINE_MS, guard.token)
+		r.locations = relay_locations_from_svc(h, cc, views, arena, &r)
 	case .References:
-		r.locations = relay_locations_for_references(h, conn, guard, views, hit_path, rel, include_declaration, arena, &r)
-	case .Declaration:
-		r.locations = relay_locations_for_declaration(h, conn, guard, views, hit_path, rel, arena, &r)
+		// The ops-class budget: a cold first references answer spends
+		// package loads on top of the start handshake.
+		cc := svc.client_langserver_references(conn, rel, line, col_utf16, include_declaration, arena, platform.mono_ms() + LSP_OPS_CALL_DEADLINE_MS, guard.token)
+		r.locations = relay_locations_from_svc(h, cc, views, arena, &r)
 	}
 	return r
 }
 
-// relay_locations_for_references runs svc.symbol/find_references and maps
-// the items onto point locations. include_declaration is the request's
-// context.includeDeclaration — the same switch the daemon's include_self
-// applies to the symbol's own declaration site. The guard is the request's
-// own bracket (host_lsp_relay): this leg rides its registry entry, so the
-// conn cannot be retired under the call. A failed call marks `r` failed
-// and answers nil.
-relay_locations_for_references :: proc(
-	h: ^Lsp_Host,
-	conn: ^jsonrpc.Conn,
-	guard: Lsp_Call_Guard,
-	views: Relay_Uri_Table,
-	name_path, rel: string,
-	include_declaration: bool,
-	arena: mem.Allocator,
-	r: ^lspserver.Relay_Result,
-) -> []lspserver.Relay_Location {
-	locs := make([dynamic]lspserver.Relay_Location, 0, 4, arena)
-	cc := svc.client_symbol_find_references(
-		conn, name_path, rel,
-		false, include_declaration, false,
-		nil, nil,
-		arena, platform.mono_ms() + LSP_RELAY_CALL_DEADLINE_MS, guard.token,
-	)
+// relay_locations_from_svc maps one location-family svc answer onto relay
+// locations: the items carry {relative_path, line, col, end_line, end_col}
+// in UTF-16 (the svc face's convention), and each rel path re-spells
+// through the open-view table into the client's uri spelling (the
+// canonical root-relative file URI for a document this child does not
+// hold, so cross-file jumps follow; "" only when the path escapes the
+// root). A failed call marks `r` failed (the face answers empty plus one
+// log line); an item whose rel path has no client spelling drops.
+relay_locations_from_svc :: proc(h: ^Lsp_Host, cc: svc.Client_Call, views: Relay_Uri_Table, arena: mem.Allocator, r: ^lspserver.Relay_Result) -> []lspserver.Relay_Location {
 	if cc.call_err != .None {
 		r.failed = true
 		r.err_message = cc.err_message
 		return nil
 	}
-	items_v, ok := jsonutil.obj_get(cc.result, "items")
-	if !ok {
-		return locs[:]
-	}
-	items, is_arr := jsonutil.as_array(items_v)
-	if !is_arr {
-		return locs[:]
-	}
-	for item in items {
-		// The svc inventory carries the site as reference_line +
-		// reference_col (both UTF-16); an answer without the column (an
-		// older daemon) reads 0 through obj_get_int's absent default.
-		rel_of := ""
-		if v, found := jsonutil.obj_get(item, "relative_path"); found {
-			rel_of = jsonutil.value_str(v)
-		}
-		line := int(jsonutil.obj_get_int(item, "reference_line"))
-		col := int(jsonutil.obj_get_int(item, "reference_col"))
-		uri := lsp_relay_client_uri(h, views, rel_of, arena)
-		if uri == "" {
-			continue
-		}
-		append(&locs, lspserver.Relay_Location{uri = uri, line = line, col = col, has_end = false, end_line = line, end_col = col})
-	}
-	return locs[:]
-}
-
-// relay_locations_for_declaration runs svc.symbol/find_declaration (its
-// items carry line and col) and maps the entries onto point locations. The
-// guard is the request's own bracket (see relay_locations_for_references).
-relay_locations_for_declaration :: proc(
-	h: ^Lsp_Host,
-	conn: ^jsonrpc.Conn,
-	guard: Lsp_Call_Guard,
-	views: Relay_Uri_Table,
-	name_path, rel: string,
-	arena: mem.Allocator,
-	r: ^lspserver.Relay_Result,
-) -> []lspserver.Relay_Location {
 	locs := make([dynamic]lspserver.Relay_Location, 0, 4, arena)
-	cc := svc.client_symbol_find_declaration(conn, name_path, rel, arena, platform.mono_ms() + LSP_RELAY_CALL_DEADLINE_MS, guard.token)
-	if cc.call_err != .None {
-		r.failed = true
-		r.err_message = cc.err_message
-		return nil
-	}
 	items_v, ok := jsonutil.obj_get(cc.result, "items")
 	if !ok {
 		return locs[:]
@@ -1772,13 +1635,18 @@ relay_locations_for_declaration :: proc(
 		if v, found := jsonutil.obj_get(item, "relative_path"); found {
 			rel_of = jsonutil.value_str(v)
 		}
-		line := int(jsonutil.obj_get_int(item, "line"))
-		col := int(jsonutil.obj_get_int(item, "col"))
 		uri := lsp_relay_client_uri(h, views, rel_of, arena)
 		if uri == "" {
 			continue
 		}
-		append(&locs, lspserver.Relay_Location{uri = uri, line = line, col = col, has_end = false, end_line = line, end_col = col})
+		append(&locs, lspserver.Relay_Location{
+			uri      = uri,
+			line     = int(jsonutil.obj_get_int(item, "line")),
+			col      = int(jsonutil.obj_get_int(item, "col")),
+			has_end  = true,
+			end_line = int(jsonutil.obj_get_int(item, "end_line")),
+			end_col  = int(jsonutil.obj_get_int(item, "end_col")),
+		})
 	}
 	return locs[:]
 }
@@ -1787,8 +1655,7 @@ relay_locations_for_declaration :: proc(
 // deepest selectionRange containing the position, then the deepest full
 // range, then the first symbol whose range starts exactly at it — nil when
 // no symbol sits at the position. The name path comes back with the hit.
-// host_lsp_relay and ops_host_prepare share it, so both consumers rank
-// candidates by one rule.
+// ops_host_prepare ranks its candidates by this rule.
 relay_pick_hit :: proc(w: ^Relay_Walk) -> (hit: json.Value, hit_path: string) {
 	hit, hit_path = w.best_sel, w.best_sel_path
 	if hit == nil {
@@ -1910,22 +1777,6 @@ relay_range_contains :: proc(sl, sc: int, end: symbol.Position, line, col: int) 
 		return false
 	}
 	return !(line == int(end.line) && col == int(end.character))
-}
-
-// relay_hit_range picks the definition answer's range: the selection range
-// when present, the full range otherwise.
-relay_hit_range :: proc(node: json.Value) -> json.Value {
-	if rng, ok := jsonutil.obj_get(node, "selection_range"); ok {
-		if _, is_obj := jsonutil.as_object(rng); is_obj {
-			return rng
-		}
-	}
-	if rng, ok := jsonutil.obj_get(node, "range"); ok {
-		if _, is_obj := jsonutil.as_object(rng); is_obj {
-			return rng
-		}
-	}
-	return nil
 }
 
 // relay_range_bounds reads a range value's start/end line/column (-1 line

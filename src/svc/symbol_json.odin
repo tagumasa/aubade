@@ -10,8 +10,34 @@ import "src:symbol"
 
 METHOD_SYMBOL_LIST :: "svc.symbol/list"  // request: {path} -> {symbols: [...]}
 METHOD_SYMBOL_FIND :: "svc.symbol/find"  // request: {name} -> {matches: [{name, kind, path, hash, line, parent}]}
+METHOD_SYMBOL_FIND_DEFINITION :: "svc.symbol/find_definition" // request: {relative_path, line, col} -> {items: [{relative_path, line, col, end_line, end_col}]}
 METHOD_SYMBOL_FIND_DEAD_CODE :: "svc.symbol/find_dead_code"  // request: {path_prefix?, entry_prefixes?, limit?} -> {candidates: [...], stats: {...}}
 METHOD_INDEX_CRAWL :: "svc.index/crawl"  // request: {within?} -> {stats: {...}}
+
+// locations_json renders a location-family answer (the definition
+// resolver, the position-keyed references relay) with the flattened
+// range. Entries with no project-relative path — e.g. a stdlib location
+// a server reported — are dropped, the call-edges rule: every rendered
+// entry must carry a followable relative_path.
+locations_json :: proc(locs: []symbol.Location, a: mem.Allocator) -> json.Value {
+	out := make([]json.Value, len(locs), a)
+	n := 0
+	for i in 0..<len(locs) {
+		l := locs[i]
+		if l.rel_path == "" {
+			continue
+		}
+		dto := jsonutil.json_object(5, a)
+		jsonutil.obj_set(&dto, "relative_path", jsonutil.json_string(l.rel_path))
+		jsonutil.obj_set(&dto, "line", jsonutil.json_int(i64(l.range.start.line)))
+		jsonutil.obj_set(&dto, "col", jsonutil.json_int(i64(l.range.start.character)))
+		jsonutil.obj_set(&dto, "end_line", jsonutil.json_int(i64(l.range.end.line)))
+		jsonutil.obj_set(&dto, "end_col", jsonutil.json_int(i64(l.range.end.character)))
+		out[n] = json.Value(json.Object(dto))
+		n += 1
+	}
+	return jsonutil.json_array(out[:n], a)
+}
 
 // symbol_tree_json serializes a finalized forest. Bodies are deliberately
 // absent: list consumers render structure, body consumers fetch per symbol.

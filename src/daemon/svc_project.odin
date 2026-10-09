@@ -533,62 +533,9 @@ handle_symbol_find :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value
 	// component, and the anchor, is verified against the indexed parent
 	// chain after the freshness gate.
 	innermost := comps[len(comps)-1]
-	rows, serr := symbol_find_seed_rows(d, innermost, ctx.allocator)
-	if serr != nil {
-		return nil, serr
-	}
-
-	// Freshness gate: a row whose file no longer exists (deleted or moved
-	// away out-of-band, ahead of the TTL sweep) would answer from a ghost
-	// path. One stat per distinct path decides liveness; gone paths are
-	// purged so later lookups do not repeat the walk.
-	missing := make(map[string]bool, 8, ctx.allocator)
-	for row in rows {
-		if _, known := missing[row.path]; !known {
-			abs, _ := filepath.join({d.cfg.project_root, row.path}, context.temp_allocator)
-			_, _, ok := util.stat_kind_size(abs)
-			missing[row.path] = !ok
-		}
-	}
-	for path, gone in missing {
-		if gone {
-			_ = store.delete_symbol_path(d.db, path)
-		}
-	}
-
-	// Content freshness: the gate above proved the files exist, not that
-	// the rows describe their current bytes — no writer refreshes rows
-	// after an edit, so a renamed or moved-away symbol would keep
-	// answering from the old rows with a stale line. One content hash per
-	// distinct path decides; mismatched files are re-indexed through the
-	// producers (a running language server at most — find never starts
-	// one), and the seed query re-runs once so renamed-away and
-	// renamed-into names both settle.
-	if symbol_find_heal_stale(d, rows, missing, ctx.allocator, ctx.token) {
-		rerun, rerr := symbol_find_seed_rows(d, innermost, ctx.allocator)
-		if rerr != nil {
-			return nil, rerr
-		}
-		rows = rerun
-	}
-
-	// Out-of-band discovery, on-miss half: no rows at all for the
-	// innermost name means no read-side heal can help — heals re-check
-	// paths already in the answer, and a name introduced by an external
-	// write (an agent's own file creation, a rename on disk) has no row
-	// anywhere to trigger one. One min-gap-guarded incremental walk
-	// discovers it here; the seed re-runs so this answer, not just the
-	// next one, reflects the walked state. The walk obeys the request's
-	// cancel token and never starts a language server (find's rule).
-	if len(rows) == 0 && symbol_find_refresh_on_miss(d, ctx) {
-		rerun, rerr := symbol_find_seed_rows(d, innermost, ctx.allocator)
-		if rerr != nil {
-			return nil, rerr
-		}
-		rows = rerun
-		// The walk only indexes files it just stat'ed, so every new path
-		// is present and the ghost gate needs no re-run: paths absent
-		// from `missing` answer as existing.
+	rows, missing, lerr := symbol_find_live_rows(ctx, d, innermost, ctx.allocator)
+	if lerr != nil {
+		return nil, lerr
 	}
 
 	// Name-path verification at any depth: a row whose parent chain does
@@ -670,6 +617,196 @@ handle_symbol_find :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value
 	out := jsonutil.json_object(1, ctx.allocator)
 	jsonutil.obj_set(&out, "matches", jsonutil.json_array(items[:], ctx.allocator))
 	return json.Value(json.Object(out)), nil
+}
+
+// symbol_find_live_rows runs one innermost-component seed query through
+// the read-side freshness pipeline every find caller shares. The ghost
+// gate stats each distinct row path and purges rows whose file vanished
+// (ahead of the TTL sweep); the content heal re-indexes paths whose bytes
+// moved on (no writer refreshes rows after an edit) and the seed re-runs
+// once so renamed-away and renamed-into names both settle; an empty
+// answer triggers the min-gap-guarded discovery walk — a name introduced
+// by an out-of-band write has no row anywhere to heal. `missing` carries
+// the purged paths so rendering can skip them. The walk obeys the
+// request's cancel token, and none of this ever starts a language server.
+symbol_find_live_rows :: proc(
+	ctx: ^svc.Svc_Ctx,
+	d: ^Daemon,
+	innermost: string,
+	a: mem.Allocator,
+) -> (rows: []store.Symbol_Name_Row_With_File, missing: map[string]bool, err: platform.Err) {
+	serr: platform.Err
+	rows, serr = symbol_find_seed_rows(d, innermost, a)
+	if serr != nil {
+		return nil, nil, serr
+	}
+
+	missing = make(map[string]bool, 8, a)
+	for row in rows {
+		if _, known := missing[row.path]; !known {
+			abs, _ := filepath.join({d.cfg.project_root, row.path}, context.temp_allocator)
+			_, _, ok := util.stat_kind_size(abs)
+			missing[row.path] = !ok
+		}
+	}
+	for path, gone in missing {
+		if gone {
+			_ = store.delete_symbol_path(d.db, path)
+		}
+	}
+
+	if symbol_find_heal_stale(d, rows, missing, a, ctx.token) {
+		rerun, rerr := symbol_find_seed_rows(d, innermost, a)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		rows = rerun
+	}
+
+	if len(rows) == 0 && symbol_find_refresh_on_miss(d, ctx) {
+		rerun, rerr := symbol_find_seed_rows(d, innermost, a)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		rows = rerun
+		// The walk only indexes files it just stat'ed, so every new path
+		// is present and the ghost gate needs no re-run: paths absent
+		// from `missing` answer as existing.
+	}
+	return rows, missing, nil
+}
+
+// handle_symbol_find_definition resolves an editor's jump at a position
+// from the file's current contents — the same parse basis the outline
+// was resolved against — with no language server: the file's own outline
+// answers same-file jumps with full selection ranges, and the name index
+// tops an otherwise-empty answer up cross-file through the same
+// freshness pipeline symbol/find uses. The answer is name-exact; an
+// identifier the outline and the index do not know (a keyword, a local,
+// a stdlib name) answers empty.
+handle_symbol_find_definition :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
+	d := cast(^Daemon)ctx.user
+
+	rel, rerr := file_require_str(ctx, params, "relative_path")
+	if rerr != nil {
+		return nil, rerr
+	}
+	line, col, perr := file_require_position(ctx, params)
+	if perr != nil {
+		return nil, perr
+	}
+
+	roots, source, serr := svc.ts_source_file_symbols_sourced(d.ts, rel, ctx.allocator)
+	if serr != nil {
+		return nil, serr
+	}
+	locs := make([dynamic]symbol.Location, 0, 8, ctx.allocator)
+	// No grammar serves the file: no source, no identifier to resolve —
+	// the ordinary empty answer, not a refusal.
+	if source == "" {
+		return symbol_definition_result(locs[:], ctx)
+	}
+
+	ident := symbol_definition_ident(source, line, col, ctx.allocator)
+	if ident == "" {
+		return symbol_definition_result(locs[:], ctx) // on a keyword, operator, or string literal
+	}
+
+	// Same-file candidates: every outline symbol carrying the name, in
+	// document order, each located by its identifier extent.
+	stack := make([dynamic][]^symbol.Symbol, 0, 8, ctx.allocator)
+	append(&stack, roots)
+	for len(stack) > 0 {
+		level := stack[len(stack) - 1]
+		pop(&stack)
+		for sym in level {
+			if strings.equal_fold(sym.name, ident) {
+				rng := sym.selection_range
+				if rng == nil {
+					rng = sym.range
+				}
+				if rng != nil {
+					append(&locs, symbol.Location{rel_path = rel, range = rng^})
+				}
+			}
+			if len(sym.children) > 0 {
+				append(&stack, sym.children[:])
+			}
+		}
+	}
+	if len(locs) > 0 {
+		return symbol_definition_result(locs[:], ctx)
+	}
+
+	// Cross-file top-up, only when the file itself does not declare the
+	// name. Rows render as line-anchored points — the index carries no
+	// columns.
+	rows, missing, lerr := symbol_find_live_rows(ctx, d, ident, ctx.allocator)
+	if lerr != nil {
+		return nil, lerr
+	}
+	for row in rows {
+		if len(locs) >= SYMBOL_DEFINITION_CROSS_FILE_MAX {
+			break
+		}
+		if missing[row.path] || platform.path_equal(row.path, rel) {
+			continue
+		}
+		point := symbol.Range{
+			start = {line = u32(row.line)},
+			end   = {line = u32(row.line)},
+		}
+		append(&locs, symbol.Location{rel_path = row.path, range = point})
+	}
+	return symbol_definition_result(locs[:], ctx)
+}
+
+// symbol_definition_result wraps one resolver answer's location list in
+// the shared items shape (locations with no project-relative path drop,
+// the renderer's rule).
+symbol_definition_result :: proc(locs: []symbol.Location, ctx: ^svc.Svc_Ctx) -> (json.Value, platform.Err) {
+	out := jsonutil.json_object(1, ctx.allocator)
+	jsonutil.obj_set(&out, "items", svc.locations_json(locs, ctx.allocator))
+	return json.Value(json.Object(out)), nil
+}
+
+// The cross-file top-up's bound: a common name in a large tree would
+// answer a list longer than an editor's peek list serves. Same-file hits
+// stay uncapped.
+SYMBOL_DEFINITION_CROSS_FILE_MAX :: 50
+
+// symbol_definition_ident reads the identifier around one LSP position
+// (line, UTF-16 col) off the parse basis: both ends expand over the
+// identifier byte set. A position on a keyword, operator, or string
+// yields "" (the caller answers empty). Non-ASCII identifiers sit
+// outside the byte set and answer empty rather than misreport a partial
+// name.
+symbol_definition_ident :: proc(source: string, line, col: int, a: mem.Allocator) -> string {
+	starts := util.line_start_offsets(source, context.temp_allocator)
+	if line < 0 || line >= len(starts) {
+		return ""
+	}
+	line_end := len(source)
+	if line + 1 < len(starts) {
+		line_end = starts[line + 1]
+	}
+	line_text := source[starts[line]:line_end]
+	at := util.utf16_col_to_byte_offset(line_text, col)
+	lo, hi := at, at
+	for lo > 0 && symbol_definition_ident_byte(line_text[lo - 1]) {
+		lo -= 1
+	}
+	for hi < len(line_text) && symbol_definition_ident_byte(line_text[hi]) {
+		hi += 1
+	}
+	if lo == hi {
+		return ""
+	}
+	return strings.clone(line_text[lo:hi], a)
+}
+
+symbol_definition_ident_byte :: proc(b: u8) -> bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // symbol_find_seed_rows runs the innermost-component seed query: exact

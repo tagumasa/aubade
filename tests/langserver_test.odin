@@ -163,6 +163,12 @@ fake_ls_create :: proc(
 
 	client := new(lsp.Client, a)
 	lsp.client_init(client, client_conn, clock, entry.id, a)
+	// The fabricated handshake skips the real factory's root handoff;
+	// mirror it so location-family answers relativize against the project
+	// root.
+	if len(folders) > 0 {
+		client.root_abs = strings.clone(folders[0].path, a)
+	}
 	peer.conn = client_conn
 	// The fabricated handshake: initialized with a plausible capability
 	// view. No reader thread exists, so nothing would answer a real

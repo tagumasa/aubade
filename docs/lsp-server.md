@@ -30,12 +30,20 @@ editor (VSCode / VSCodium) ⇄ LSP (stdio) ⇄ aubade lsp child ⇄ daemon ⇄ g
   is live, the tree-sitter publish stands back — the live server's own
   diagnostics are relayed instead, stamped with the version the editor's
   buffer carries.
-- **Navigation relays** — `textDocument/definition`, `/references`, and
-  `/declaration`, answered out of the daemon's symbol inventory and the
-  project's language servers. These arrive by **dynamic registration**
-  (one `client/registerCapability` batch per language, with a per-language
-  documentSelector) once that language's server is ready; when a server
-  stops, the registrations are withdrawn the same way.
+- **Definition jumps** — `textDocument/definition` and `/declaration`,
+  static. The daemon answers them itself: the identifier under the cursor
+  is read off the document's current contents, the file's own outline
+  answers with identifier extents, and the project's name index tops an
+  otherwise-empty answer up cross-file. No language server is involved —
+  the jump works with none running. The answer is name-exact (scope
+  resolution and stdlib names are the servers' business); a click the
+  outline and the index do not know answers empty.
+- **References relay** — `textDocument/references`, the one navigation an
+  index cannot answer, relayed to the project's language servers. It
+  arrives by **dynamic registration** (one `client/registerCapability`
+  batch per language, with a per-language documentSelector) once that
+  language's server is ready; when a server stops, the registrations are
+  withdrawn the same way.
 - **Language-server ops relays** — the same dynamic drive registers
   `textDocument/formatting`, `/codeAction`, `/inlayHint`, and the
   call-hierarchy family (`prepareCallHierarchy`, `incomingCalls`,
@@ -117,5 +125,6 @@ they do on `aubade mcp`.
 `aubade lsp` child over stdio through the full lifecycle: initialize and
 encoding negotiation, semantic tokens, document outline, syntax
 diagnostics inside the debounce window, the dynamic-registration batch,
-a definition relay answer, mirrored diagnostics once a (fake) language
-server goes live, then `shutdown`/`exit`. It runs on every CI leg.
+a definition jump answered from the daemon's index at a use site, mirrored
+diagnostics once a (fake) language server goes live, then
+`shutdown`/`exit`. It runs on every CI leg.

@@ -28,6 +28,7 @@ METHOD_LANGSERVER_CODE_ACTIONS :: "svc.langserver/code_actions" // {relative_pat
 METHOD_LANGSERVER_FORMAT :: "svc.langserver/format"      // {relative_path, tab_size?, insert_spaces?} -> {items}
 METHOD_LANGSERVER_INLAY_HINTS :: "svc.langserver/inlay_hints" // {relative_path, start_line, start_col, end_line, end_col} -> {items}
 METHOD_LANGSERVER_CALL_HIERARCHY :: "svc.langserver/call_hierarchy" // {relative_path, line, col, direction} -> {items}
+METHOD_LANGSERVER_REFERENCES :: "svc.langserver/references" // {relative_path, line, col, include_declaration?} -> {items}
 
 // LANGSERVER_EMPTY_HINT is the list method's payload when no language
 // server is configured or running — answered with a configuration hint

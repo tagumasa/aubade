@@ -9,6 +9,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 import "core:time"
 import "src:jsonrpc"
@@ -400,4 +401,114 @@ svc_symbol_invalid_params :: proc(t: ^testing.T) {
 	if syms, sok := jsonutil.obj_get(notes.result, "symbols"); sok {
 		testing.expect_value(t, json_array_len(syms), 0)
 	}
+}
+
+// The definition resolver answers an editor's jump without any language
+// server: same-file hits from the outline (identifier extents), a
+// cross-file top-up from the name index only when the file declares
+// nothing of the name, and empty answers off identifiers (keywords) and
+// for languages whose grammar serves no outline.
+@(test)
+svc_symbol_find_definition_contract :: proc(t: ^testing.T) {
+	pair := test_daemon(t, false)
+	if pair == nil {
+		return
+	}
+	defer pair_shutdown(pair)
+	if !svc_symbol_quiesce_warm(t, pair) {
+		return
+	}
+
+	// alpha.go declares Helper (line 2, identifier at columns 5-11) and
+	// uses it at line 5; delta.go declares Solo; gamma.go only uses Solo.
+	svc_symbol_write_file(t, pair.tmp, "alpha.go", "package main\n\nfunc Helper() int { return 1 }\n\nfunc main() {\n\t_ = Helper()\n}\n")
+	svc_symbol_write_file(t, pair.tmp, "delta.go", "package main\n\nfunc Solo() int { return 3 }\n")
+	svc_symbol_write_file(t, pair.tmp, "gamma.go", "package main\n\nfunc main() {\n\t_ = Solo()\n}\n")
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	alloc := mem.dynamic_arena_allocator(&arena)
+	deadline := platform.mono_ms() + 10_000
+
+	hello_params := jsonutil.json_object(1, alloc)
+	jsonutil.obj_set(&hello_params, "client_pid", jsonutil.json_int(4242))
+	_, _, _, hcerr := jsonrpc.conn_call(pair.conn, svc.METHOD_HELLO, json.Value(json.Object(hello_params)), alloc, deadline)
+	testing.expect_value(t, hcerr, jsonrpc.Call_Err.None)
+
+	// A use-site click answers the file's own declaration, with its
+	// identifier extent — exactly one item (the cross-file top-up never
+	// runs beside a same-file hit).
+	use := svc.client_symbol_find_definition(pair.conn, "alpha.go", 5, 7, alloc, deadline)
+	testing.expect_value(t, use.call_err, jsonrpc.Call_Err.None)
+	if items, iok := jsonutil.obj_get(use.result, "items"); iok {
+		testing.expect_value(t, json_array_len(items), 1)
+		if json_array_len(items) == 1 {
+			item := json_array_at(items, 0)
+			rel, rok := json_str_field(item, "relative_path")
+			testing.expect(t, rok)
+			testing.expect_value(t, rel, "alpha.go")
+			line, lok := json_int_field(item, "line")
+			col, cok := json_int_field(item, "col")
+			end_line, elok := json_int_field(item, "end_line")
+			end_col, ecok := json_int_field(item, "end_col")
+			testing.expect(t, lok && cok && elok && ecok)
+			testing.expect_value(t, line, 2)
+			testing.expect_value(t, col, 5)
+			testing.expect_value(t, end_line, 2)
+			testing.expect_value(t, end_col, 11)
+		}
+	} else {
+		testing.expectf(t, false, "definition answer carries no items")
+	}
+
+	// A keyword position answers empty — no identifier, no error.
+	keyword := svc.client_symbol_find_definition(pair.conn, "alpha.go", 0, 2, alloc, deadline)
+	testing.expect_value(t, keyword.call_err, jsonrpc.Call_Err.None)
+	if items, iok := jsonutil.obj_get(keyword.result, "items"); iok {
+		testing.expect_value(t, json_array_len(items), 0)
+	}
+
+	// A name the clicking file does not declare tops up from the index:
+	// delta.go's Solo row, line-anchored (the index carries no columns).
+	cross := svc.client_symbol_find_definition(pair.conn, "gamma.go", 3, 5, alloc, deadline)
+	testing.expect_value(t, cross.call_err, jsonrpc.Call_Err.None)
+	if items, iok := jsonutil.obj_get(cross.result, "items"); iok {
+		testing.expectf(t, json_array_len(items) == 1, "cross-file top-up must answer Solo once, got %d", json_array_len(items))
+		if json_array_len(items) == 1 {
+			item := json_array_at(items, 0)
+			rel, rok := json_str_field(item, "relative_path")
+			testing.expect(t, rok)
+			testing.expect_value(t, rel, "delta.go")
+			line, lok := json_int_field(item, "line")
+			testing.expect(t, lok)
+			testing.expect_value(t, line, 2)
+		}
+	} else {
+		testing.expectf(t, false, "cross-file answer carries no items")
+	}
+
+	// A document no outline serves is an ordinary empty answer (markdown
+	// here — symbol/list answers it empty the same way).
+	svc_symbol_write_file(t, pair.tmp, "n.md", "# notes\n")
+	unserved := svc.client_symbol_find_definition(pair.conn, "n.md", 0, 2, alloc, deadline)
+	testing.expect_value(t, unserved.call_err, jsonrpc.Call_Err.None)
+	if items, iok := jsonutil.obj_get(unserved.result, "items"); iok {
+		testing.expect_value(t, json_array_len(items), 0)
+	}
+
+	// Missing coordinates are a caller error; a missing file is NotFound.
+	no_pos := jsonutil.json_object(1, alloc)
+	jsonutil.obj_set(&no_pos, "relative_path", jsonutil.json_string("alpha.go"))
+	_, np_code, np_msg, np_err := jsonrpc.conn_call(
+		pair.conn, svc.METHOD_SYMBOL_FIND_DEFINITION, json.Value(json.Object(no_pos)), alloc, deadline,
+	)
+	testing.expect_value(t, np_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, np_code, jsonrpc.Err_Code.Invalid_Params)
+	testing.expect(t, strings.contains(np_msg, "line and col are required"))
+
+	gone := svc.client_symbol_find_definition(pair.conn, "gone/x.go", 1, 1, alloc, deadline)
+	testing.expect_value(t, gone.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, gone.err_code, jsonrpc.Err_Code.Method_Not_Found)
+	testing.expect(t, strings.contains(gone.err_message, "path not found"))
 }
