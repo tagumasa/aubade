@@ -148,6 +148,25 @@ doc_sync_warm_hot :: proc(t: ^testing.T, hot: ^ts.Hot_Trees, rel, text: string) 
 	ts.hot_insert(hot, rel, pr.tree, pr.lang, "go", text)
 }
 
+// doc_sync_wait_pinned waits for the hot ledger's pinned count to settle at
+// want. A buffer eviction is two steps — the drop removes the buffer from
+// the editor maps, then the close notification (which releases the pin)
+// runs outside every editor lock — and the apply worker can be preempted
+// between them. An explicit prune from the test thread cannot shorten that
+// window (the worker's in-flight drop already owns the victim), so a pin
+// checkpoint after an eviction polls the settled count instead of reading
+// it once.
+doc_sync_wait_pinned :: proc(t: ^testing.T, hot: ^ts.Hot_Trees, want: int) {
+	deadline := platform.mono_ms() + 10_000
+	for ts.hot_pinned_count(hot) != want {
+		if platform.mono_ms() >= deadline {
+			testing.expect_value(t, ts.hot_pinned_count(hot), want)
+			return
+		}
+		time.sleep(2 * time.Millisecond)
+	}
+}
+
 // doc_sync_expect_change_effects asserts an applied change's downstream
 // effects through the one listener: the pinned L2 hot tree carries the new
 // bytes, and the L0 index rows do NOT answer for the change's symbol — the
@@ -646,7 +665,9 @@ doc_sync_change_after_eviction_adopts_client_text :: proc(t: ^testing.T) {
 
 	// Opening b evicts a through the ordinary close path (the bound is 1).
 	// The apply's answer can outrun its post-apply prune, so the eviction
-	// checkpoints run the bound pass explicitly before asserting.
+	// checkpoints run the bound pass explicitly; a drop the worker already
+	// started releases its pin only when it resumes, so the count
+	// checkpoint waits for the settled value.
 	text_b := "package main\n\nfunc evict_b_client() {}\n"
 	_, oerr = svc.doc_sync_open(f.ds, "evict_b.go", "go", 1, text_b, nil, deadline, context.temp_allocator)
 	testing.expectf(t, oerr == nil, "open b failed: %v", oerr)
@@ -655,7 +676,7 @@ doc_sync_change_after_eviction_adopts_client_text :: proc(t: ^testing.T) {
 	}
 	editor.editor_prune_buffers(f.e, "evict_b.go")
 	testing.expect(t, doc_sync_buffer_of(f.e, "evict_a.go") == nil, "the bound must have evicted a")
-	testing.expect_value(t, ts.hot_pinned_count(&f.src.hot), 1)
+	doc_sync_wait_pinned(t, &f.src.hot, 1)
 
 	text_a2 := "package main\n\nfunc evict_a_client_v2() {}\n"
 	outcome, cerr := svc.doc_sync_change(f.ds, "evict_a.go", 2, text_a2, nil, deadline, context.temp_allocator)
@@ -673,10 +694,11 @@ doc_sync_change_after_eviction_adopts_client_text :: proc(t: ^testing.T) {
 	disk := doc_sync_read_disk(&f, "evict_a.go")
 	defer delete(disk, context.allocator)
 	testing.expect(t, strings.contains(disk, "func evict_a_disk"), "the disk must stay untouched")
-	// The re-opened a evicted b; the explicit bound pass makes the pin
-	// checkpoint independent of the apply's own prune timing.
+	// The re-opened a evicted b; the explicit bound pass settles the bound,
+	// and the count checkpoint waits out an in-flight worker drop the same
+	// way as above.
 	editor.editor_prune_buffers(f.e, "evict_a.go")
-	testing.expect_value(t, ts.hot_pinned_count(&f.src.hot), 1)
+	doc_sync_wait_pinned(t, &f.src.hot, 1)
 	v, has := svc.doc_sync_last_applied_version(f.ds, "evict_a.go")
 	testing.expect(t, has && v == 2, "the version home advanced across the eviction")
 }

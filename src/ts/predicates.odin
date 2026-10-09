@@ -6,11 +6,21 @@
 //	(#match? @a "regex")                  (#not-match? @a "regex")
 //	(#any-eq? ...) (#any-not-eq? ...)     (#any-match? ...) (#any-not-match? ...)
 //	(#any-of? @a "v1" "v2")               (#not-any-of? @a "v1" "v2")
+//	(#lua-match? @a "regex")              — nvim's regex predicate, PCRE2
+//	(#has-parent? @a "t1" "t2")           (#not-has-parent? ... same shape)
+//	(#has-ancestor? @a "t1" "t2")         (#not-has-ancestor? ... same shape)
 //	(#is? ...) (#is-not? ...)             — metadata, never filters
 //	(#set! ...) (#offset! ...)            — metadata, never filters
 //
 // Semantics notes: #match? searches anywhere in the capture text
-// (unanchored). A predicate whose capture is absent from the match fails
+// (unanchored). #lua-match? is nvim's Lua string.match; the shipped
+// queries' patterns are plain anchored regexes, so it evaluates through
+// the same PCRE2 engine — Lua pattern classes like %d are not supported
+// and fail the regex compile loudly rather than silently mismatching.
+// The structural pair follows nvim's split: #has-parent? checks the
+// capture's immediate parent only, #has-ancestor? walks the whole
+// ancestor chain; both match the node type name against the literal
+// list. A predicate whose capture is absent from the match fails
 // that match — an optional-branch "allow missing" refinement is not
 // observable through the C API and is not implemented. Unknown predicate
 // names fail compilation (compile-time rejection). Error strings follow
@@ -32,6 +42,10 @@ Predicate_Kind :: enum {
 	Any_Not_Match,
 	Any_Of,
 	Not_Any_Of,
+	Has_Parent,
+	Not_Has_Parent,
+	Has_Ancestor,
+	Not_Has_Ancestor,
 	Inert, // #is? / #is-not? / #set! / #offset!: metadata only
 }
 
@@ -233,6 +247,34 @@ predicate_holds :: proc(p: ^Predicate, ps: ^Query_Predicates, match: ^Query_Matc
 			return false
 		}
 		return string_in_list(left, p.values) == (p.kind == .Any_Of)
+	case .Has_Parent, .Not_Has_Parent:
+		node, ok := first_capture_node(p.left_capture, ps, match)
+		if !ok || node_is_null(node) {
+			return false
+		}
+		// nvim's split: has-parent? looks at the immediate parent alone —
+		// a grandparent of a listed type does not match.
+		has := false
+		parent := node_parent(node)
+		if !node_is_null(parent) {
+			has = node_type_in(parent, p.values)
+		}
+		return has == (p.kind == .Has_Parent)
+	case .Has_Ancestor, .Not_Has_Ancestor:
+		node, ok := first_capture_node(p.left_capture, ps, match)
+		if !ok || node_is_null(node) {
+			return false
+		}
+		has := false
+		ancestor := node_parent(node)
+		for !node_is_null(ancestor) {
+			if node_type_in(ancestor, p.values) {
+				has = true
+				break
+			}
+			ancestor = node_parent(ancestor)
+		}
+		return has == (p.kind == .Has_Ancestor)
 	case .Inert:
 		return true
 	}
@@ -261,6 +303,21 @@ build_predicate :: proc(name: string, tokens: []Pred_Token, a := context.allocat
 		return build_list_predicate(tokens, .Any_Of, name, a)
 	case "not-any-of?":
 		return build_list_predicate(tokens, .Not_Any_Of, name, a)
+	case "lua-match?":
+		// nvim's lua-match? is Lua string.match; the corpus's patterns are
+		// plain anchored regexes, so the PCRE2 #match? engine reproduces
+		// them. A Lua pattern class (%d, %s, ...) is not a PCRE2 pattern:
+		// the regex compile fails and names the query, rather than
+		// silently mismatching every capture.
+		return build_regex_predicate(tokens, .Match, name, a)
+	case "has-parent?":
+		return build_list_predicate(tokens, .Has_Parent, name, a)
+	case "not-has-parent?":
+		return build_list_predicate(tokens, .Not_Has_Parent, name, a)
+	case "has-ancestor?":
+		return build_list_predicate(tokens, .Has_Ancestor, name, a)
+	case "not-has-ancestor?":
+		return build_list_predicate(tokens, .Not_Has_Ancestor, name, a)
 	case "is?", "is-not?", "set!", "offset!":
 		// Metadata directives for host tooling; they never filter matches.
 		return {kind = .Inert}, ""
@@ -271,9 +328,10 @@ build_predicate :: proc(name: string, tokens: []Pred_Token, a := context.allocat
 		// captures only, so the transforms are accepted as no-ops rather
 		// than rejecting the whole query.
 		return {kind = .Inert}, ""
-	case "select-adjacent!":
-		// Pairs a preceding comment capture with a definition for doc
-		// extraction (javascript, ruby). The definition capture comes
+	case "select-adjacent!", "set-adjacent!":
+		// Pair a preceding comment capture with a definition for doc
+		// extraction (javascript and ruby spell it select-adjacent!, go's
+		// shipped tags query set-adjacent!). The definition capture comes
 		// from the pattern itself, so ignoring the pairing does not move
 		// any outline symbol.
 		return {kind = .Inert}, ""
@@ -331,20 +389,28 @@ build_list_predicate :: proc(tokens: []Pred_Token, kind: Predicate_Kind, name: s
 	return {kind = kind, left_capture = tokens[0].text, values = values}, ""
 }
 
-// first_capture_text returns the text of the first capture with the given
-// name in the match: an absent name or a nil node yields ok=false.
-first_capture_text :: proc(name: string, ps: ^Query_Predicates, match: ^Query_Match, source: string) -> (text: string, ok: bool) {
+// first_capture_node returns the first captured node with the given name in
+// the match: an absent name yields ok=false (the convention first_capture_text
+// applies to the node's text).
+first_capture_node :: proc(name: string, ps: ^Query_Predicates, match: ^Query_Match) -> (node: Node, ok: bool) {
 	for i in u32(0)..<u32(match.capture_count) {
 		cap := match.captures[i]
 		if int(cap.index) >= len(ps.capture_names) || ps.capture_names[cap.index] != name {
 			continue
 		}
-		if node_is_null(cap.node) {
-			return "", false
-		}
-		return node_text(cap.node, source), true
+		return cap.node, true
 	}
-	return "", false
+	return
+}
+
+// first_capture_text returns the text of the first capture with the given
+// name in the match: an absent name or a nil node yields ok=false.
+first_capture_text :: proc(name: string, ps: ^Query_Predicates, match: ^Query_Match, source: string) -> (text: string, ok: bool) {
+	node, found := first_capture_node(name, ps, match)
+	if !found || node_is_null(node) {
+		return "", false
+	}
+	return node_text(node, source), true
 }
 
 string_in_list :: proc(value: string, values: []string) -> bool {
@@ -354,6 +420,16 @@ string_in_list :: proc(value: string, values: []string) -> bool {
 		}
 	}
 	return false
+}
+
+// node_type_in reports whether the node's type name is in the list; the
+// C string borrows the language's static type-name data.
+node_type_in :: proc(node: Node, types: []string) -> bool {
+	name := node_type(node)
+	if name == nil {
+		return false
+	}
+	return string_in_list(string(name), types)
 }
 
 // Borrowed query strings — valid only while the Query is alive.

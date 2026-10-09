@@ -132,6 +132,7 @@ foreign ts {
 	node_is_error :: proc(self: Node) -> bool ---
 	node_is_missing :: proc(self: Node) -> bool ---
 	node_is_null :: proc(self: Node) -> bool ---
+	node_parent :: proc(self: Node) -> Node ---
 	node_named_child :: proc(self: Node, child_index: u32) -> Node ---
 	node_named_child_count :: proc(self: Node) -> u32 ---
 	node_child :: proc(self: Node, child_index: u32) -> Node ---
