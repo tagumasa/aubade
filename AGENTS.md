@@ -597,6 +597,13 @@ portable across all three.
   in the value, and bare `delete(x)` frees through the STORED
   allocator** — those sites are correct as written; only `string`/`[]T`
   deletes fall back to `context.allocator`.
+- **`delete` on a dynamic-array FIELD leaves the field header stale**:
+  the backing store is freed through the stored allocator, but the
+  field's `len`/`cap` keep their old values — delete takes the header by
+  value (probe-verified on dev-2026-10-nightly:84bc3fc: backing freed,
+  `len`/`cap` unchanged). Reading `len(s.field)` after the delete walks
+  freed memory; clear the field (`s.field = nil`) or track liveness
+  separately, and never trust the header again.
 - The inverse case: a `[]T{...}` literal whose elements are all
   compile-time constants is placed in **static data** — `delete` on it
   is an immediate bad free (leave constant literals undeleted).
@@ -680,3 +687,9 @@ portable across all three.
   worked examples; the web converters do the same on a Dynamic_Arena
   with the ambient allocators scoped to it). Never `_, err := os.lstat(...)`
   with a non-temp allocator.
+- **The optimizer deletes a loop whose pure result is unused**: at
+  `-o:speed`, `for _ in 0..<n { _ = pure_proc(x) }` compiles to nothing
+  (probe-verified on dev-2026-10-nightly:84bc3fc — the discarded loop
+  timed at zero next to the sinked one). Every timing or throughput
+  loop must fold its result into a sink that outlives the loop and is
+  read afterwards.
