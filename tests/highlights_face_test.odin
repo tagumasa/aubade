@@ -313,6 +313,47 @@ hlface_captures_round_trip_with_applied_version :: proc(t: ^testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. The nvim-predicate regression: the shipped odin highlights query
+// uses #lua-match?/#not-has-parent?, which the predicate engine must
+// accept — a rejection failed every odin request with an internal error.
+// ---------------------------------------------------------------------------
+
+@(test)
+hlface_odin_query_compiles_and_captures :: proc(t: ^testing.T) {
+	f := hlface_lazy_fixture(t)
+	defer hlface_lazy_teardown(f)
+
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena, context.allocator)
+	defer mem.dynamic_arena_destroy(&arena)
+	a := mem.dynamic_arena_allocator(&arena)
+
+	text := "package main\n\nhlface_probe_proc :: proc() {}\n"
+	hlface_write_file(t, f, "probe.odin", text)
+	deadline := platform.mono_ms() + 10_000
+	_, oerr := svc.doc_sync_open(f.ds, "probe.odin", "odin", 3, text, nil, deadline, a)
+	testing.expectf(t, oerr == nil, "open failed: %v", oerr)
+	if oerr != nil {
+		return
+	}
+
+	result, err := hlface_call(f, "probe.odin", a)
+	testing.expectf(t, err == nil, "highlights: %v", err)
+	if err != nil {
+		return
+	}
+	decline, _ := json_str_field(result, "decline")
+	testing.expect_value(t, decline, "")
+	arr, aok := hlface_captures_array(result)
+	testing.expect_value(t, aok, true)
+	if !aok {
+		return
+	}
+	testing.expectf(t, json_array_len(arr) > 0, "an odin document must produce captures, got %d", json_array_len(arr))
+	testing.expect(t, hlface_has_capture(result, text, "hlface_probe_proc"), "the shipped odin query must capture the procedure name")
+}
+
+// ---------------------------------------------------------------------------
 // 2. Compiled once per language
 // ---------------------------------------------------------------------------
 
