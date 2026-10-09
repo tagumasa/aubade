@@ -87,7 +87,9 @@ The extension in [`editors/vscode/`](../editors/vscode/README.md) is a
 thin launcher: it starts one `aubade lsp` child per workspace folder and
 hands it the LSP wire — all protocol logic lives in the server binary.
 Build it with `just vsix` and install the produced `aubade-*.vsix`;
-`aubade` must be on `PATH` (setting `aubade.path` overrides), and the
+with `aubade.path` unset the extension resolves the launch command from
+the editor's `PATH` and then the documented install locations (setting
+`aubade.path` overrides the whole ladder), and the
 binary must be a v1.1 or newer build. The setting
 `aubade.diagnostics.disabledLanguages` suppresses aubade's own
 diagnostics per language — for languages where a dedicated extension

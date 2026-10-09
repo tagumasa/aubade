@@ -26,7 +26,7 @@
         "aubade.path": {
           "type": "string",
           "default": "aubade",
-          "description": "Path to the aubade binary to launch. The extension runs `<aubade.path> lsp` per workspace folder; the binary must be a v1.1 or newer build."
+          "description": "Path to the aubade binary to launch. The extension runs `<aubade.path> lsp` per workspace folder; an explicit setting is used verbatim, and the unset default resolves `aubade` from the editor's PATH and then the documented install locations (~/.local/bin, %LOCALAPPDATA%\\Programs\\aubade). The binary must be a v1.1 or newer build."
         },
         "aubade.diagnostics.disabledLanguages": {
           "type": "array",
