@@ -7,6 +7,7 @@ import "core:encoding/hex"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "src:util"
 
 MANAGED_DIR_NAME :: ".aubade"
 
@@ -221,17 +222,14 @@ project_id :: proc(normalized_root: string, allocator := context.allocator) -> s
 	return string(enc)
 }
 
-// path_hash64 folds a path string to a 64-bit FNV-1a hash. Compact
-// walk-side path sets (the crawl's seen-set) key on it so they never
-// retain path strings: a 64-bit accidental collision across n distinct
-// paths is ~n²/2⁶⁵ — it delays one vanished path's purge by a walk (the
-// TTL sweep still reaps the rows) and never affects a live answer.
+// path_hash64 folds a path string to a 64-bit fingerprint
+// (util.hash64_words). Compact walk-side path sets (the crawl's seen-set)
+// key on it so they never retain path strings: a 64-bit accidental
+// collision across n distinct paths is ~n²/2⁶⁵ — it
+// delays one vanished path's purge by a walk (the TTL sweep still reaps
+// the rows) and never affects a live answer.
 path_hash64 :: proc(path: string) -> u64 {
-	h: u64 = 0xcbf29ce484222325
-	for i in 0..<len(path) {
-		h = (h ~ cast(u64)(path[i])) * 0x100000001b3
-	}
-	return h
+	return util.hash64_words(path, util.HASH64_FNV_OFFSET)
 }
 
 // daemon_dir is $AUBADE_HOME/daemon/<projectID>.

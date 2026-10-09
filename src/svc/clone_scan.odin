@@ -47,6 +47,7 @@ import "src:jsonutil"
 import "src:platform"
 import "src:safety"
 import "src:ts"
+import "src:util"
 
 CLONE_SCAN_DEFAULT_MIN_NODES :: 50
 CLONE_SCAN_MIN_NODES_FLOOR :: 10
@@ -62,11 +63,6 @@ CLONE_SCAN_CANCEL_EVERY :: 4096
 CLONE_SCAN_MAX_DEPTH :: 500
 
 METHOD_AST_FIND_DUPLICATES :: "svc.ast/find_duplicates" // request: {path_prefix?, min_nodes?, limit?} -> {groups: [...], stats: {...}}
-
-// FNV-1a 64 over the hashed bytes; the constants are the published ones,
-// so identical trees hash identically across runs, platforms, and builds.
-CLONE_FNV_OFFSET :: 0xcbf29ce484222325
-CLONE_FNV_PRIME :: 0x100000001b3
 
 Clone_Kind :: enum {
 	Exact,
@@ -549,22 +545,24 @@ clone_hash_walk :: proc(c: ^Clone_File_Ctx, root: ts.Node) -> (completed: bool) 
 
 // clone_hash_node is one node's exact hash: named/anonymous flag, kind,
 // then the child hashes in order; a true named leaf folds its text in (an
-// anonymous leaf is already its literal text as the kind).
+// anonymous leaf is already its literal text as the kind). The hash is a
+// pure byte composition (word-block FNV-1a, util.hash64_words), so
+// identical trees hash identically across runs, platforms, and builds.
 clone_hash_node :: proc(node: ts.Node, child_hashes: []u64, had_children: bool, source: string) -> u64 {
-	h: u64 = CLONE_FNV_OFFSET
+	h: u64 = util.HASH64_FNV_OFFSET
 	if ts.node_is_named(node) {
 		h = clone_fnv_byte(h, 1)
 	} else {
 		h = clone_fnv_byte(h, 0)
 	}
-	h = clone_fnv_bytes(h, ts.cstring_to_string(ts.node_type(node)))
+	h = util.hash64_words(ts.cstring_to_string(ts.node_type(node)), h)
 	h = clone_fnv_byte(h, ':')
 	for ch in child_hashes {
 		h = clone_fnv_u64(h, ch)
 		h = clone_fnv_byte(h, ',')
 	}
 	if !had_children && ts.node_is_named(node) {
-		h = clone_fnv_bytes(h, ts.node_text(node, source))
+		h = util.hash64_words(ts.node_text(node, source), h)
 	}
 	return h
 }
@@ -617,14 +615,14 @@ clone_renamed_hash :: proc(node: ts.Node, c: ^Clone_File_Ctx) -> (hash: u64, ok:
 		}
 
 		fr := frames[fi]
-		h: u64 = CLONE_FNV_OFFSET
+		h: u64 = util.HASH64_FNV_OFFSET
 		if ts.node_is_named(fr.node) {
 			h = clone_fnv_byte(h, 1)
 		} else {
 			h = clone_fnv_byte(h, 0)
 		}
 		kind := ts.cstring_to_string(ts.node_type(fr.node))
-		h = clone_fnv_bytes(h, kind)
+		h = util.hash64_words(kind, h)
 		h = clone_fnv_byte(h, ':')
 		for ch in fr.hashes[:] {
 			h = clone_fnv_u64(h, ch)
@@ -694,23 +692,11 @@ clone_is_comment :: proc(node: ts.Node) -> bool {
 }
 
 clone_fnv_byte :: proc(h: u64, b: u8) -> u64 {
-	return (h ~ u64(b)) * CLONE_FNV_PRIME
-}
-
-clone_fnv_bytes :: proc(h: u64, s: string) -> u64 {
-	x := h
-	for i in 0..<len(s) {
-		x = clone_fnv_byte(x, s[i])
-	}
-	return x
+	return (h ~ u64(b)) * util.HASH64_FNV_PRIME
 }
 
 clone_fnv_u64 :: proc(h: u64, v: u64) -> u64 {
-	x := h
-	for i in 0..<8 {
-		x = clone_fnv_byte(x, u8(v >> u64(8 * i)))
-	}
-	return x
+	return (h ~ v) * util.HASH64_FNV_PRIME
 }
 
 clone_span_covered :: proc(kept: ^map[string][dynamic]Clone_Span_Bytes, path: string, start, end: u32) -> bool {
