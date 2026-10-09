@@ -1158,15 +1158,14 @@ opsrelay_sweep_registers_langserver_faces :: proc(t: ^testing.T) {
 
 	p.daemon_state.start_ok = true
 	p.daemon_state.start_references = true
-	p.daemon_state.start_declaration = false
 	relayhost_arm_face(t, p)
 	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	// The push makes go Ready, and the starter pass must register the four
-	// langserver faces in the SAME batch as the position relays — no
+	// langserver faces in the SAME batch as the references relay — no
 	// capability bits exist for them, so they ride every Ready batch.
-	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true,"declaration":false}`, session.handle_push_langserver_state)
+	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true}`, session.handle_push_langserver_state)
 	completed := relayhost_run_pass(t, p, proc(t: ^testing.T, body: string) {
 		v, perr := json.parse_bytes(json_bytes(body), spec = .JSON, parse_integers = true, allocator = context.temp_allocator)
 		testing.expectf(t, perr == nil, "frame did not parse: %s", body)
@@ -1178,14 +1177,13 @@ opsrelay_sweep_registers_langserver_faces :: proc(t: ^testing.T) {
 			regs_v, regs_ok := jsonutil.obj_get(params, "registrations")
 			if regs_ok {
 				regs, _ := jsonutil.as_array(regs_v)
-				testing.expectf(t, len(regs) == 6, "one batch of six (definition, references, formatting, codeAction, inlayHint, prepareCallHierarchy), got %d", len(regs))
+				testing.expectf(t, len(regs) == 5, "one batch of five (the references relay + the four langserver faces), got %d", len(regs))
 			}
-			lsprelay_assert_registration(t, params, 0, "aubade.relay.go.definition", lsp.METHOD_DEFINITION, "go")
-			lsprelay_assert_registration(t, params, 1, "aubade.relay.go.references", lsp.METHOD_REFERENCES, "go")
-			lsprelay_assert_registration(t, params, 2, "aubade.relay.go.formatting", lsp.METHOD_FORMATTING, "go")
-			lsprelay_assert_registration(t, params, 3, "aubade.relay.go.codeAction", lsp.METHOD_CODE_ACTION, "go")
-			lsprelay_assert_registration(t, params, 4, "aubade.relay.go.inlayHint", lsp.METHOD_INLAY_HINT, "go")
-			lsprelay_assert_registration(t, params, 5, "aubade.relay.go.prepareCallHierarchy", lsp.METHOD_PREPARE_CALL_HIERARCHY, "go")
+			lsprelay_assert_registration(t, params, 0, "aubade.relay.go.references", lsp.METHOD_REFERENCES, "go")
+			lsprelay_assert_registration(t, params, 1, "aubade.relay.go.formatting", lsp.METHOD_FORMATTING, "go")
+			lsprelay_assert_registration(t, params, 2, "aubade.relay.go.codeAction", lsp.METHOD_CODE_ACTION, "go")
+			lsprelay_assert_registration(t, params, 3, "aubade.relay.go.inlayHint", lsp.METHOD_INLAY_HINT, "go")
+			lsprelay_assert_registration(t, params, 4, "aubade.relay.go.prepareCallHierarchy", lsp.METHOD_PREPARE_CALL_HIERARCHY, "go")
 		}
 	})
 	testing.expect(t, completed, "the starter pass must complete")

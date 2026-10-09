@@ -82,13 +82,13 @@ Factory :: struct {
 
 // Manager_State_Proc observes one running transition of a managed
 // server: a completed start (running=true, the started server's
-// references/declaration caps) and every retire's unlink (running=false,
-// both bits false). It runs on the transitioning thread with the manager
+// references cap) and every retire's unlink (running=false, the bit
+// false). It runs on the transitioning thread with the manager
 // mutex RELEASED — the decision is computed under the lock and the fire
 // waits for the unlock (claim-then-act, the hb_tick/child_gone shape).
 // The callback must not block and reads `language` synchronously only
 // (the caller passes a context.temp_allocator clone).
-Manager_State_Proc :: proc(user: rawptr, language: string, running, references, declaration: bool)
+Manager_State_Proc :: proc(user: rawptr, language: string, running, references: bool)
 
 Status_Row :: struct {
 	id:      string, // owned by the caller's allocator
@@ -239,7 +239,7 @@ manager_init :: proc(
 // skipped entirely when no hook is installed, so a nil hook stays a
 // zero-cost no-op. Reading the caps under m.mu is safe: cl.state_mu is a
 // leaf, and no path takes m.mu while holding it.
-manager_state_event :: proc(m: ^Manager, language_id: string, running: bool, client: ^lsp.Client) -> (lang: string, references, declaration: bool) {
+manager_state_event :: proc(m: ^Manager, language_id: string, running: bool, client: ^lsp.Client) -> (lang: string, references: bool) {
 	if m.on_state == nil {
 		return
 	}
@@ -247,16 +247,15 @@ manager_state_event :: proc(m: ^Manager, language_id: string, running: bool, cli
 	if running && client != nil {
 		caps := lsp.client_caps(client)
 		references = caps.references
-		declaration = caps.declaration
 	}
 	return
 }
 
 // fire_state runs the state hook with m.mu released. The caller snapshots
 // the arguments under the lock (manager_state_event).
-fire_state :: proc(m: ^Manager, lang: string, running, references, declaration: bool) {
+fire_state :: proc(m: ^Manager, lang: string, running, references: bool) {
 	if m.on_state != nil {
-		m.on_state(m.on_state_host, lang, running, references, declaration)
+		m.on_state(m.on_state_host, lang, running, references)
 	}
 }
 
@@ -448,12 +447,12 @@ manager_ensure :: proc(
 			// loop retries the start path. The unlink is the manager's
 			// not-running transition: the hook's arguments snapshot under
 			// the lock, the fire waits for the unlock.
-			lang, refs, decl := manager_state_event(m, s.language_id, false, nil)
+			lang, refs := manager_state_event(m, s.language_id, false, nil)
 			delete_key(&m.servers, language_id)
 			append(&m.retiring, s)
 			sync.cond_broadcast(&m.cond)
 			sync.mutex_unlock(&m.mu)
-			fire_state(m, lang, false, refs, decl)
+			fire_state(m, lang, false, refs)
 			manager_sweep_retiring(m, token)
 			continue
 		}
@@ -584,9 +583,9 @@ start_language :: proc(
 	// The completed start is the manager's running transition; the hook
 	// rides the caps the handshake just cached (snapshotted under the
 	// lock, fired after the unlock).
-	lang, refs, decl := manager_state_event(m, s.language_id, true, s.client)
+	lang, refs := manager_state_event(m, s.language_id, true, s.client)
 	sync.mutex_unlock(&m.mu)
-	fire_state(m, lang, true, refs, decl)
+	fire_state(m, lang, true, refs)
 	return nil
 }
 
@@ -836,9 +835,9 @@ manager_stop :: proc(m: ^Manager, language_id: string, token: ^platform.Cancel_T
 	delete_key(&m.servers, language_id)
 	append(&m.retiring, s)
 	sync.cond_broadcast(&m.cond)
-	lang, refs, decl := manager_state_event(m, s.language_id, false, nil)
+	lang, refs := manager_state_event(m, s.language_id, false, nil)
 	sync.mutex_unlock(&m.mu)
-	fire_state(m, lang, false, refs, decl)
+	fire_state(m, lang, false, refs)
 	manager_sweep_retiring(m, token)
 	return nil
 }
@@ -895,20 +894,20 @@ manager_restart :: proc(
 	old_lang := ""
 	if old != nil {
 		append(&m.retiring, old)
-		old_lang, _, _ = manager_state_event(m, old.language_id, false, nil)
+		old_lang, _ = manager_state_event(m, old.language_id, false, nil)
 	}
 	// The swap is a start the manager owns: the replacement is already the
 	// table's server at fire time, and the down-then-up pair is what lets
 	// an lsp child re-do its dynamic registration for the new server (the
 	// restart-after-death path reports the same up event through
 	// start_language).
-	fresh_lang, fresh_refs, fresh_decl := manager_state_event(m, fresh.language_id, true, fresh.client)
+	fresh_lang, fresh_refs := manager_state_event(m, fresh.language_id, true, fresh.client)
 	sync.cond_broadcast(&m.cond)
 	sync.mutex_unlock(&m.mu)
 	if old != nil {
-		fire_state(m, old_lang, false, false, false)
+		fire_state(m, old_lang, false, false)
 	}
-	fire_state(m, fresh_lang, true, fresh_refs, fresh_decl)
+	fire_state(m, fresh_lang, true, fresh_refs)
 	manager_sweep_retiring(m, token)
 	return nil
 }
@@ -932,18 +931,18 @@ manager_reset :: proc(m: ^Manager, token: ^platform.Cancel_Token = nil) -> int {
 			break
 		}
 		lang: string
-		refs, decl := false, false
+		refs := false
 		if victim != nil {
 			delete_key(&m.servers, victim.language_id)
 			append(&m.retiring, victim)
-			lang, refs, decl = manager_state_event(m, victim.language_id, false, nil)
+			lang, refs = manager_state_event(m, victim.language_id, false, nil)
 		}
 		sync.mutex_unlock(&m.mu)
 		if victim == nil {
 			break
 		}
 		stopped_count += 1
-		fire_state(m, lang, false, refs, decl)
+		fire_state(m, lang, false, refs)
 		manager_sweep_retiring(m, token)
 	}
 	sync.mutex_lock(&m.mu)
@@ -1291,18 +1290,18 @@ manager_reap_idle :: proc(m: ^Manager, now: i64, token: ^platform.Cancel_Token =
 			}
 		}
 		lang: string
-		refs, decl := false, false
+		refs := false
 		if victim != nil {
 			delete_key(&m.servers, victim.language_id)
 			append(&m.retiring, victim)
 			sync.cond_broadcast(&m.cond)
-			lang, refs, decl = manager_state_event(m, victim.language_id, false, nil)
+			lang, refs = manager_state_event(m, victim.language_id, false, nil)
 		}
 		sync.mutex_unlock(&m.mu)
 		if victim == nil {
 			return
 		}
-		fire_state(m, lang, false, refs, decl)
+		fire_state(m, lang, false, refs)
 		manager_sweep_retiring(m, token)
 	}
 }

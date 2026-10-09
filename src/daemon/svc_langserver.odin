@@ -31,6 +31,7 @@ register_langserver_methods :: proc(t: ^svc.Table) {
 	svc.table_register(t, svc.METHOD_LANGSERVER_FORMAT, handle_langserver_format)
 	svc.table_register(t, svc.METHOD_LANGSERVER_INLAY_HINTS, handle_langserver_inlay_hints)
 	svc.table_register(t, svc.METHOD_LANGSERVER_CALL_HIERARCHY, handle_langserver_call_hierarchy)
+	svc.table_register(t, svc.METHOD_LANGSERVER_REFERENCES, handle_langserver_references)
 }
 
 handle_langserver_start :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
@@ -52,23 +53,21 @@ handle_langserver_start :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.
 	// The child-triggered start learns its caps synchronously:
 	// manager_start returns after the handshake, so the snapshot carries
 	// the fresh server. A concurrent stop between the start and this
-	// snapshot is a legitimate race — the answer reads both bits false
+	// snapshot is a legitimate race — the answer reads the bit false
 	// rather than failing. Each snapshot entry's hand-out pin is released
 	// only after its caps read (the pin is what keeps the client alive).
-	references, declaration := false, false
+	references := false
 	running := langserver.manager_running_clients(d.ls, ctx.allocator)
 	defer delete(running)
 	for rc in running {
 		if rc.language_id == lang {
 			caps := lsp.client_caps(rc.client)
 			references = caps.references
-			declaration = caps.declaration
 		}
 		langserver.manager_release(d.ls, rc.client)
 	}
-	out := jsonutil.json_object(2, ctx.allocator)
+	out := jsonutil.json_object(1, ctx.allocator)
 	jsonutil.obj_set(&out, "references", jsonutil.json_bool(references))
-	jsonutil.obj_set(&out, "declaration", jsonutil.json_bool(declaration))
 	return json.Value(json.Object(out)), nil
 }
 
@@ -447,5 +446,37 @@ handle_langserver_call_hierarchy :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) 
 
 	out := jsonutil.json_object(1, ctx.allocator)
 	jsonutil.obj_set(&out, "items", svc.langserver_call_edges_json(edges[:], ctx.allocator))
+	return json.Value(json.Object(out)), nil
+}
+
+// handle_langserver_references forwards the request position to the
+// file's running server: references are the one navigation a name index
+// cannot answer, so the relay registers the references capability only
+// behind a live server and lands here. Failures surface as the typed
+// error (the LSP child's relay renders them as one log line plus an
+// empty answer, never an editor-facing error response).
+handle_langserver_references :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (json.Value, platform.Err) {
+	line, col, perr := file_require_position(ctx, params)
+	if perr != nil {
+		return nil, perr
+	}
+	include_declaration := false
+	if v, p, e := file_opt_bool(ctx, params, "include_declaration"); e != nil {
+		return nil, e
+	} else if p {
+		include_declaration = v
+	}
+	doc, derr := langserver_open(ctx, params)
+	if derr != nil {
+		return nil, derr
+	}
+	defer svc.langserver_doc_release(doc)
+
+	locs, lerr := lsp.request_references(doc.client, doc.uri, line, col, include_declaration, ctx.allocator, ctx.token)
+	if lerr != nil {
+		return nil, lerr
+	}
+	out := jsonutil.json_object(1, ctx.allocator)
+	jsonutil.obj_set(&out, "items", svc.locations_json(locs, ctx.allocator))
 	return json.Value(json.Object(out)), nil
 }

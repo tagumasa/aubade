@@ -64,6 +64,23 @@ file_opt_bool :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string) -> (va
 	return false, false, nil
 }
 
+// file_require_position parses the {line, col} pair the position-keyed
+// request handlers share (both members required).
+file_require_position :: proc(ctx: ^svc.Svc_Ctx, params: json.Value) -> (line, col: int, err: platform.Err) {
+	lv, lp, e1 := file_opt_int(ctx, params, "line")
+	if e1 != nil {
+		return 0, 0, e1
+	}
+	cv, cp, e2 := file_opt_int(ctx, params, "col")
+	if e2 != nil {
+		return 0, 0, e2
+	}
+	if !lp || !cp {
+		return 0, 0, svc.wrapped_err(.Invalid, "line and col are required", ctx.allocator)
+	}
+	return lv, cv, nil
+}
+
 // file_opt_str_array extracts an optional array-of-strings parameter onto
 // the request arena (the caller never frees it piecemeal).
 file_opt_str_array :: proc(ctx: ^svc.Svc_Ctx, params: json.Value, key: string) -> (vals: []string, present: bool, err: platform.Err) {

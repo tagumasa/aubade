@@ -726,10 +726,16 @@ lspface_initialize_capabilities :: proc(t: ^testing.T) {
 	}
 	_, found = jsonutil.obj_get(caps, "documentSymbolProvider")
 	testing.expect(t, found, "documentSymbolProvider must be advertised")
-	// Relay capabilities are deliberately absent until the dynamic
-	// registrations land.
-	_, found = jsonutil.obj_get(caps, "definitionProvider")
-	testing.expect(t, !found, "definitionProvider must not be advertised statically")
+	// The definition/declaration jump is answered out of the daemon's own
+	// index — statically advertised, no server lifecycle to follow.
+	// references stays dynamically registered behind a live server (an
+	// index cannot answer it).
+	def_v, def_found := jsonutil.obj_get(caps, "definitionProvider")
+	testing.expectf(t, def_found && jsonutil.value_bool(def_v), "definitionProvider must be advertised statically")
+	decl_v, decl_found := jsonutil.obj_get(caps, "declarationProvider")
+	testing.expectf(t, decl_found && jsonutil.value_bool(decl_v), "declarationProvider must be advertised statically")
+	_, refs_found := jsonutil.obj_get(caps, "referencesProvider")
+	testing.expect(t, !refs_found, "referencesProvider must not be advertised statically")
 	// The negotiated encoding is a capability member (LSP 3.17
 	// ServerCapabilities.positionEncoding), never a result-top-level one.
 	enc_v, enc_found := jsonutil.obj_get(caps, "positionEncoding")

@@ -34,10 +34,9 @@ Push_Diag :: struct {
 }
 
 Push_State :: struct {
-	language:    string,
-	running:     bool,
-	references:  bool,
-	declaration: bool,
+	language:   string,
+	running:    bool,
+	references: bool,
 }
 
 // Push_Sink records the svc.push/* notifications one child conn receives.
@@ -104,10 +103,9 @@ lsppush_sink_state :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: m
 	}
 	sync.mutex_lock(&sink.mu)
 	append(&sink.states, Push_State{
-		language    = strings.clone(jsonutil.value_str(lang_v), sink.allocator),
-		running     = jsonutil.obj_get_bool(env.params, "running"),
-		references  = jsonutil.obj_get_bool(env.params, "references"),
-		declaration = jsonutil.obj_get_bool(env.params, "declaration"),
+		language   = strings.clone(jsonutil.value_str(lang_v), sink.allocator),
+		running    = jsonutil.obj_get_bool(env.params, "running"),
+		references = jsonutil.obj_get_bool(env.params, "references"),
 	})
 	sync.mutex_unlock(&sink.mu)
 }
@@ -178,14 +176,13 @@ LS_State_Recorder :: struct {
 	events:    [dynamic]Push_State,
 }
 
-lsppush_record_state :: proc(user: rawptr, language: string, running, references, declaration: bool) {
+lsppush_record_state :: proc(user: rawptr, language: string, running, references: bool) {
 	r := cast(^LS_State_Recorder)user
 	sync.mutex_lock(&r.mu)
 	append(&r.events, Push_State{
-		language    = strings.clone(language, r.allocator),
-		running     = running,
-		references  = references,
-		declaration = declaration,
+		language   = strings.clone(language, r.allocator),
+		running    = running,
+		references = references,
 	})
 	sync.mutex_unlock(&r.mu)
 }
@@ -224,7 +221,7 @@ lsppush_manager_state_hook :: proc(t: ^testing.T) {
 	sync.mutex_lock(&rec.mu)
 	n := len(rec.events)
 	start_ok := n == 1 && rec.events[0].language == "tst" && rec.events[0].running &&
-		!rec.events[0].references && !rec.events[0].declaration
+		!rec.events[0].references
 	sync.mutex_unlock(&rec.mu)
 	testing.expectf(t, start_ok, "start must fire exactly one running=true event, got %d", n)
 	if !start_ok {
@@ -235,7 +232,7 @@ lsppush_manager_state_hook :: proc(t: ^testing.T) {
 	sync.mutex_lock(&rec.mu)
 	n = len(rec.events)
 	stop_ok := n == 2 && rec.events[1].language == "tst" && !rec.events[1].running &&
-		!rec.events[1].references && !rec.events[1].declaration
+		!rec.events[1].references
 	sync.mutex_unlock(&rec.mu)
 	testing.expectf(t, stop_ok, "stop must fire exactly one running=false event, got %d", n)
 	if !stop_ok {
@@ -254,9 +251,9 @@ lsppush_manager_state_hook :: proc(t: ^testing.T) {
 	sync.mutex_lock(&rec.mu)
 	n = len(rec.events)
 	seq_ok := n == 5 &&
-		rec.events[2].running && !rec.events[2].references && !rec.events[2].declaration &&
-		!rec.events[3].running && !rec.events[3].references && !rec.events[3].declaration &&
-		rec.events[4].running && !rec.events[4].references && !rec.events[4].declaration
+		rec.events[2].running && !rec.events[2].references &&
+		!rec.events[3].running && !rec.events[3].references &&
+		rec.events[4].running && !rec.events[4].references
 	sync.mutex_unlock(&rec.mu)
 	testing.expectf(t, seq_ok, "restart+start+restart must fire up, down, up exactly, got %d", n)
 }
@@ -264,9 +261,9 @@ lsppush_manager_state_hook :: proc(t: ^testing.T) {
 // --- the daemon-level relay ---------------------------------------------------
 
 // LSPPush_Factory wraps the shared fake LS factory for daemon-level
-// tests: the fabricated client carries references/declaration caps (so
-// the pushed bits are distinguishable from defaults) and the daemon's
-// diagnostics push port — the two wires the relay below observes. The
+// tests: the fabricated client carries the references cap (so the pushed
+// bit is distinguishable from its default) and the daemon's diagnostics
+// push port — the two wires the relay below observes. The
 // caps write follows fake_ls_create's own discipline: it lands before
 // the manager shares the server.
 LSPPush_Factory :: struct {
@@ -290,7 +287,6 @@ lsppush_fake_create :: proc(
 	s, err = fake_ls_create(f.ff, entry, argv, env, folders, memory_limit_mb, clock, a, token)
 	if err == nil && s != nil && s.client != nil {
 		s.client.caps.references = true
-		s.client.caps.declaration = true
 		s.client.push_diagnostics = f.push_diagnostics
 		s.client.push_host = f.push_host
 	}
@@ -391,8 +387,7 @@ lsppush_daemon_relay_to_lsp_child :: proc(t: ^testing.T) {
 		return
 	}
 	refs, rok := json_bool_field(res.result, "references")
-	decl, dok := json_bool_field(res.result, "declaration")
-	testing.expectf(t, rok && dok && refs && decl, "start answer caps: rok=%v dok=%v refs=%v decl=%v", rok, dok, refs, decl)
+	testing.expectf(t, rok && refs, "start answer cap: rok=%v refs=%v", rok, refs)
 
 	// The start's running transition reached the lsp child, with the fake
 	// server's capability bits (the response's arrival orders it after
@@ -403,7 +398,7 @@ lsppush_daemon_relay_to_lsp_child :: proc(t: ^testing.T) {
 	}
 	sync.mutex_lock(&sink.mu)
 	up := sink.states[0]
-	up_ok := up.language == "crystal" && up.running && up.references && up.declaration
+	up_ok := up.language == "crystal" && up.running && up.references
 	sync.mutex_unlock(&sink.mu)
 	testing.expectf(t, up_ok, "start push must carry crystal running=true with caps")
 
@@ -477,7 +472,7 @@ lsppush_daemon_relay_to_lsp_child :: proc(t: ^testing.T) {
 	}
 	sync.mutex_lock(&sink.mu)
 	down := sink.states[1]
-	down_ok := down.language == "crystal" && !down.running && !down.references && !down.declaration
+	down_ok := down.language == "crystal" && !down.running && !down.references
 	sync.mutex_unlock(&sink.mu)
 	testing.expectf(t, down_ok, "stop push must carry crystal running=false with cleared bits")
 }
@@ -514,7 +509,7 @@ lsppush_child_without_mode_receives_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, hcerr, jsonrpc.Call_Err.None)
 
 	daemon.push_diagnostics_to_lsp_children(pair.daemon, "file:///proj/x.go", `[{"message":"unsubscribed"}]`)
-	daemon.push_langserver_state_to_lsp_children(pair.daemon, "crystal", true, true, true)
+	daemon.push_langserver_state_to_lsp_children(pair.daemon, "crystal", true, true)
 
 	testing.expectf(
 		t,
@@ -564,7 +559,7 @@ lsppush_quiesced_daemon_pushes_nothing :: proc(t: ^testing.T) {
 	pair.daemon.is_push_quiesced = true
 	sync.mutex_unlock(&pair.daemon.children_mu)
 	daemon.push_diagnostics_to_lsp_children(pair.daemon, "file:///proj/x.go", `[{"message":"quiesced"}]`)
-	daemon.push_langserver_state_to_lsp_children(pair.daemon, "crystal", true, true, true)
+	daemon.push_langserver_state_to_lsp_children(pair.daemon, "crystal", true, true)
 
 	testing.expectf(
 		t,

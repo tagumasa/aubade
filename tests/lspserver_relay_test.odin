@@ -602,12 +602,11 @@ lsprelay_unregister_capability_roundtrip :: proc(t: ^testing.T) {
 // ODIN_TEST_THREADS=1 keeps the suite serial; the handler's writes are read
 // only after the reply that follows them was observed.
 Relayhost_Daemon :: struct {
-	start_calls:       int,
-	start_ok:          bool,
-	start_references:  bool,
-	start_declaration: bool,
-	doc_open_calls:    int,
-	doc_open_fail:     bool,
+	start_calls:      int,
+	start_ok:         bool,
+	start_references: bool,
+	doc_open_calls:   int,
+	doc_open_fail:    bool,
 }
 
 relayhost_daemon_handler :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: mem.Allocator) -> (jsonrpc.Reply, jsonrpc.Action) {
@@ -624,8 +623,6 @@ relayhost_daemon_handler :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, ar
 			{
 				`{"references":`,
 				d.start_references ? "true" : "false",
-				`,"declaration":`,
-				d.start_declaration ? "true" : "false",
 				"}",
 			},
 			arena,
@@ -1132,16 +1129,15 @@ relayhost_langserver_state_registers_capabilities :: proc(t: ^testing.T) {
 
 	p.daemon_state.start_ok = true
 	p.daemon_state.start_references = true
-	p.daemon_state.start_declaration = false
 	relayhost_arm_face(t, p)
 	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
 	// The didOpen armed the language; a running=true push makes it Ready
-	// with its caps, and the starter pass registers definition + references
-	// (no declaration — the cap bit is false).
+	// with its cap, and the starter pass registers references (the cap
+	// bit) ahead of the ops faces.
 	testing.expectf(t, len(p.host.relay) == 1 && p.host.relay["go"].state == .Pending, "the didOpen must arm the language Pending")
-	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true,"declaration":false}`, session.handle_push_langserver_state)
+	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true}`, session.handle_push_langserver_state)
 	testing.expect(t, p.host.relay["go"].state == .Ready, "the push must mark the language Ready")
 
 	completed := relayhost_run_pass(t, p, proc(t: ^testing.T, body: string) {
@@ -1152,8 +1148,8 @@ relayhost_langserver_state_registers_capabilities :: proc(t: ^testing.T) {
 		}
 		testing.expectf(t, lsprelay_member_str(v, "method") == lsp.METHOD_REGISTER_CAPABILITY, "expected registerCapability, got %s", body)
 		if params, ok := jsonutil.obj_get(v, "params"); ok {
-			lsprelay_assert_registration(t, params, 0, "aubade.relay.go.definition", lsp.METHOD_DEFINITION, "go")
-			lsprelay_assert_registration(t, params, 1, "aubade.relay.go.references", lsp.METHOD_REFERENCES, "go")
+			lsprelay_assert_registration(t, params, 0, "aubade.relay.go.references", lsp.METHOD_REFERENCES, "go")
+			lsprelay_assert_registration(t, params, 1, "aubade.relay.go.formatting", lsp.METHOD_FORMATTING, "go")
 		}
 	})
 	testing.expect(t, completed, "the starter pass must complete")
@@ -1206,12 +1202,11 @@ relayhost_running_false_unregisters :: proc(t: ^testing.T) {
 
 	p.daemon_state.start_ok = true
 	p.daemon_state.start_references = true
-	p.daemon_state.start_declaration = true
 	relayhost_arm_face(t, p)
 	doc_uri := svcrig_file_uri(p.tmp, "main.go")
 	relayhost_open(t, p, doc_uri, "go", 1, "package main\n")
 
-	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true,"declaration":true}`, session.handle_push_langserver_state)
+	relayhost_push(t, p, svc.METHOD_PUSH_LANGSERVER_STATE, `{"language":"go","running":true,"references":true}`, session.handle_push_langserver_state)
 	completed := relayhost_run_pass(t, p, proc(t: ^testing.T, body: string) {
 		v, perr := json.parse_bytes(json_bytes(body), spec = .JSON, parse_integers = true, allocator = context.temp_allocator)
 		if perr == nil {
@@ -1233,7 +1228,7 @@ relayhost_running_false_unregisters :: proc(t: ^testing.T) {
 		if params, ok := jsonutil.obj_get(v, "params"); ok {
 			if unregs, has := jsonutil.obj_get(params, "unregisterations"); has {
 				items, _ := jsonutil.as_array(unregs)
-				testing.expectf(t, len(items) == 7, "the withdrawal must mirror the full batch (three relays + the four langserver faces), got %d", len(items))
+				testing.expectf(t, len(items) == 5, "the withdrawal must mirror the full batch (the references relay + the four langserver faces), got %d", len(items))
 			}
 		}
 	})

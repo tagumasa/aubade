@@ -419,10 +419,16 @@ handle_initialize :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 	jsonutil.obj_set(&tokens_cap, "full", jsonutil.json_bool(true))
 	jsonutil.obj_set(&tokens_cap, "range", jsonutil.json_bool(false))
 
-	caps := jsonutil.json_object(4, arena)
+	caps := jsonutil.json_object(6, arena)
 	jsonutil.obj_set_object(&caps, "textDocumentSync", sync_cap)
 	jsonutil.obj_set_object(&caps, "semanticTokensProvider", tokens_cap)
 	jsonutil.obj_set(&caps, "documentSymbolProvider", jsonutil.json_bool(true))
+	// The definition/declaration jump is advertised statically: the daemon
+	// answers it out of its own outline and name index, with no language
+	// server lifecycle to follow (references stays dynamically registered
+	// behind a live server — an index cannot answer it).
+	jsonutil.obj_set(&caps, "definitionProvider", jsonutil.json_bool(true))
+	jsonutil.obj_set(&caps, "declarationProvider", jsonutil.json_bool(true))
 	// The negotiated encoding lives inside capabilities (LSP 3.17
 	// ServerCapabilities.positionEncoding): clients that offered utf-8 must
 	// see the choice to keep columns correct.

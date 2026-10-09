@@ -346,6 +346,40 @@ svc_langserver_request_contract :: proc(t: ^testing.T) {
 	testing.expect_value(t, ecerr, jsonrpc.Call_Err.Error_Response)
 	testing.expect_value(t, ecode, jsonrpc.Err_Code.Invalid_Params)
 	testing.expect(t, strings.contains(emsg, "start_line, start_col, end_line, and end_col are required"))
+
+	// The references relay shares the position parse: missing coordinates
+	// are a caller error before any server resolution.
+	rp := jsonutil.json_object(1, alloc)
+	jsonutil.obj_set(&rp, "relative_path", jsonutil.json_string("x.cr"))
+	_, rcode, rmsg, rcerr := jsonrpc.conn_call(
+		pair.conn, svc.METHOD_LANGSERVER_REFERENCES, json.Value(json.Object(rp)), alloc, deadline,
+	)
+	testing.expect_value(t, rcerr, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, rcode, jsonrpc.Err_Code.Invalid_Params)
+	testing.expect(t, strings.contains(rmsg, "line and col are required"))
+
+	// A non-boolean include_declaration is likewise a caller error.
+	rp2 := jsonutil.json_object(4, alloc)
+	jsonutil.obj_set(&rp2, "relative_path", jsonutil.json_string("x.cr"))
+	jsonutil.obj_set(&rp2, "line", jsonutil.json_int(1))
+	jsonutil.obj_set(&rp2, "col", jsonutil.json_int(1))
+	jsonutil.obj_set(&rp2, "include_declaration", jsonutil.json_string("yes"))
+	_, r2code, r2msg, r2err := jsonrpc.conn_call(
+		pair.conn, svc.METHOD_LANGSERVER_REFERENCES, json.Value(json.Object(rp2)), alloc, deadline,
+	)
+	testing.expect_value(t, r2err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, r2code, jsonrpc.Err_Code.Invalid_Params)
+	testing.expect(t, strings.contains(r2msg, "include_declaration"))
+
+	// With the position present, the on-demand start reaches the
+	// uninstalled-server refusal (the same ensure semantics every LSP
+	// read uses). A fresh language: crystal is on its failed-start
+	// cooldown from the diagnostics leg above.
+	svc_symbol_write_file(t, pair.tmp, "y.zig", "const x = 1;\n")
+	refs := svc.client_langserver_references(pair.conn, "y.zig", 1, 1, true, alloc, deadline)
+	testing.expect_value(t, refs.call_err, jsonrpc.Call_Err.Error_Response)
+	testing.expect_value(t, refs.err_code, jsonrpc.Err_Code.Method_Not_Found)
+	testing.expect(t, strings.contains(refs.err_message, "is not installed"))
 }
 
 @(test)
@@ -454,6 +488,25 @@ svc_langserver_result_renderers :: proc(t: ^testing.T) {
 		} else {
 			testing.expectf(t, false, "from_ranges missing")
 		}
+	}
+
+	// Locations: the flattened range, and rel-path entries only — a
+	// location with no project-relative path (a stdlib URI a server
+	// reported) drops, the call-edges rule.
+	locs := []symbol.Location{
+		{uri = "file:///p/src/a.go", range = {start = {line = 1, character = 2}, end = {line = 1, character = 6}}, rel_path = "src/a.go"},
+		{uri = "file:///elsewhere/b.go", range = {start = {line = 0, character = 0}, end = {line = 0, character = 1}}},
+	}
+	lj := svc.locations_json(locs, a)
+	larr, lok := jsonutil.as_array(lj)
+	testing.expectf(t, lok && len(larr) == 1, "locations array: ok=%v len=%d", lok, len(larr))
+	if lok && len(larr) == 1 {
+		rel, _ := json_str_field(larr[0], "relative_path")
+		testing.expect_value(t, rel, "src/a.go")
+		testing.expect_value(t, json_int_of(larr[0], "line"), 1)
+		testing.expect_value(t, json_int_of(larr[0], "col"), 2)
+		testing.expect_value(t, json_int_of(larr[0], "end_line"), 1)
+		testing.expect_value(t, json_int_of(larr[0], "end_col"), 6)
 	}
 }
 

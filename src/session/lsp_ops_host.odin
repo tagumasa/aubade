@@ -17,11 +17,13 @@ import "src:platform"
 import "src:svc"
 import "src:symbol"
 
-// The langserver ops leg's budget (format, code actions, inlay hints, call
-// hierarchy). A real LS's first answer on a cold project can spend several
-// package loads on top of the handshake the start face already paid, so
-// this sits above the doc face's 15s — still far under the start
-// handshake's 50s.
+// The langserver ops leg's budget (format, code actions, inlay hints,
+// call hierarchy) and the references relay's (host_lsp_relay) — the one
+// navigation the daemon's index cannot answer, so it forwards to the
+// live server. A real LS's first answer on a cold project can spend
+// several package loads on top of the handshake the start face already
+// paid, so this sits above the doc face's 15s — still far under the
+// start handshake's 50s.
 LSP_OPS_CALL_DEADLINE_MS :: i64(20_000)
 
 host_lsp_ops :: proc(host: rawptr, req: lspserver.Ops_Request, arena: mem.Allocator) -> lspserver.Ops_Result {

@@ -28,6 +28,7 @@ svc_table_init :: proc(t: ^svc.Table, d: ^Daemon) {
 	svc.table_register(t, svc.METHOD_ECHO, svc.echo)
 	svc.table_register(t, svc.METHOD_SYMBOL_LIST, handle_symbol_list)
 	svc.table_register(t, svc.METHOD_SYMBOL_FIND, handle_symbol_find)
+	svc.table_register(t, svc.METHOD_SYMBOL_FIND_DEFINITION, handle_symbol_find_definition)
 	svc.table_register(t, svc.METHOD_SYMBOL_FIND_DEAD_CODE, handle_symbol_find_dead_code)
 	svc.table_register(t, svc.METHOD_AST_FIND_DUPLICATES, handle_ast_find_duplicates)
 	svc.table_register(t, svc.METHOD_INDEX_CRAWL, handle_index_crawl)
