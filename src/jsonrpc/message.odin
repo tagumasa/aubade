@@ -6,7 +6,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 Msg_Kind :: enum {
 	Request,
@@ -31,11 +31,10 @@ Err_Code :: enum i32 {
 	Method_Not_Found  = -32601,
 	Invalid_Params    = -32602,
 	Internal_Error    = -32603,
-	// Internal svc face only (child<->parent, token-authenticated): a
-	// transient failure a read-only caller may reapply. Lives in the
-	// JSON-RPC implementation-defined server band and is never proxied
-	// to the MCP client as a wire code — the child weaves it into
-	// failure prose instead.
+	// The implementation-defined server band: a transient failure a
+	// read-only caller may reapply. Callers fold it into their own
+	// failure prose — it is never proxied to an MCP client as a wire
+	// code.
 	Server_Retryable  = -32000,
 	Request_Cancelled = -32800, // MCP / LSP reserved
 	Request_Failed    = -32803, // LSP 3.17 reserved
@@ -62,7 +61,7 @@ Envelope :: struct {
 // success the code is .None.
 decode_envelope :: proc(body: []u8, a: mem.Allocator) -> (env: ^Envelope, code: Err_Code) {
 	// Depth/encoding guard first: the core parser would crash on deep
-	// nesting and mangle bad UTF-8 silently (see framescan.odin).
+	// nesting and mangle bad UTF-8 silently (see jsonscan.odin).
 	if !frame_sanity_ok(body) {
 		return nil, .Parse_Error
 	}
@@ -142,14 +141,18 @@ decode_envelope :: proc(body: []u8, a: mem.Allocator) -> (env: ^Envelope, code: 
 		case json.Object:
 			em := cast(map[string]json.Value)ev
 			if cv, found := em["code"]; found {
-				// value_int yields 0 for a non-integer code, and
-				// code_from_i64 maps 0 to Internal_Error — the absent and
-				// malformed spellings stay indistinguishable, as before.
-				env.err_code = code_from_i64(jsonutil.value_int(cv))
+				#partial switch n in cv {
+				case json.Integer:
+					env.err_code = code_from_i64(i64(n))
+				case:
+					env.err_code = .Internal_Error
+				}
 			}
 			if mv, found := em["message"]; found {
-				if s := jsonutil.value_str(mv); s != "" {
-					env.err_message = strings.clone(s, a)
+				#partial switch ms in mv {
+				case json.String:
+					env.err_message = strings.clone(string(ms), a)
+				case:
 				}
 			}
 		case:

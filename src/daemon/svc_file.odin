@@ -6,7 +6,7 @@ package daemon
 
 import "core:encoding/json"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:store"
 import "src:svc"

@@ -13,7 +13,7 @@ import "core:encoding/json"
 import "core:strings"
 import "core:sync"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 Doc_State :: struct {
 	uri:         string, // owned (client allocator)

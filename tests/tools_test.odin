@@ -13,8 +13,8 @@ import "core:thread"
 import "src:config"
 import "src:editor"
 import "src:hooks"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:platform"
 import "src:regex"
@@ -613,12 +613,12 @@ retry_pair_init :: proc(t: ^testing.T, method: string, handler: jsonrpc.Handler)
 		return nil
 	}
 	server := new(jsonrpc.Conn, context.allocator)
-	jsonrpc.conn_init(server, rpc.to_reader(&e_server.stream, jsonrpc.RPC_MAX_FRAME), rpc.to_writer(&e_server.stream), context.allocator)
+	jsonrpc.conn_init(server, rpc.to_reader(&e_server.stream, rpc.RPC_MAX_FRAME), rpc.to_writer(&e_server.stream), context.allocator)
 	jsonrpc.conn_register(server, method, handler)
 	server_reader, server_box := retry_conn_pump(server)
 
 	client := new(jsonrpc.Conn, context.allocator)
-	jsonrpc.conn_init(client, rpc.to_reader(&e_client.stream, jsonrpc.RPC_MAX_FRAME), rpc.to_writer(&e_client.stream), context.allocator)
+	jsonrpc.conn_init(client, rpc.to_reader(&e_client.stream, rpc.RPC_MAX_FRAME), rpc.to_writer(&e_client.stream), context.allocator)
 	client_reader, client_box := retry_conn_pump(client)
 
 	p := new(Retry_Pair, context.allocator)

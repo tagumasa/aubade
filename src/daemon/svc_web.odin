@@ -9,7 +9,7 @@ import "core:mem"
 import "core:strings"
 
 import "src:config"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:safety"
 import "src:svc"

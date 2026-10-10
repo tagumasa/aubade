@@ -8,7 +8,7 @@ package tests
 import "core:mem"
 import "core:strings"
 import "core:testing"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:platform"
 import "src:svc"
 

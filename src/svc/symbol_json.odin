@@ -5,7 +5,7 @@ package svc
 
 import "core:encoding/json"
 import "core:mem"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:symbol"
 
 METHOD_SYMBOL_LIST :: "svc.symbol/list"  // request: {path} -> {symbols: [...]}

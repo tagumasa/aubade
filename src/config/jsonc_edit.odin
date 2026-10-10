@@ -11,7 +11,7 @@ package config
 import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 Value_Kind :: enum {
 	Object,

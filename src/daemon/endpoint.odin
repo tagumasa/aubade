@@ -9,7 +9,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:util"
 

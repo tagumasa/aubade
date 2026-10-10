@@ -17,8 +17,8 @@ import "core:sync/chan"
 import "core:testing"
 import "core:thread"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:lspserver"
 import "src:platform"
@@ -714,14 +714,14 @@ svc_rig_init :: proc(t: ^testing.T, r: ^Svc_Rig, daemon_host: rawptr, register_s
 		return false
 	}
 	r.daemon_conn = new(jsonrpc.Conn, context.allocator)
-	jsonrpc.conn_init(r.daemon_conn, rpc.to_reader(&r.e_daemon.stream, jsonrpc.RPC_MAX_FRAME), rpc.to_writer(&r.e_daemon.stream), context.allocator)
+	jsonrpc.conn_init(r.daemon_conn, rpc.to_reader(&r.e_daemon.stream, rpc.RPC_MAX_FRAME), rpc.to_writer(&r.e_daemon.stream), context.allocator)
 	register_svc(r.daemon_conn, daemon_host)
 	r.daemon_box = new(Conn_Box, context.allocator)
 	r.daemon_box^ = {conn = r.daemon_conn}
 	r.daemon_reader = thread.create_and_start_with_poly_data(r.daemon_box, conn_reader_entry, self_cleanup = false)
 
 	r.child_conn = new(jsonrpc.Conn, context.allocator)
-	jsonrpc.conn_init(r.child_conn, rpc.to_reader(&r.e_child.stream, jsonrpc.RPC_MAX_FRAME), rpc.to_writer(&r.e_child.stream), context.allocator)
+	jsonrpc.conn_init(r.child_conn, rpc.to_reader(&r.e_child.stream, rpc.RPC_MAX_FRAME), rpc.to_writer(&r.e_child.stream), context.allocator)
 	r.child_box = new(Conn_Box, context.allocator)
 	r.child_box^ = {conn = r.child_conn}
 	r.child_reader = thread.create_and_start_with_poly_data(r.child_box, conn_reader_entry, self_cleanup = false)

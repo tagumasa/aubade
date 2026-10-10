@@ -25,7 +25,7 @@ if (-not (Test-Path (Join-Path $LibDir "libtree-sitter.lib")) -or
 Write-Host "Building aubade from $Root ..." -ForegroundColor Cyan
 Set-Location $Root
 
-odin build src -collection:src=src "-collection:grammars=$LibDir\grammars" -out:aubade.exe
+odin build src -collection:src=src -collection:jsonrpc=src -collection:mcp=src "-collection:jsonutil=$Root\vendor\odin-jsonutil\src" "-collection:grammars=$LibDir\grammars" -out:aubade.exe
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed with exit code $LASTEXITCODE"

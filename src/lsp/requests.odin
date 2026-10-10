@@ -12,8 +12,8 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:symbol"
 
@@ -76,8 +76,6 @@ call_error :: proc(op: string, code: jsonrpc.Err_Code, message: string, call_err
 			kind = .Internal,
 			msg  = strings.concatenate({op, " failed: ", detail}, a),
 		}
-	case .Malformed_Reply:
-		return platform.Wrapped{kind = .Internal, msg = strings.concatenate({op, ": malformed reply"}, a)}
 	}
 	return nil
 }

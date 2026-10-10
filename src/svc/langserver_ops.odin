@@ -12,7 +12,7 @@ import "core:os"
 import "core:strings"
 
 import "src:editor"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:platform"
 import "src:safety"

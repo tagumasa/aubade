@@ -6,8 +6,8 @@ package svc
 
 import "core:encoding/json"
 import "core:mem"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 
 Client_Call :: struct {

@@ -13,7 +13,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:langserver"
 import "src:lsp"
 import "src:platform"

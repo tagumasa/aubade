@@ -7,7 +7,7 @@ import "core:encoding/json"
 import "core:mem"
 
 import "src:editor"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 

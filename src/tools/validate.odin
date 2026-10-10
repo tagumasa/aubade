@@ -6,7 +6,7 @@ package tools
 import "core:encoding/json"
 import "core:mem"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 // validate_args checks the incoming arguments object against the tool's
 // Param_Desc list and returns the validated values map (allocated from

@@ -11,7 +11,7 @@ import "core:strings"
 import "core:sync"
 
 import "src:config"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:util"
 

@@ -10,7 +10,7 @@ import "core:mem"
 import "core:strings"
 import "core:sync"
 import "src:editor"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 

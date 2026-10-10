@@ -8,7 +8,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:thread"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:rpc"
 
 main :: proc() {
@@ -38,7 +38,7 @@ run :: proc() -> bool {
 		if !dok {
 			return false
 		}
-		reader := rpc.to_reader(stream, jsonrpc.RPC_MAX_FRAME)
+		reader := rpc.to_reader(stream, rpc.RPC_MAX_FRAME)
 		writer := rpc.to_writer(stream)
 		payload := encode_round(round)
 		for _ in 0..<2 {
@@ -82,7 +82,7 @@ echo_entry :: proc(data: rawptr) {
 }
 
 echo_connection :: proc(stream: ^rpc.Stream) {
-	reader := rpc.to_reader(stream, jsonrpc.RPC_MAX_FRAME)
+	reader := rpc.to_reader(stream, rpc.RPC_MAX_FRAME)
 	writer := rpc.to_writer(stream)
 	a: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&a, context.allocator)

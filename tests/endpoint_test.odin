@@ -12,8 +12,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "src:daemon"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 
 temp_daemon_dir :: proc(t: ^testing.T) -> string {

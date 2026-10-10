@@ -16,8 +16,8 @@ import "core:mem"
 import "core:strings"
 import "core:testing"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:lspserver"
 

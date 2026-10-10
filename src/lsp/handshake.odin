@@ -9,8 +9,8 @@ import "core:mem"
 import "core:os"
 import "core:sync"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:version"
 

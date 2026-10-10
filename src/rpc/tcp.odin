@@ -8,7 +8,7 @@ package rpc
 
 import "base:intrinsics"
 import "core:net"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 
 TCP_State :: struct {
 	socket: net.TCP_Socket,

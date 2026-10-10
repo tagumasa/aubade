@@ -11,7 +11,7 @@ import "core:mem"
 import "core:strings"
 import "core:testing"
 import "src:daemon"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:store"
 

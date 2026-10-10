@@ -20,8 +20,8 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:util"
 
 handle_document_symbol :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: mem.Allocator) -> (jsonrpc.Reply, jsonrpc.Action) {

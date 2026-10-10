@@ -1,17 +1,19 @@
-// Structural sanity for JSON bodies, run before the core parser: the
-// core parser recurses per nesting level with no depth cap (a deep body
-// is a stack-exhaustion crash, not a parse error), silently normalizes
-// invalid UTF-8 inside strings to U+FFFD, and truncates values at raw
-// control characters with no error. The scan is a single allocation-free
-// pass; everything it rejects the parser would have either crashed on or
-// mangled. Used by the aubade-side consumers of untrusted-depth JSON
-// (config files, hooks stdin, tracker payloads, web bodies, the daemon
-// endpoint); the mirrored wire stack carries its own scan.
-package util
+// Structural sanity for inbound JSON frames, run before the core parser:
+// the core parser recurses per nesting level with no depth cap (a deep
+// body is a stack-exhaustion crash, not a parse error), silently
+// normalizes invalid UTF-8 inside strings to U+FFFD, and truncates values
+// at raw control characters with no error. The scan is a single
+// allocation-free pass; everything it rejects the parser would have
+// either crashed on or mangled. decode_envelope runs it on every frame
+// body before parse.
+package jsonrpc
 
 MAX_JSON_DEPTH :: 128
 
-json_sanity_ok :: proc(body: []u8) -> bool {
+// Every index in the scan is a body index guarded by construction: i
+// advances only through bytes the loop re-checks against len(body), and
+// the multi-byte skip rides json_utf8_sequence_len's own end checks.
+frame_sanity_ok :: proc(body: []u8) -> bool #no_bounds_check {
 	depth := 0
 	in_string := false
 	escaped := false
@@ -33,6 +35,22 @@ json_sanity_ok :: proc(body: []u8) -> bool {
 					return false
 				}
 				i += n
+				continue
+			} else {
+				// Ordinary string byte: the run continues while bytes
+				// stay printable ASCII that is neither quote nor
+				// escape — none of the per-byte states above can
+				// engage inside such a run, and the string payload is
+				// where a frame's bytes mostly live.
+				j := i + 1
+				for j < len(body) {
+					d := body[j]
+					if d < 0x20 || d >= 0x80 || d == '"' || d == '\\' {
+						break
+					}
+					j += 1
+				}
+				i = j
 				continue
 			}
 		} else {
@@ -57,7 +75,6 @@ json_sanity_ok :: proc(body: []u8) -> bool {
 	return true
 }
 
-// json_utf8_cont reports a UTF-8 continuation byte.
 json_utf8_cont :: proc(b: u8) -> bool {
 	return b >= 0x80 && b <= 0xBF
 }

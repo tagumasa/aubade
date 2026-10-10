@@ -9,7 +9,7 @@ import "core:fmt"
 import "core:sort"
 import "core:strings"
 import "src:editor"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:svc"
 import "src:util"
 

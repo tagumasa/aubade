@@ -9,7 +9,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 Render_Inputs :: struct {
 	context_prompt:     string,

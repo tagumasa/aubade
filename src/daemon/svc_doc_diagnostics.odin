@@ -23,7 +23,7 @@
 package daemon
 
 import "core:encoding/json"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 import "src:ts"

@@ -24,7 +24,6 @@ _test/
 # Core dumps (a crashed test or daemon drops them at the root)
 core
 core.*
-vendor/
 /reference
 
 # Odin build artifacts (C libraries and grammar parsers)

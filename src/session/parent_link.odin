@@ -14,8 +14,8 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "src:daemon"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:rpc"
 import "src:svc"
@@ -45,7 +45,7 @@ connect_parent :: proc(a: ^App, attempts: int) -> bool {
 			if ok {
 				stream = s
 				conn = new(jsonrpc.Conn, a.allocator)
-				reader := rpc.to_reader(stream, jsonrpc.RPC_MAX_FRAME)
+				reader := rpc.to_reader(stream, rpc.RPC_MAX_FRAME)
 				writer := rpc.to_writer(stream)
 				jsonrpc.conn_init(conn, reader, writer, a.allocator)
 				conn.cancel_notify = parent_cancel_notify
@@ -540,7 +540,7 @@ start_in_process_daemon :: proc(a: ^App) -> bool {
 	}
 
 	parent := new(jsonrpc.Conn, a.allocator)
-	reader := rpc.to_reader(&ea.stream, jsonrpc.RPC_MAX_FRAME)
+	reader := rpc.to_reader(&ea.stream, rpc.RPC_MAX_FRAME)
 	writer := rpc.to_writer(&ea.stream)
 	jsonrpc.conn_init(parent, reader, writer, a.allocator)
 	parent.cancel_notify = parent_cancel_notify

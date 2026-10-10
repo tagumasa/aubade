@@ -14,8 +14,8 @@ import "core:testing"
 import "core:thread"
 import "core:time"
 import "src:daemon"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:rpc"
 import "src:store"
@@ -238,7 +238,7 @@ test_daemon_with_configs :: proc(
 	}
 
 	c := new(jsonrpc.Conn, context.allocator)
-	r := rpc.to_reader(&e_child.stream, jsonrpc.RPC_MAX_FRAME)
+	r := rpc.to_reader(&e_child.stream, rpc.RPC_MAX_FRAME)
 	w := rpc.to_writer(&e_child.stream)
 	jsonrpc.conn_init(c, r, w, context.allocator)
 

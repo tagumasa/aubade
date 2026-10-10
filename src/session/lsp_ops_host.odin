@@ -9,8 +9,8 @@ package session
 import "core:encoding/json"
 import "core:mem"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:lspserver"
 import "src:platform"

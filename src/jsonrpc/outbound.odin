@@ -1,8 +1,8 @@
 // Outbound: the optional dedicated writer thread for a Conn. When
 // installed, every frame crosses the wire from this one thread, fed by a
-// bounded queue — a peer that stops reading (a hung language server with
-// a full stdin pipe) then blocks exactly one thread instead of every
-// sender: posts fail once the queue is full past their deadline, so no
+// bounded queue — a peer that stops reading (a hung server with a full
+// stdin pipe) then blocks exactly one thread instead of every sender:
+// posts fail once the queue is full past their deadline, so no
 // caller-side lock ever queues behind a pipe write. A failed write marks
 // the connection broken (callers observe a closed conn); teardown unwedges
 // the thread because the owner kills the peer process first (the kill
@@ -15,7 +15,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 
-import "src:platform"
+import "jsonrpc:platform"
 
 OUTBOUND_FRAMES_CAP :: 64
 OUTBOUND_BYTES_CAP :: 8 * 1024 * 1024

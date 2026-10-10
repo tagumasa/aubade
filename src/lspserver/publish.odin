@@ -17,8 +17,8 @@ import "core:mem"
 import "core:strings"
 import "core:sync"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 import "src:util"
 

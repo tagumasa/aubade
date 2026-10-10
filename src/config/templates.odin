@@ -11,7 +11,7 @@ package config
 
 import "core:fmt"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 GLOBAL_TEMPLATE :: `
 // Aubade global configuration (~/.aubade/config.jsonc).

@@ -10,8 +10,8 @@ import "core:os"
 import "core:strings"
 import "core:thread"
 import "src:daemon"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:rpc"
 import "src:safety"
@@ -103,7 +103,7 @@ connect_control :: proc(info: daemon.Endpoint_Info) -> (^Control_Link, bool) {
 		return nil, false
 	}
 	c := new(jsonrpc.Conn, context.allocator)
-	reader := rpc.to_reader(stream, jsonrpc.RPC_MAX_FRAME)
+	reader := rpc.to_reader(stream, rpc.RPC_MAX_FRAME)
 	writer := rpc.to_writer(stream)
 	jsonrpc.conn_init(c, reader, writer, context.allocator)
 

@@ -1,39 +1,27 @@
-// mcp: the MCP server layer over jsonrpc (protocol baseline 2025-11-25).
-// Transport-agnostic: the host injects a jsonrpc.Conn.
-// v1 scope: initialize/instructions, ping, tools/list, tools/call,
-// notifications/tools/list_changed, notifications/cancelled. No
-// elicitation, structured output values, resource links, icons values, or
-// tasks. Input-validation violations return isError tool results, never
-// JSON-RPC -32602; -32602 stays for unknown tools, malformed tools/call
-// request params, and framing-level violations (the split the 2025-11-25
-// revision's error-handling section draws between tool execution errors
-// and CallToolRequest schema failures).
+// mcp: the MCP server face over jsonrpc (protocol ladder through
+// 2025-11-25). Transport-agnostic: the host injects a jsonrpc.Conn. The
+// built-in handlers cover initialize/instructions, ping, tools/list,
+// tools/call with deferred completion, notifications/tools/list_changed,
+// and notifications/cancelled; hosts register any further method through
+// server_register. Input-validation violations return isError tool
+// results, never JSON-RPC -32602;
+// -32602 stays for unknown tools, malformed tools/call request
+// params, and framing-level violations (the split the 2025-11-25
+// revision's error-handling section draws between tool execution
+// errors and CallToolRequest schema failures).
 package mcp
 
 import "base:intrinsics"
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:strings"
-import "src:jsonrpc"
-import "src:jsonutil"
-import "src:platform"
-import "src:util"
+import "jsonrpc:jsonrpc"
+import "jsonrpc:platform"
+import "jsonutil:jsonutil"
 
-// The latest supported revision — must stay the LAST entry of
-// PROTOCOL_SUPPORTED below (the compiler rejects indexing constant data,
-// so a test pins the identity instead of a derivation).
-PROTOCOL_LATEST :: "2025-11-25"
-
-// A recognized requested version is echoed verbatim; anything else answers
-// PROTOCOL_LATEST. The tool-listing shape is fixed across versions — the
-// title, icons, and _meta members postdate some revisions, but those
-// revisions' schemas admit additional properties, so older clients tolerate
-// them.
-PROTOCOL_SUPPORTED :: []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
-
-// Tool_Entry is the wire-facing projection of a tool. The host (session)
-// builds these from the tools table; mcp never imports the tools package
-// (dependency direction: tools sits above mcp).
+// Tool_Entry is the wire-facing projection of a tool. The host builds
+// these from its own registry; the server face only serializes them.
 Tool_Entry :: struct {
 	name:             string,
 	title:            string,
@@ -41,9 +29,13 @@ Tool_Entry :: struct {
 	input_schema:     json.Value,
 	read_only_hint:   bool,
 	destructive_hint: bool,
-	// icons: [] and _meta: {} are always emitted (fixed wire shape).
+	// icons: [] and _meta: {} are always emitted (shape fixed).
 }
 
+// Call_Info borrows its strings and values from the request's message
+// arena, which dies when the handler returns. A host answering
+// deferred=true clones anything it still needs (its later reply carries
+// fresh data); the immediate path only reads through.
 Call_Info :: struct {
 	name:   string,
 	args:   json.Value, // object value or nil
@@ -69,18 +61,26 @@ List_Host   :: proc(host: rawptr, arena: mem.Allocator) -> []Tool_Entry
 Call_Host   :: proc(host: rawptr, call: ^Call_Info) -> Call_Outcome
 Cancel_Host :: proc(host: rawptr, id: jsonrpc.Id)
 
+// Log_Fn receives the server's diagnostics (dropped replies and the
+// like). The host owns logging; when no hook is installed, server_log
+// falls back to one stderr line — safe on the stdio face, where stderr
+// is not a protocol channel.
+Log_Fn :: proc(user: rawptr, msg: string)
+
 Server :: struct {
 	conn:        ^jsonrpc.Conn,
 	host:        rawptr,
 	name:        string,
 	version:     string,
 	description: string,
-	instructions: string, // per-session system prompt; one clone owned by the session allocator — the host assigns compose_instructions' result (or ""), never a borrowed literal, so shutdown frees it unconditionally
+	instructions: string, // per-session system prompt; one clone owned by the session allocator — the host assigns its own composed prompt (or ""), never a borrowed literal, so shutdown frees it unconditionally
 	list_tools:  List_Host,
 	call_tool:   Call_Host,
 	on_cancel:   Cancel_Host,
+	log_fn:      Log_Fn, // nil = the stderr fallback in server_log
+	log_user:    rawptr,
 	// Set by the dispatch thread (notifications/initialized) and read by
-	// the heartbeat thread (announce_visibility) — atomic intrinsics only.
+	// any host thread — atomic intrinsics only.
 	initialized: u32,
 }
 
@@ -98,6 +98,18 @@ server_init :: proc(s: ^Server, conn: ^jsonrpc.Conn) {
 	jsonrpc.conn_register_notification(conn, "notifications/cancelled", handle_cancelled)
 }
 
+// server_register adds a handler for a method the built-ins do not cover
+// — resources, prompts, logging, or anything else the host puts on the
+// wire. It is the general-purpose extension surface: the wire layers
+// carry no method allowlist.
+server_register :: proc(s: ^Server, method: string, h: jsonrpc.Handler) {
+	jsonrpc.conn_register(s.conn, method, h)
+}
+
+server_register_notification :: proc(s: ^Server, method: string, n: jsonrpc.Notifier) {
+	jsonrpc.conn_register_notification(s.conn, method, n)
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -113,15 +125,11 @@ handle_initialize :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 		case:
 		}
 	}
-	// Walk the constant version table through a local slice (the
-	// compiler rejects variable indexing straight into constant data).
+	// The table lives in protocol.odin: the requested revision when it is
+	// supported, PROTOCOL_LATEST otherwise.
 	version := PROTOCOL_LATEST
-	supported_versions := PROTOCOL_SUPPORTED
-	for i in 0..<len(supported_versions) {
-		if requested == supported_versions[i] {
-			version = requested
-			break
-		}
+	if protocol_version_supported(requested) {
+		version = requested
 	}
 
 	result := jsonutil.json_object(4, arena)
@@ -166,7 +174,7 @@ handle_tools_list :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 	entries := s.list_tools(s.host, arena)
 
 	items := make([]json.Value, len(entries), arena)
-	for e, i in entries { // slice for-in binds (value, index)
+	for e, i in entries {
 		t := jsonutil.json_object(7, arena)
 		jsonutil.obj_set(&t, "name", jsonutil.json_string(e.name))
 		jsonutil.obj_set(&t, "title", jsonutil.json_string(e.title))
@@ -247,7 +255,7 @@ handle_tools_call :: proc(conn: ^jsonrpc.Conn, env: ^jsonrpc.Envelope, arena: me
 	// client forever. A drop past that deadline is surfaced, not passed
 	// silently: the peer stopped reading protocol frames.
 	if !jsonrpc.conn_send_body(conn, body, platform.mono_ms() + jsonrpc.OUTBOUND_REPLY_TIMEOUT_MS) {
-		log_dropped_reply(conn, env.id, env.id_set, "tools/call result", arena)
+		log_dropped_reply(s, env.id, env.id_set, "tools/call result", arena)
 	}
 	reply: jsonrpc.Reply = {}
 	return reply, .Defer // already sent above; Defer stops jsonrpc from sending
@@ -289,7 +297,7 @@ send_tool_response :: proc(s: ^Server, id: jsonrpc.Id, id_set: bool, is_error: b
 	// Same reply deadline as the immediate path above: a deferred
 	// tools/call result must never take the notification drop-fast policy.
 	if !jsonrpc.conn_send_body(s.conn, tool_result_body(id, id_set, is_error, text, arena), platform.mono_ms() + jsonrpc.OUTBOUND_REPLY_TIMEOUT_MS) {
-		log_dropped_reply(s.conn, id, id_set, "tools/call result", arena)
+		log_dropped_reply(s, id, id_set, "tools/call result", arena)
 	}
 }
 
@@ -299,8 +307,18 @@ send_tool_response :: proc(s: ^Server, id: jsonrpc.Id, id_set: bool, is_error: b
 // scoped arena only.
 send_tool_error :: proc(s: ^Server, id: jsonrpc.Id, id_set: bool, code: jsonrpc.Err_Code, message: string, arena: mem.Allocator) {
 	if !jsonrpc.conn_send_error(s.conn, id, id_set, code, message, arena) {
-		log_dropped_reply(s.conn, id, id_set, "tools/call error", arena)
+		log_dropped_reply(s, id, id_set, "tools/call error", arena)
 	}
+}
+
+// server_log routes a diagnostic through the host's log hook; no hook
+// installed falls back to one stderr line.
+server_log :: proc(s: ^Server, msg: string) {
+	if s.log_fn != nil {
+		s.log_fn(s.log_user, msg)
+		return
+	}
+	fmt.eprintfln("odin-mcp: %s", msg)
 }
 
 // log_dropped_reply surfaces a reply the outbound deadline gave up on: a
@@ -308,11 +326,11 @@ send_tool_error :: proc(s: ^Server, id: jsonrpc.Id, id_set: bool, code: jsonrpc.
 // forever, and the loss must at least be visible on our side. The
 // diagnostic rides the reply's own arena — it dies with the request
 // scope, never on a thread's unbounded temp.
-log_dropped_reply :: proc(c: ^jsonrpc.Conn, id: jsonrpc.Id, id_set: bool, what: string, a: mem.Allocator) {
+log_dropped_reply :: proc(s: ^Server, id: jsonrpc.Id, id_set: bool, what: string, a: mem.Allocator) {
 	id_text := jsonrpc.id_json(id, id_set, a)
-	util.log_error(strings.concatenate(
-		{"mcp: dropped ", what, " for request id ", id_text, " — the outbound deadline expired; the client is not reading"},
-		a,
+	server_log(s, fmt.aprintf(
+		"dropped %s for request id %s — the outbound deadline expired; the client is not reading",
+		what, id_text, allocator = a,
 	))
 }
 

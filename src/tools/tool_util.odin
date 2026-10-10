@@ -7,8 +7,8 @@ package tools
 import "core:encoding/json"
 import "core:mem"
 import "core:strings"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 import "src:util"
@@ -207,7 +207,7 @@ call_result :: proc(
 		return err_result(ctx, "svc call cancelled")
 	case .Closed:
 		return err_result(ctx, "svc connection closed")
-	case .Transport, .Malformed_Reply:
+	case .Transport:
 		return err_result(ctx, "svc call failed")
 	}
 	return err_result(ctx, "svc call failed")

@@ -14,7 +14,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:sort"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:util"
 

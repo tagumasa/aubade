@@ -11,7 +11,7 @@ package daemon
 import "core:mem"
 import "core:sync"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 

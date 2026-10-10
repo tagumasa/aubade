@@ -9,8 +9,8 @@ import "core:sync"
 import "core:thread"
 import "src:daemon"
 import "src:config"
-import "src:jsonrpc"
-import "src:mcp"
+import "jsonrpc:jsonrpc"
+import "mcp:mcp"
 import "src:platform"
 import "src:rpc"
 import "src:safety"
@@ -214,6 +214,7 @@ run_session :: proc(cfg_in: Config) -> int {
 		list_tools   = host_list_tools,
 		call_tool    = host_call_tool,
 		on_cancel    = host_on_cancel,
+		log_fn       = host_mcp_log,
 	}
 	mcp.server_init(a.server, a.mcp_conn)
 

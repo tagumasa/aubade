@@ -14,7 +14,7 @@ import "core:strings"
 import "core:testing"
 
 import "src:editor"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:lsp"
 import "src:platform"
 import "src:store"

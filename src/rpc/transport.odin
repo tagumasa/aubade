@@ -6,7 +6,11 @@
 package rpc
 
 import "core:mem"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
+
+// The child↔parent RPC frame cap; the MCP and LSP faces use the wire
+// layer's own connection-class default (jsonrpc.DEFAULT_MAX_FRAME).
+RPC_MAX_FRAME :: 32 * 1024 * 1024
 
 Stream :: struct {
 	read:  proc(s: ^Stream, buf: []u8) -> (int, jsonrpc.Read_Err),

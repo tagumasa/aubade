@@ -10,8 +10,8 @@ package daemon
 import "core:encoding/json"
 import "core:sync"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:svc"
 
 // push_diagnostics_to_lsp_children relays one stored diagnostics set —
