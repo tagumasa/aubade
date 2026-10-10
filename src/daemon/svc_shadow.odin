@@ -9,7 +9,7 @@ import "core:encoding/json"
 import "core:path/filepath"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:safety"
 import "src:svc"

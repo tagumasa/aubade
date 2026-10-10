@@ -1,3 +1,6 @@
 [submodule "third_party/lexbor"]
 	path = third_party/lexbor
 	url = https://github.com/lexbor/lexbor
+[submodule "vendor/odin-jsonutil"]
+	path = vendor/odin-jsonutil
+	url = https://github.com/tagumasa/odin-jsonutil.git

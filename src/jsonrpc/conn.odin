@@ -10,8 +10,8 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 
-import "src:jsonutil"
-import "src:platform"
+import "jsonutil:jsonutil"
+import "jsonrpc:platform"
 
 // Reply carries a handler's immediate answer. result must be allocated
 // from the message arena; it is serialized before the arena is freed.
@@ -23,8 +23,8 @@ Reply :: struct {
 }
 
 Action :: enum {
-	Respond, // send the reply now
-	Defer,   // the host sends the reply later (e.g. from a worker pool)
+	Respond,
+	Defer, // the host sends the reply later (e.g. from a worker pool)
 }
 
 Handler :: proc(conn: ^Conn, env: ^Envelope, arena: mem.Allocator) -> (Reply, Action)
@@ -52,9 +52,9 @@ Conn :: struct {
 
 	cancel_notify: Cancel_Notify, // nil = cancelled calls abandon silently
 
-	// Optional frame tracing (--trace-lsp-communication). Set once at
-	// connection setup, before the reader starts and before any send —
-	// never mutated afterwards, so no lock guards it.
+	// Optional frame tracing. Set once at connection setup, before the
+	// reader starts and before any send — never mutated afterwards, so
+	// no lock guards it.
 	trace:         Trace_Fn,
 	trace_user:    rawptr,
 
@@ -99,8 +99,10 @@ conn_destroy :: proc(c: ^Conn) {
 	pending_fail_all(&c.pending, c.allocator)
 	reader_destroy(&c.reader)
 	// The method keys are owned clones (see conn_register): collect then
-	// free — deleting the current key mid-iteration is map-mutation.
-	names := make([dynamic]string, 0, len(c.handlers) + len(c.notifiers), context.temp_allocator)
+	// free — deleting the current key mid-iteration is map-mutation. The
+	// maps and the scratch buffer free through the allocators they store
+	// (set at make), whatever this thread's context happens to be.
+	names := make([dynamic]string, 0, len(c.handlers) + len(c.notifiers), c.allocator)
 	for k, _ in c.handlers {
 		append(&names, k)
 	}
@@ -122,8 +124,7 @@ conn_register :: proc(c: ^Conn, method: string, h: Handler) {
 	}
 	// The table outlives its registrar, so the key is cloned on first
 	// insert: a caller's arena-scoped method string must not rot behind
-	// the map's back (today's callers pass literals — this keeps the
-	// contract true for every future one).
+	// the map's back.
 	if _, exists := c.handlers[method]; exists {
 		c.handlers[method] = h
 	} else {
@@ -222,6 +223,16 @@ conn_dispatch :: proc(c: ^Conn, env: ^Envelope, arena: mem.Allocator) -> bool {
 	return true
 }
 
+// Per-message arenas: the default allocator serves a block allocation
+// through calloc, so a block of the arena's default size
+// (mem.DYNAMIC_ARENA_BLOCK_SIZE_DEFAULT) costs that whole block in libc
+// zeroing per message; a smaller block cuts the zeroing by the same
+// ratio. The size must stay above the out-band threshold
+// (mem.DYNAMIC_ARENA_OUT_OF_BAND_SIZE_DEFAULT): a bump request larger
+// than the block is Invalid_Argument, so block_size > out_band_size
+// keeps every larger allocation out-of-band instead.
+MESSAGE_ARENA_BLOCK_SIZE :: 8 * 1024
+
 // conn_read_loop reads frames until the stream ends or close; each message
 // gets its own arena which is freed after dispatch. Runs on whatever
 // thread the host calls it from; queue-based hosts use read_frame and
@@ -231,7 +242,7 @@ conn_read_loop :: proc(c: ^Conn) -> Read_Err {
 		// destroy, not free_all: free_all retains the arena's tracking
 		// allocation, which would leak per message once the arena leaves scope.
 		a: mem.Dynamic_Arena
-		mem.dynamic_arena_init(&a, c.allocator)
+		mem.dynamic_arena_init(&a, c.allocator, block_size = MESSAGE_ARENA_BLOCK_SIZE)
 		body, err := read_frame(&c.reader, mem.dynamic_arena_allocator(&a))
 		if err != .None {
 			mem.dynamic_arena_destroy(&a)
@@ -248,8 +259,8 @@ conn_read_loop :: proc(c: ^Conn) -> Read_Err {
 		mem.dynamic_arena_destroy(&a)
 		// Frame-loop temp reset: the reader thread's default temp arena
 		// would otherwise grow for the life of the connection. Library
-		// sends no longer touch temp, but host handlers scratch on it —
-		// the loop owns this thread's temp and resets it per frame.
+		// sends do not touch temp; host handlers scratch on it — the
+		// loop owns this thread's temp and resets it per frame.
 		free_all(context.temp_allocator)
 		if !keep {
 			// Reading stops here (framing-level rejection answered): same
@@ -262,11 +273,14 @@ conn_read_loop :: proc(c: ^Conn) -> Read_Err {
 }
 
 // ---------------------------------------------------------------------------
-// Sending. Bodies are serialized in the caller's arena (or temp) and then
-// written under the write mutex. The caller's allocator must be
-// request/temp-scoped: the outbound queue takes its own clone and the
-// synchronous writer only borrows the bytes, so nothing frees the
-// original — a long-lived allocator would collect one body per send.
+// Sending. Bodies are serialized in the caller's arena (or temp). A conn
+// with the outbound writer installed queues each frame (the writer thread
+// is the sole wire writer), and a writer-less conn — the in-memory fakes —
+// writes synchronously under the write mutex. Either way the caller's
+// allocator must be request/temp-scoped: the outbound queue takes its own
+// clone and the synchronous writer only borrows the bytes, so nothing
+// frees the original — a long-lived allocator would collect one body per
+// send.
 // ---------------------------------------------------------------------------
 
 conn_send_reply :: proc(c: ^Conn, id: Id, id_set: bool, reply: Reply, arena: mem.Allocator) {
@@ -446,11 +460,10 @@ code_message :: proc(code: Err_Code) -> string {
 Call_Err :: enum {
 	None,
 	Timeout,
-	Cancelled,     // the caller's cancel token fired before the reply
+	Cancelled,      // the caller's cancel token fired before the reply
 	Closed,
 	Transport,      // the exchange failed below the protocol level
 	Error_Response, // the peer answered with a JSON-RPC error object
-	Malformed_Reply, // a reply arrived but did not parse
 }
 
 // Pending tracks in-flight requests by id. The client numbers every
@@ -488,11 +501,11 @@ conn_call :: proc(
 	deadline_ms: i64,
 	token: ^platform.Cancel_Token = nil,
 ) -> (result: json.Value, err_code: Err_Code, err_message: string, call_err: Call_Err) {
-	// A nil conn is the "no parent link" spelling: the dispatch host
-	// re-reads its svc_conn per task and the teardown withdrawal publishes
-	// nil — the caller gets a typed refusal, never a deref.
+	// A nil conn is the no-connection spelling — a host re-reading its
+	// connection pointer can race a teardown that publishes nil. The
+	// caller gets a typed refusal, never a deref.
 	if c == nil {
-		return nil, .None, "no parent link", .Closed
+		return nil, .None, "no connection", .Closed
 	}
 	sync.mutex_lock(&c.pending.mu)
 	if c.pending.is_closed {
@@ -619,7 +632,7 @@ pending_deliver_ok :: proc(p: ^Pending, env: ^Envelope) {
 pending_deliver_err :: proc(p: ^Pending, env: ^Envelope) {
 	// No clone here: env.err_message lives in the caller's message arena and
 	// pending_deliver copy-in's it into the table's own allocator; cloning
-	// twice just burns the arena for nothing.
+	// twice burns the arena for nothing.
 	msg := env.err_message
 	if msg == "" {
 		msg = code_message(env.err_code)
@@ -628,8 +641,10 @@ pending_deliver_err :: proc(p: ^Pending, env: ^Envelope) {
 }
 
 // pending_deliver finds the slot for a normalized id, copy-in's the reply,
-// wakes the waiter, and removes the entry. The slot itself is freed by the
-// waiter. `value` must already be owned by the pending table's allocator
+// wakes the waiter, and removes the entry. The waiter frees the slot —
+// unless it timed out and set is_abandoned first, in which case the
+// abandoned branch below frees it here. `value` must already be owned by
+// the pending table's allocator
 // (ok replies arrive pre-cloned; error replies pass nil); the error
 // message is cloned here. The caller's per-message arena may be freed as
 // soon as the waiter wakes.
@@ -734,6 +749,7 @@ pending_fail_all :: proc(p: ^Pending, a: mem.Allocator) {
 		}
 	}
 	if num != nil {
+		// The map frees through the allocator it stored at make.
 		delete(num)
 	}
 }

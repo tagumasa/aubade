@@ -10,8 +10,8 @@ import "core:mem"
 import "core:sync"
 import "core:time"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 
 CROSSREF_EVENT_TIMEOUT_MS :: i64(5_000)

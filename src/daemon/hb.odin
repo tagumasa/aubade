@@ -6,7 +6,7 @@
 package daemon
 
 import "core:sync"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:platform"
 
 // hb_loop is the monitor thread body: tick, sleep, repeat.

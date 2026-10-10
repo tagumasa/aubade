@@ -7,7 +7,7 @@ package tools
 
 import "core:encoding/json"
 import "core:mem"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 SCHEMA_DIALECT :: "https://json-schema.org/draft/2020-12/schema"
 

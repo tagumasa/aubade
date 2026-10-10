@@ -27,8 +27,8 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:lsp"
 
 // ---------------------------------------------------------------------------

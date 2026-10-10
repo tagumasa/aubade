@@ -1,14 +1,14 @@
 // Message framing for the JSON-RPC faces: Content-Length headers (the
-// child<->parent RPC and the LSP client) and newline-delimited JSON (the
-// MCP stdio face — the MCP specification delimits stdio messages by
-// newlines and forbids embedded ones). Reader and Writer are
-// function-pointer abstractions so real fds, in-memory pipes, and test
-// fakes all use the same path.
+// LSP-style stream framing, header block strictly \r\n-terminated) and
+// newline-delimited JSON (the MCP stdio face — the MCP specification
+// delimits stdio messages by newlines and forbids embedded ones).
+// Reader and Writer are function-pointer abstractions so real fds,
+// in-memory pipes, and test fakes all use the same path.
 package jsonrpc
 
 import "core:fmt"
 import "core:mem"
-import "src:util"
+import "core:strings"
 
 Read_Err :: enum {
 	None,
@@ -19,12 +19,18 @@ Read_Err :: enum {
 	Io,
 }
 
-DEFAULT_MAX_FRAME :: 64 * 1024 * 1024 // child MCP / LSP: 64 MiB; parent RPC uses 32 MiB
-RPC_MAX_FRAME     :: 32 * 1024 * 1024
-// A header block (Content-Length plus at most a Content-Type line) is a
-// few dozen bytes; a stream that never delivers the blank-line separator
-// is cut at this bound, long before the frame cap could grow the buffer.
-HEADER_MAX_BYTES  :: 8 * 1024
+DEFAULT_MAX_FRAME :: 64 * 1024 * 1024 // the connection-class default; hosts pick their own cap
+
+// The header block's own bound: a header section is a few short lines by
+// nature, and a stream that never produces the separator (a wedged peer
+// streaming garbage) must not grow the receive buffer without bound —
+// the frame cap governs bodies, not the pre-header wait.
+HEADER_MAX_BYTES :: int(8 * 1024)
+
+// Bytes requested per fill/buffered-body read: big enough that a full
+// pipe write crosses in one call, small enough that a dribbling source
+// does not over-reserve.
+READ_CHUNK_BYTES :: 512
 
 // Rx_Buf is an explicit byte accumulator (length <= capacity, data owned
 // by the Reader).
@@ -75,6 +81,12 @@ Reader :: struct {
 	max_frame_bytes: int,
 	framing:         Framing,
 	buf:             Rx_Buf,
+	// Newline framing only: the buffered prefix below this offset holds
+	// no '\n' (scanned by earlier fills of the same frame), so a refill
+	// resumes the scan here instead of rescanning from the start — a
+	// dribbling source costs one scan per byte, not one per byte per
+	// fill. Reset at each frame's read start.
+	nl_scan_from:    int,
 	allocator:       mem.Allocator,
 }
 
@@ -103,9 +115,9 @@ reader_destroy :: proc(r: ^Reader) {
 	r^ = {}
 }
 
-// fill reads at least one more byte into the buffer (growing as needed).
+// fill reads at least one more byte into the buffer.
 fill :: proc(r: ^Reader) -> Read_Err {
-	rx_reserve(&r.buf, r.buf.n + 512, r.allocator)
+	rx_reserve(&r.buf, r.buf.n + READ_CHUNK_BYTES, r.allocator)
 	n, err := r.read_fn(r.data, r.buf.data[r.buf.n:])
 	if n > 0 {
 		r.buf.n += n
@@ -140,16 +152,10 @@ read_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_Err) 
 			rx_reset(&r.buf)
 			return nil, .Framing
 		}
-		// A peer that never sends the header separator must not grow the
-		// buffer toward the frame cap: the header block has its own small
-		// bound (never above the frame cap, so small-cap readers keep their
-		// meaning), and overrunning it is malformed framing, not an
-		// over-long body.
-		header_cap := HEADER_MAX_BYTES
-		if r.max_frame_bytes < header_cap {
-			header_cap = r.max_frame_bytes
-		}
-		if r.buf.n > header_cap {
+		if r.buf.n >= HEADER_MAX_BYTES {
+			// No separator within a generously sized header block: a
+			// broken or hostile peer, fatal to the read like any other
+			// framing violation.
 			rx_reset(&r.buf)
 			return nil, .Framing
 		}
@@ -167,7 +173,7 @@ read_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_Err) 
 	}
 	total := header_end + content_length
 	for r.buf.n < total {
-		rx_reserve(&r.buf, max(r.buf.n + 512, total), r.allocator)
+		rx_reserve(&r.buf, max(r.buf.n + READ_CHUNK_BYTES, total), r.allocator)
 		n, rerr := r.read_fn(r.data, r.buf.data[r.buf.n:total])
 		if n > 0 {
 			r.buf.n += n
@@ -192,9 +198,11 @@ read_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_Err) 
 // read_line_frame is the newline-delimited read: the body is one line
 // without its terminator; a trailing CR is stripped.
 read_line_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_Err) {
+	r.nl_scan_from = 0
 	for {
-		nl := find_newline(r.buf.data[:r.buf.n])
+		nl := strings.index_byte(string(r.buf.data[r.nl_scan_from:r.buf.n]), '\n')
 		if nl >= 0 {
+			nl += r.nl_scan_from
 			end := nl
 			if end > 0 && r.buf.data[end - 1] == '\r' {
 				end -= 1
@@ -210,6 +218,10 @@ read_line_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_
 			rx_consume(&r.buf, nl + 1)
 			return body, .None
 		}
+		// No newline buffered: the next fill's scan resumes where this
+		// one stopped (the scanned prefix stays valid — fill only
+		// appends).
+		r.nl_scan_from = r.buf.n
 		if r.buf.n > r.max_frame_bytes {
 			rx_reset(&r.buf)
 			return nil, .Too_Large
@@ -224,20 +236,11 @@ read_line_frame :: proc(r: ^Reader, a: mem.Allocator) -> (body: []u8, err: Read_
 	}
 }
 
-find_newline :: proc(buf: []u8) -> int {
-	for i := 0; i < len(buf); i += 1 {
-		if buf[i] == '\n' {
-			return i
-		}
-	}
-	return -1
-}
-
 // try_parse_header returns (header_end, content_length, 1) when a full
 // header block with a valid Content-Length is buffered, (0, 0, 0) when more
 // bytes are needed, and (_, _, -1) on a malformed header block.
 try_parse_header :: proc(buf: []u8) -> (header_end: int, content_length: int, ok: int) {
-	sep := find_sub_str(buf, HEADER_SEP)
+	sep := strings.index(string(buf), HEADER_SEP)
 	if sep < 0 {
 		return 0, 0, 0
 	}
@@ -253,12 +256,12 @@ try_parse_header :: proc(buf: []u8) -> (header_end: int, content_length: int, ok
 				line = line[:len(line) - 1]
 			}
 			if len(line) > 0 {
-				colon := find_sub_str(line, COLON_SEP)
+				colon := strings.index(string(line), ":")
 				if colon <= 0 {
 					return 0, 0, -1
 				}
-				value := trim_space(string(line[colon + 1:]))
-				if util.ascii_equal_ci(trim_space(string(line[:colon])), "content-length") {
+				value := strings.trim_space(string(line[colon + 1:]))
+				if ascii_equal_ci(strings.trim_space(string(line[:colon])), "content-length") {
 					n, valid := parse_decimal(value)
 					if !valid {
 						return 0, 0, -1
@@ -279,39 +282,31 @@ try_parse_header :: proc(buf: []u8) -> (header_end: int, content_length: int, ok
 }
 
 HEADER_SEP :: string("\r\n\r\n")
-COLON_SEP :: string(":")
 
-find_sub_str :: proc(haystack: []u8, needle: string) -> int {
-	if len(needle) == 0 || len(haystack) < len(needle) {
-		return -1
+// ascii_equal_ci compares without allocating: header parsing runs per frame
+// and must not grow any allocator.
+ascii_equal_ci :: proc(a: string, b: string) -> bool {
+	if len(a) != len(b) {
+		return false
 	}
-	for i := 0; i + len(needle) <= len(haystack); i += 1 {
-		match := true
-		for j := 0; j < len(needle); j += 1 {
-			if haystack[i + j] != needle[j] {
-				match = false
-				break
-			}
+	for i in 0..<len(a) {
+		ca := a[i]
+		cb := b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca = ca + ('a' - 'A')
 		}
-		if match {
-			return i
+		if cb >= 'A' && cb <= 'Z' {
+			cb = cb + ('a' - 'A')
+		}
+		if ca != cb {
+			return false
 		}
 	}
-	return -1
+	return true
 }
 
-trim_space :: proc(s: string) -> string {
-	start := 0
-	for start < len(s) && (s[start] == ' ' || s[start] == '\t') {
-		start += 1
-	}
-	end := len(s)
-	for end > start && (s[end - 1] == ' ' || s[end - 1] == '\t') {
-		end -= 1
-	}
-	return s[start:end]
-}
-
+// parse_decimal accepts digit-only decimal text (a leading sign is a
+// spec violation) and bounds the accumulator before it can overflow.
 parse_decimal :: proc(s: string) -> (int, bool) {
 	if len(s) == 0 {
 		return 0, false

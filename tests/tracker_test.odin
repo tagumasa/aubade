@@ -10,7 +10,7 @@ import "core:mem"
 import "core:strings"
 import "core:testing"
 import "src:store"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:tracker"
 

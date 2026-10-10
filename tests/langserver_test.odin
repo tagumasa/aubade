@@ -16,7 +16,7 @@ import "core:testing"
 import "core:thread"
 import "core:time"
 
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:langserver"
 import "src:lsp"
 import "src:platform"

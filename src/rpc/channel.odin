@@ -8,7 +8,7 @@ package rpc
 
 import "core:mem"
 import "core:sync/chan"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 
 CHAN_CAPACITY :: 16 // bounded queue: backpressure propagates to the reader
 

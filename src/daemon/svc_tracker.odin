@@ -10,7 +10,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:svc"
 import "src:tracker"

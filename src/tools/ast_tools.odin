@@ -6,7 +6,7 @@ import "src:util"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:svc"
 
 AST_PARSE_PARAMS :: []Param_Desc{

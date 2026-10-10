@@ -2,8 +2,11 @@
 // incoming requests inline on the reader thread; a connection with a
 // started request queue transfers them instead into a bounded chan drained
 // by ONE worker. A full queue is answered immediately with RequestFailed
-// (-32803): the reader never blocks on handlers, no thread is ever created
-// per request, and a flooding peer is shed at O(1) per rejected frame.
+// (-32803): the reader never blocks on handlers and no thread is ever
+// created per request. The reader keeps reading past a full queue —
+// stopping it would also stall every pending response and notification
+// on the same loop, so the rejection reply is the backpressure the
+// protocol carries.
 package jsonrpc
 
 import "core:fmt"
@@ -13,7 +16,7 @@ import "core:sync"
 import "core:sync/chan"
 import "core:thread"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 REQUEST_QUEUE_CAP :: 16
 
@@ -32,11 +35,11 @@ Request_Queue :: struct {
 
 // conn_start_request_queue switches incoming-request dispatch from inline
 // to the bounded worker queue. Idempotent guard: a conn has at most one.
-conn_start_request_queue :: proc(c: ^Conn, cap: int = REQUEST_QUEUE_CAP, a := context.allocator) -> bool {
-	if cap <= 0 || c.request_queue != nil {
+conn_start_request_queue :: proc(c: ^Conn, queue_cap: int = REQUEST_QUEUE_CAP, a := context.allocator) -> bool {
+	if queue_cap <= 0 || c.request_queue != nil {
 		return false
 	}
-	raw, err := chan.create_buffered(chan.Chan(Queue_Entry), cap, a)
+	raw, err := chan.create_buffered(chan.Chan(Queue_Entry, .Both), queue_cap, a)
 	if err != nil {
 		return false
 	}
@@ -56,7 +59,7 @@ conn_start_request_queue :: proc(c: ^Conn, cap: int = REQUEST_QUEUE_CAP, a := co
 	// would otherwise hand teardown an unfreeable handle.
 	thread_alloc := context.allocator
 	context.allocator = a
-	q.worker = thread.create_and_start_with_poly_data(q, queue_worker_entry, self_cleanup = false, name = "aubade-req-queue")
+	q.worker = thread.create_and_start_with_poly_data(q, queue_worker_entry, self_cleanup = false, name = "odin-jsonrpc-req-queue")
 	context.allocator = thread_alloc
 	if q.worker == nil {
 		chan.destroy(q.recv)
@@ -129,10 +132,13 @@ queue_worker_entry :: proc(q: ^Request_Queue) {
 
 // queue_try_post clones the envelope into a queue-owned arena and hands it
 // to the worker. false = the queue is full (or closing); the caller
-// answers the peer with RequestFailed on the reader thread. The queue
-// pointer is read and the send made under c.queue_mu so queue_stop
-// cannot free the queue between the two (try_send never blocks, so the
-// hold is bounded).
+// answers the peer with RequestFailed on the reader thread — the reader
+// keeps reading (stopping it would also stall every pending response),
+// so a flooding peer costs a rejection reply per frame, never a wedged
+// conn. The queue pointer is read and the send made under c.queue_mu so
+// queue_stop cannot free the queue between the two (try_send never
+// blocks, so the hold is bounded). The capacity pre-check keeps the
+// full case from cloning an envelope it is about to drop.
 queue_try_post :: proc(c: ^Conn, env: ^Envelope) -> bool {
 	sync.mutex_lock(&c.queue_mu)
 	q := c.request_queue
@@ -140,17 +146,12 @@ queue_try_post :: proc(c: ^Conn, env: ^Envelope) -> bool {
 		sync.mutex_unlock(&c.queue_mu)
 		return false
 	}
-	// Fast reject before any allocation: every poster holds this mutex and
-	// the worker only drains, so the checked length can only have shrunk —
-	// len >= cap means try_send would refuse anyway, and a flooding peer
-	// costs O(1) per rejected frame instead of an arena build plus a full
-	// envelope clone.
 	if chan.len(q.ch) >= chan.cap(q.ch) {
 		sync.mutex_unlock(&c.queue_mu)
 		return false
 	}
 	arena := new(mem.Dynamic_Arena, q.allocator)
-	mem.dynamic_arena_init(arena, q.allocator)
+	mem.dynamic_arena_init(arena, q.allocator, block_size = MESSAGE_ARENA_BLOCK_SIZE)
 	entry := Queue_Entry{
 		env   = envelope_clone(env, mem.dynamic_arena_allocator(arena)),
 		arena = arena,

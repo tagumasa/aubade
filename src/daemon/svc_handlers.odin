@@ -6,7 +6,7 @@ package daemon
 import "core:encoding/json"
 import "core:fmt"
 import "core:sync"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:langserver"
 import "src:platform"
 import "src:svc"

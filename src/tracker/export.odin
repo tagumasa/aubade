@@ -14,7 +14,7 @@ import "core:mem"
 import "core:sort"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 Report_Format :: enum {
 	TSV,

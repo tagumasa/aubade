@@ -11,7 +11,7 @@ import "core:mem"
 import "core:strings"
 import "core:sync/chan"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:safety"
 import "src:util"

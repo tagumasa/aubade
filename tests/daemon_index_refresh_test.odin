@@ -17,7 +17,7 @@ import "core:thread"
 import "core:time"
 
 import "src:daemon"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:store"
 import "src:svc"

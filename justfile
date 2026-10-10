@@ -11,6 +11,12 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 os_name := if os() == "macos" { "darwin" } else { os() }
 arch_name := if arch() == "aarch64" { "arm64" } else if arch() == "x86_64" { "amd64" } else { arch() }
 grammars_dir := "lib/" + os_name + "_" + arch_name + "/grammars"
+# The wire-stack collections. jsonutil is a pinned submodule (init with
+# `git submodule update --init`); jsonrpc and mcp are byte mirrors of the
+# odin-jsonrpc and odin-mcp release trees under src/, so mounting their
+# collections on src/ resolves their jsonrpc:platform import to aubade's
+# own src/platform package.
+sdk_collections := "-collection:jsonrpc=src -collection:mcp=src -collection:jsonutil=vendor/odin-jsonutil/src"
 # Some grammar external scanners are C++ (norg, sql, wolfram): their
 # objects reference the C++ runtime, so linking pulls it in. MSVC links
 # the C++ runtime from the object file references on its own.
@@ -42,11 +48,11 @@ parsers langs:
 # the ambient limit stands.
 [unix]
 build-binary:
-    ulimit -n 10240 2>/dev/null || true; odin build src -collection:src=src -collection:grammars={{grammars_dir}} {{cxx_runtime}} -out:aubade
+    ulimit -n 10240 2>/dev/null || true; odin build src -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} {{cxx_runtime}} -out:aubade
 
 [windows]
 build-binary:
-    odin build src -collection:src=src -collection:grammars={{grammars_dir}} {{cxx_runtime}} -out:aubade.exe
+    odin build src -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} {{cxx_runtime}} -out:aubade.exe
 
 # Build the aubade binary (requires the C artifacts in lib/)
 build: install-core build-parsers build-binary
@@ -62,36 +68,36 @@ check:
     git log --oneline -1 2>/dev/null || true
     odin version
     ulimit -n 10240 2>/dev/null || true
-    odin check src -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style
+    odin check src -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style
     for d in src/*/; do
-        odin check "$d" -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
+        odin check "$d" -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
     done
-    odin check tests -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
+    odin check tests -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
     for d in tools/build tools/verify scripts/extract_table; do
-        odin check "$d" -collection:src=src -vet -strict-style
+        odin check "$d" -collection:src=src {{sdk_collections}} -vet -strict-style
     done
 
 [windows]
 check:
     @git log --oneline -1 2> $null; if (-not $?) { Write-Host "(no git metadata)" }
     @odin version
-    odin check src -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style
-    Get-ChildItem src -Directory | ForEach-Object { odin check $_.FullName -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point }
-    odin check tests -collection:src=src -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
-    @foreach ($d in @('tools/build','tools/verify','scripts/extract_table')) { odin check $d -collection:src=src -vet -strict-style }
+    odin check src -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style
+    Get-ChildItem src -Directory | ForEach-Object { odin check $_.FullName -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point }
+    odin check tests -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} -vet -strict-style -no-entry-point
+    @foreach ($d in @('tools/build','tools/verify','scripts/extract_table')) { odin check $d -collection:src=src {{sdk_collections}} -vet -strict-style }
 
 # Run the test suite (raises the fd soft limit like build-binary)
 [unix]
 test:
     @git log --oneline -1 2>/dev/null || true
     @odin version
-    ulimit -n 10240 2>/dev/null || true; odin test tests -collection:src=src -collection:grammars={{grammars_dir}} {{cxx_runtime}} -define:ODIN_TEST_THREADS=1
+    ulimit -n 10240 2>/dev/null || true; odin test tests -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} {{cxx_runtime}} -define:ODIN_TEST_THREADS=1
 
 [windows]
 test:
     @git log --oneline -1 2> $null; if (-not $?) { Write-Host "(no git metadata)" }
     @odin version
-    odin test tests -collection:src=src -collection:grammars={{grammars_dir}} {{cxx_runtime}} -define:ODIN_TEST_THREADS=1
+    odin test tests -collection:src=src {{sdk_collections}} -collection:grammars={{grammars_dir}} {{cxx_runtime}} -define:ODIN_TEST_THREADS=1
 
 # Remove the C artifacts in lib/ entirely
 clean:

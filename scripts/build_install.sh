@@ -51,7 +51,10 @@ cd "$ROOT"
 # macOS's default terminal fd soft limit (256) is too low for that (the
 # failures look like missing grammars). 10240 is macOS's usual hard limit.
 ulimit -n 10240 2>/dev/null || true
-odin build src -collection:src=src -collection:grammars="$lib_dir/grammars" \
+odin build src -collection:src=src \
+    -collection:jsonrpc=src -collection:mcp=src \
+    -collection:jsonutil=vendor/odin-jsonutil/src \
+    -collection:grammars="$lib_dir/grammars" \
     "$cxx_runtime" -out:aubade
 
 INSTALL_DIR="${AUBADE_INSTALL_DIR:-$HOME/.local/bin}"

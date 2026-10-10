@@ -5,11 +5,12 @@ package session
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 import "core:sync"
 import "core:thread"
-import "src:jsonrpc"
-import "src:jsonutil"
-import "src:mcp"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
+import "mcp:mcp"
 import "src:platform"
 import "src:tools"
 import "src:util"
@@ -144,6 +145,13 @@ host_call_tool :: proc(host: rawptr, call: ^mcp.Call_Info) -> mcp.Call_Outcome {
 Call_Entry :: struct {
 	key:    string, // owned clone (a.allocator)
 	tokens: [dynamic]^platform.Cancel_Token,
+}
+
+// The MCP server's diagnostics (a reply the outbound deadline dropped,
+// and the like) route into aubade's logger; without the hook they print
+// straight to stderr, bypassing it.
+host_mcp_log :: proc(user: rawptr, msg: string) {
+	util.log_error(strings.concatenate({"mcp: ", msg}, context.temp_allocator))
 }
 
 host_on_cancel :: proc(host: rawptr, id: jsonrpc.Id) {

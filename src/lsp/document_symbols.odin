@@ -12,7 +12,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:strings"
 
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:symbol"
 import "src:util"
 

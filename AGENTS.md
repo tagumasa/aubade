@@ -25,12 +25,17 @@ code editors over LSP 3.17. One binary serves three run modes:
 
 ### Package layout and dependency direction
 
-`src/` is a single collection (imports use the `src:` prefix). Dependencies
-flow one way only:
+`src/` is a single collection (imports use the `src:` prefix), carrying
+three wire-stack packages that are not aubade's own code (see
+[Vendored and mirrored packages]): `src/jsonrpc` and `src/mcp` are byte
+mirrors of the odin-jsonrpc and odin-mcp releases, and `jsonutil:` is a
+pinned submodule under `vendor/odin-jsonutil`. Dependencies flow one way
+only:
 
 ```
-foundation: core:* / vendor:* + handwritten packages (jsonrpc, jsonutil,
-            mcp, rpc, platform — pure Odin; store, ts — wrap the vendored C libraries)
+foundation: core:* / vendor:* + handwritten packages (rpc, platform —
+            pure Odin; store, ts — wrap the vendored C libraries)
+            + the wire stack (jsonrpc, mcp mirrors; jsonutil submodule)
   ↑ config, prompt, safety
   ↑ domain: tracker, memory, symbol, editor
   ↑ services: lsp, lsproc, langserver, web, shadow, svc, hooks
@@ -38,6 +43,26 @@ foundation: core:* / vendor:* + handwritten packages (jsonrpc, jsonutil,
   ↑ tools
   ↑ hosts: session, daemon, cli
 ```
+
+### Vendored and mirrored packages
+
+The JSON value and wire layers come from the standalone SDK repositories
+(odin-jsonutil, odin-jsonrpc, odin-mcp), consumed two ways:
+
+- `vendor/odin-jsonutil` — a git submodule pinned at an odin-jsonutil
+  release tag; the `jsonutil:` collection mounts its `src/`.
+- `src/jsonrpc` and `src/mcp` — byte mirrors of the odin-jsonrpc
+  (v0.1.1) and odin-mcp (v0.1.2) release trees, recorded by tag. The
+  `jsonrpc:` and `mcp:` collections mount on `src/` itself, so the
+  mirrors' `jsonrpc:platform` import resolves to aubade's own
+  `src/platform` (the foundation contract: the library consumes the
+  host platform, it does not ship one).
+
+Rules: the mirrored bytes and the submodule contents are never edited
+in this tree — a defect there is fixed upstream and the mirror or pin
+is refreshed whole from a release tag. Updating is a re-extract
+(`git -C <upstream> archive <tag> src/<pkg> | tar -x`), a submodule
+checkout at the new tag, and the tag reference in this section.
 
 - Lower layers must not import upper layers. When tempted to break a cycle,
   define a small port procedure type on the consumer side — never park a

@@ -121,7 +121,7 @@ jobs:
         run: just test
 
       - name: TCP transport verification
-        run: odin run tools/verify -collection:src=src -- .
+        run: odin run tools/verify -collection:src=src -collection:jsonrpc=src -collection:mcp=src -collection:jsonutil=vendor/odin-jsonutil/src -- .
 
       - name: Build binary
         run: just build-binary

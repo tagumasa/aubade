@@ -22,7 +22,7 @@ import "core:path/filepath"
 import "core:strings"
 
 import "src:editor"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:symbol"
 import "src:util"

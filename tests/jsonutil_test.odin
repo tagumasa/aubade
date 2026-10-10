@@ -11,7 +11,7 @@ package tests
 import "core:encoding/json"
 import "core:mem"
 import "core:testing"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 
 @(test)
 jsonutil_values_equal_semantics :: proc(t: ^testing.T) {

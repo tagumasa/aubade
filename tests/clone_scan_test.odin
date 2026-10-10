@@ -16,7 +16,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 import "core:testing"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:util"
 
 CLONE_WORKER_GO :: "func worker(queue chan int, budget int) int {\n" +

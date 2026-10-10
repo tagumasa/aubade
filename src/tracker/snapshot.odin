@@ -14,7 +14,7 @@ import "core:fmt"
 import "core:mem"
 import "core:sort"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:util"
 
 SNAPSHOT_VERSION :: int(1)

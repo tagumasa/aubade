@@ -5,7 +5,7 @@ package tools
 
 import "core:fmt"
 import "core:strings"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:platform"
 import "src:prompt"
 import "src:svc"

@@ -15,7 +15,7 @@ import "core:thread"
 import "src:config"
 import "src:editor"
 import "src:langserver"
-import "src:jsonrpc"
+import "jsonrpc:jsonrpc"
 import "src:platform"
 import "src:rpc"
 import "src:shadow"
@@ -701,7 +701,7 @@ start_child :: proc(d: ^Daemon, stream: ^rpc.Stream, owned_stream: bool) -> ^Chi
 	}
 
 	conn := new(jsonrpc.Conn, d.allocator)
-	reader := rpc.to_reader(stream, jsonrpc.RPC_MAX_FRAME)
+	reader := rpc.to_reader(stream, rpc.RPC_MAX_FRAME)
 	writer := rpc.to_writer(stream)
 	jsonrpc.conn_init(conn, reader, writer, d.allocator)
 	// Dedicated writer: a pool worker must never hold write_mu across a

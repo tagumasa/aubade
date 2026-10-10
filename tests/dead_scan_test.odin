@@ -9,7 +9,7 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strings"
 import "core:testing"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:util"
 
 // dead_run scans through the pair's daemon and parses the answer JSON

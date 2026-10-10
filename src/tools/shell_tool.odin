@@ -10,7 +10,7 @@ package tools
 import "core:os"
 import "core:strings"
 import "src:platform"
-import "src:jsonutil"
+import "jsonutil:jsonutil"
 import "src:safety"
 import "src:util"
 

@@ -8,8 +8,8 @@ package svc
 
 import "core:encoding/json"
 import "core:mem"
-import "src:jsonrpc"
-import "src:jsonutil"
+import "jsonrpc:jsonrpc"
+import "jsonutil:jsonutil"
 import "src:platform"
 
 METHOD_HELLO   :: "svc.hello"   // request: {token, client_pid, contexts[], modes[], trace_lsp} -> {daemon_pid}
