@@ -75,8 +75,8 @@ detect_applicable_clients :: proc() -> []string {
 }
 
 // user_home_dir resolves the user home directory for client config paths.
-// The ladder itself lives in platform.user_home ($HOME, then the core:os
-// fallback — USERPROFILE, HOMEDRIVE+HOMEPATH on Windows).
+// The ladder itself lives in platform.user_home (the Profile known folder
+// on Windows, $HOME then the core:os fallback elsewhere).
 user_home_dir :: proc() -> string {
 	return platform.user_home(context.temp_allocator)
 }

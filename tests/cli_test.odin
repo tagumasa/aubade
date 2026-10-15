@@ -1580,16 +1580,25 @@ cli_refuses_home_and_filesystem_root_as_project :: proc(t: ^testing.T) {
 	// Explicit selection of the home or the filesystem root.
 	testing.expect_value(t, cli.run({"mcp", "--project", home}, "test"), 1)
 	testing.expect_value(t, cli.run({"mcp", "--project", "/"}, "test"), 1)
+	when ODIN_OS == .Windows {
+		// Drive roots and UNC share roots are refused from the raw
+		// spelling — before normalization could fold "/" into the cwd.
+		testing.expect_value(t, cli.run({"mcp", "--project", `C:\`}, "test"), 1)
+		testing.expect_value(t, cli.run({"mcp", "--project", `\\server\share`}, "test"), 1)
+	}
 
 	// The cwd fallback itself stays: a marker-less directory that is not
 	// the home still resolves to itself (checked through the resolver, not
-	// a full session run).
+	// a full session run). The expectation is the working directory's own
+	// spelling — on macOS it is the symlink-resolved /private/var form,
+	// not the temp-dir spelling the resolver never sees.
 	if werr := os.set_working_directory(markerless); werr != nil {
 		testing.expectf(t, false, "chdir into the marker-less dir failed")
 		return
 	}
+	cwd, _ := os.get_working_directory(context.temp_allocator)
 	g := cli.Globals{project_from_cwd = true}
 	root, code := cli.resolve_project_root("mcp", &g)
 	testing.expect_value(t, code, 0)
-	testing.expectf(t, platform.path_equal(root, markerless), "marker-less cwd must resolve to itself, got %s", root)
+	testing.expectf(t, platform.path_equal(root, cwd), "marker-less cwd must resolve to itself, got %s (cwd %s)", root, cwd)
 }

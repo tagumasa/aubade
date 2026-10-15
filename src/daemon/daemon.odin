@@ -185,14 +185,35 @@ daemon_init :: proc(d: ^Daemon, cfg_in: Config, a := context.allocator) -> bool 
 	// fresh d-allocator-owned string (never an alias of cfg_in's), so
 	// daemon_cleanup frees it alongside the other owned strings.
 	cfg := cfg_in
+	// The filesystem-root refusal reads the raw spelling first: on
+	// Windows the resolution below cleans "/" to "." and adopts the
+	// process cwd, hiding a root from the resolved compare.
+	if refused, _ := platform.project_root_refused(cfg.project_root, nil); refused {
+		return false
+	}
 	cfg.project_root = safety.pathguard_resolve_root(cfg.project_root, a)
 	// platform.project_root_refused is enforced at every resolution site;
 	// this is the backstop for a root that reaches a daemon without one.
-	// Both spellings are pathguard-resolved so a symlinked home cannot
-	// slip past the compare.
-	user_home := safety.pathguard_resolve_root(platform.user_home(context.temp_allocator), a)
-	refused, _ := platform.project_root_refused(cfg.project_root, user_home)
-	delete(user_home, a)
+	// Every home candidate is resolved alongside the root so a symlinked
+	// home (macOS /var vs /private/var temp trees) cannot slip past the
+	// compare.
+	homes := platform.user_homes(a)
+	cand := make([]string, 1, context.temp_allocator)
+	refused := false
+	for h in homes {
+		resolved := safety.pathguard_resolve_root(h, a)
+		cand[0] = resolved
+		refused, _ = platform.project_root_refused(cfg.project_root, cand)
+		delete(resolved, a)
+		if refused {
+			break
+		}
+	}
+	delete(cand, context.temp_allocator)
+	for h in homes {
+		delete(h, a)
+	}
+	delete(homes, a)
 	if refused {
 		delete(cfg.project_root, a)
 		return false

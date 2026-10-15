@@ -270,6 +270,20 @@ resolve_project_root :: proc(cmd: string, g: ^Globals) -> (string, int) {
 	if project == "" {
 		return "", usage_error(cmd, "one of --project or --project-from-cwd is required")
 	}
+	refuse :: proc(spelling, why: string) {
+		fmt.eprintf(
+			"aubade: refusing %s as the project root: %s (a daemon would index and snapshot every file below it)\n",
+			spelling,
+			why,
+		)
+	}
+	// The filesystem-root refusal reads the raw spelling before
+	// normalization: on Windows a slash root cleans to "." and
+	// normalizes to the process cwd, hiding it from every later check.
+	if refused, why := platform.project_root_refused(project, nil); refused {
+		refuse(project, why)
+		return "", 1
+	}
 	// A value that is not an existing path may be a registered project
 	// name (the base name `project list` shows).
 	if !os.exists(project) {
@@ -287,12 +301,8 @@ resolve_project_root :: proc(cmd: string, g: ^Globals) -> (string, int) {
 		fmt.eprintln("aubade: cannot normalize project root")
 		return "", 1
 	}
-	if refused, why := platform.project_root_refused(root, platform.user_home(context.temp_allocator)); refused {
-		fmt.eprintf(
-			"aubade: refusing %s as the project root: %s (a daemon would index and snapshot every file below it)\n",
-			root,
-			why,
-		)
+	if refused, why := platform.project_root_refused(root, platform.user_homes(context.temp_allocator)); refused {
+		refuse(root, why)
 		return "", 1
 	}
 	return root, 0
@@ -518,7 +528,7 @@ run_internal_daemon :: proc(args: []string) -> int {
 
 	// Refused roots print their reason here rather than surfacing as the
 	// generic init failure below; daemon_init enforces the rule silently.
-	if refused, why := platform.project_root_refused(root, platform.user_home(context.temp_allocator)); refused {
+	if refused, why := platform.project_root_refused(root, platform.user_homes(context.temp_allocator)); refused {
 		fmt.eprintf("aubade: refusing %s as the project root: %s\n", root, why)
 		return 1
 	}

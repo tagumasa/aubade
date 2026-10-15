@@ -310,15 +310,34 @@ daemon_init_refuses_home_and_filesystem_root :: proc(t: ^testing.T) {
 		free(clock, context.allocator)
 	}
 
-	d := new(daemon.Daemon, context.allocator)
-	cfg := daemon.default_config(home, aubade, clock)
-	testing.expect(t, !daemon.daemon_init(d, cfg, context.allocator), "init must refuse the user's home as the project root")
-	free(d, context.allocator)
+	// A refusal expectation that tears the daemon down when init
+	// unexpectedly succeeds — a live daemon left behind corrupts the
+	// tracking allocator for the rest of the run.
+	expect_refused :: proc(t: ^testing.T, root: string, aubade: string, clock: ^platform.Clock, what: string) -> bool {
+		d := new(daemon.Daemon, context.allocator)
+		ok := daemon.daemon_init(d, daemon.default_config(root, aubade, clock), context.allocator)
+		if ok {
+			daemon.daemon_cleanup(d)
+		}
+		free(d, context.allocator)
+		testing.expect(t, !ok, what)
+		return !ok
+	}
 
-	d2 := new(daemon.Daemon, context.allocator)
-	cfg2 := daemon.default_config("/", aubade, clock)
-	testing.expect(t, !daemon.daemon_init(d2, cfg2, context.allocator), "init must refuse a filesystem root as the project root")
-	free(d2, context.allocator)
+	if !expect_refused(t, home, aubade, clock, "init must refuse the user's home as the project root") {
+		return
+	}
+	if !expect_refused(t, "/", aubade, clock, "init must refuse a filesystem root as the project root") {
+		return
+	}
+	when ODIN_OS == .Windows {
+		if !expect_refused(t, `C:\`, aubade, clock, "init must refuse a drive root as the project root") {
+			return
+		}
+		if !expect_refused(t, `\\server\share`, aubade, clock, "init must refuse a UNC share root as the project root") {
+			return
+		}
+	}
 
 	// Neither refusal created runtime state.
 	daemon_root, _ := filepath.join([]string{aubade, "daemon"}, context.temp_allocator)
