@@ -287,6 +287,14 @@ resolve_project_root :: proc(cmd: string, g: ^Globals) -> (string, int) {
 		fmt.eprintln("aubade: cannot normalize project root")
 		return "", 1
 	}
+	if refused, why := platform.project_root_refused(root, platform.user_home(context.temp_allocator)); refused {
+		fmt.eprintf(
+			"aubade: refusing %s as the project root: %s (a daemon would index and snapshot every file below it)\n",
+			root,
+			why,
+		)
+		return "", 1
+	}
 	return root, 0
 }
 
@@ -317,6 +325,11 @@ run_mcp :: proc(args: []string, g: ^Globals, version: string) -> int {
 	// tracking allocator.
 	contexts := make([dynamic]string, 0, 4, context.allocator)
 	modes := make([dynamic]string, 0, 4, context.allocator)
+	// Deleted on every exit: the error returns fire before the tail.
+	defer {
+		delete(contexts)
+		delete(modes)
+	}
 	rest := make([dynamic]string, 0, len(args), context.temp_allocator)
 	if !strip_globals(args, g, &rest) {
 		return usage_error("mcp", "invalid global flag value")
@@ -372,8 +385,6 @@ run_mcp :: proc(args: []string, g: ^Globals, version: string) -> int {
 	cfg.log_level = g.log_level // "" = keep the config key's level
 	cfg.install_signals = true
 	rc := session.run_session(cfg)
-	delete(contexts)
-	delete(modes)
 	return rc
 }
 
@@ -388,6 +399,11 @@ run_lsp :: proc(args: []string, g: ^Globals, version: string) -> int {
 	// tracking allocator.
 	contexts := make([dynamic]string, 0, 4, context.allocator)
 	modes := make([dynamic]string, 0, 4, context.allocator)
+	// Deleted on every exit: the error returns fire before the tail.
+	defer {
+		delete(contexts)
+		delete(modes)
+	}
 	rest := make([dynamic]string, 0, len(args), context.temp_allocator)
 	if !strip_globals(args, g, &rest) {
 		return usage_error("lsp", "invalid global flag value")
@@ -437,8 +453,6 @@ run_lsp :: proc(args: []string, g: ^Globals, version: string) -> int {
 	cfg.log_level = g.log_level // "" = keep the config key's level
 	cfg.install_signals = true
 	rc := session.run_lsp_session(cfg)
-	delete(contexts)
-	delete(modes)
 	return rc
 }
 
@@ -500,6 +514,13 @@ run_internal_daemon :: proc(args: []string) -> int {
 		if home_owned {
 			delete(home, context.allocator)
 		}
+	}
+
+	// Refused roots print their reason here rather than surfacing as the
+	// generic init failure below; daemon_init enforces the rule silently.
+	if refused, why := platform.project_root_refused(root, platform.user_home(context.temp_allocator)); refused {
+		fmt.eprintf("aubade: refusing %s as the project root: %s\n", root, why)
+		return 1
 	}
 
 	// The daemon is spawned rather than user-invoked, so no --log-level

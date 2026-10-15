@@ -186,6 +186,17 @@ daemon_init :: proc(d: ^Daemon, cfg_in: Config, a := context.allocator) -> bool 
 	// daemon_cleanup frees it alongside the other owned strings.
 	cfg := cfg_in
 	cfg.project_root = safety.pathguard_resolve_root(cfg.project_root, a)
+	// platform.project_root_refused is enforced at every resolution site;
+	// this is the backstop for a root that reaches a daemon without one.
+	// Both spellings are pathguard-resolved so a symlinked home cannot
+	// slip past the compare.
+	user_home := safety.pathguard_resolve_root(platform.user_home(context.temp_allocator), a)
+	refused, _ := platform.project_root_refused(cfg.project_root, user_home)
+	delete(user_home, a)
+	if refused {
+		delete(cfg.project_root, a)
+		return false
+	}
 	id := platform.project_id(cfg.project_root, a)
 	dir, _ := filepath.join([]string{cfg.home, "daemon", id}, a)
 	delete(id, a)

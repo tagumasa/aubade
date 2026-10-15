@@ -33,6 +33,23 @@ aubade_home :: proc(allocator := context.allocator) -> string {
 	return strings.clone(joined, allocator)
 }
 
+// user_home resolves the user's home directory — the $HOME spelling, with
+// the same os fallback as aubade_home's ladder ($AUBADE_HOME does not
+// redirect it). Owned by `allocator`; "" when the environment and the OS
+// both decline.
+user_home :: proc(allocator := context.allocator) -> string {
+	ta := context.temp_allocator
+	home, ok := os.lookup_env_alloc("HOME", ta)
+	if !ok || home == "" {
+		home, _ = os.user_home_dir(ta)
+	}
+	if home == "" {
+		return ""
+	}
+	clean, _ := filepath.clean(home, ta)
+	return strings.clone(clean, allocator)
+}
+
 // forward_slash_view returns `path` with Windows backslashes turned into
 // forward slashes, for separator-insensitive comparison against paths of
 // the other spelling (decoded URIs use '/', Windows absolute paths arrive
@@ -188,6 +205,23 @@ normalize_project_root :: proc(root: string, allocator := context.allocator) -> 
 		clean = abs
 	}
 	return strings.clone(clean, allocator), true
+}
+
+// project_root_refused is the single rule for project roots aubade never
+// accepts: the user's home directory and a filesystem root — a daemon over
+// either indexes and snapshots every file below it. `root` is a normalized
+// absolute path; `home` is user_home's spelling ("" leaves only the
+// filesystem-root test active). The second return is display text for the
+// caller's error line.
+project_root_refused :: proc(root, home: string) -> (bool, string) {
+	if home != "" && path_equal(root, home) {
+		return true, "it is the user's home directory"
+	}
+	parent := filepath.dir(root)
+	if parent == root {
+		return true, "it is a filesystem root"
+	}
+	return false, ""
 }
 
 // project_id derives the stable daemon directory name for a project root:

@@ -260,3 +260,67 @@ daemon_init_failure_unwinds_partial_state :: proc(t: ^testing.T) {
 	testing.expect(t, !daemon.daemon_init(d2, cfg2, context.allocator), "init must fail when home is a file")
 	free(d2, context.allocator)
 }
+
+// daemon_init is the backstop for the refused-root rule: a project root
+// that is the user's home or a filesystem root is refused before any
+// runtime directory or store is created, whatever path brought it here (a
+// hand-run _daemon, an editor's workspace root). HOME and AUBADE_HOME are
+// isolated so a fake home stands in for the real one.
+@(test)
+daemon_init_refuses_home_and_filesystem_root :: proc(t: ^testing.T) {
+	home, herr := os.make_directory_temp("", "aubade-refuse-home-", context.allocator)
+	if herr != nil {
+		testing.fail_now(t, "temp home failed")
+	}
+	defer {
+		_ = os.remove_all(home)
+		delete(home)
+	}
+	aubade, aerr := os.make_directory_temp("", "aubade-refuse-state-", context.allocator)
+	if aerr != nil {
+		testing.expectf(t, false, "temp state failed")
+		return
+	}
+	defer {
+		_ = os.remove_all(aubade)
+		delete(aubade)
+	}
+
+	old_home, had_home := os.lookup_env_alloc("HOME", context.temp_allocator)
+	old_state, had_state := os.lookup_env_alloc("AUBADE_HOME", context.temp_allocator)
+	os.set_env("HOME", home)
+	os.set_env("AUBADE_HOME", aubade)
+	defer {
+		if had_home {
+			os.set_env("HOME", old_home)
+		} else {
+			os.unset_env("HOME")
+		}
+		if had_state {
+			os.set_env("AUBADE_HOME", old_state)
+		} else {
+			os.unset_env("AUBADE_HOME")
+		}
+	}
+
+	clock := new(platform.Clock, context.allocator)
+	platform.clock_init(clock, false)
+	defer {
+		platform.clock_destroy(clock)
+		free(clock, context.allocator)
+	}
+
+	d := new(daemon.Daemon, context.allocator)
+	cfg := daemon.default_config(home, aubade, clock)
+	testing.expect(t, !daemon.daemon_init(d, cfg, context.allocator), "init must refuse the user's home as the project root")
+	free(d, context.allocator)
+
+	d2 := new(daemon.Daemon, context.allocator)
+	cfg2 := daemon.default_config("/", aubade, clock)
+	testing.expect(t, !daemon.daemon_init(d2, cfg2, context.allocator), "init must refuse a filesystem root as the project root")
+	free(d2, context.allocator)
+
+	// Neither refusal created runtime state.
+	daemon_root, _ := filepath.join([]string{aubade, "daemon"}, context.temp_allocator)
+	testing.expect(t, !os.exists(daemon_root), "no daemon runtime dir may exist after a refusal")
+}
