@@ -4,6 +4,7 @@ package platform
 
 import "core:crypto/sha2"
 import "core:encoding/hex"
+import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -31,6 +32,74 @@ aubade_home :: proc(allocator := context.allocator) -> string {
 	}
 	joined, _ := filepath.join([]string{home, MANAGED_DIR_NAME}, ta)
 	return strings.clone(joined, allocator)
+}
+
+// user_home resolves the canonical user home directory, owned by
+// `allocator`; "" when every source declines. Windows prefers the
+// Profile known folder over $HOME — an inherited $HOME there is often
+// an MSYS/Git-Bash POSIX spelling that names nothing on the native
+// filesystem — while the other platforms read $HOME first and fall
+// back to the OS lookup ($AUBADE_HOME does not redirect any of this).
+user_home :: proc(allocator := context.allocator) -> string {
+	ta := context.temp_allocator
+	home := ""
+	when ODIN_OS == .Windows {
+		home, _ = os.user_home_dir(ta)
+		if home == "" {
+			if v, ok := os.lookup_env_alloc("HOME", ta); ok && v != "" {
+				home = v
+			}
+		}
+	} else {
+		if v, ok := os.lookup_env_alloc("HOME", ta); ok && v != "" {
+			home = v
+		}
+		if home == "" {
+			home, _ = os.user_home_dir(ta)
+		}
+	}
+	if home == "" {
+		return ""
+	}
+	clean, _ := filepath.clean(home, ta)
+	return strings.clone(clean, allocator)
+}
+
+// user_homes collects every spelling the user's home directory can
+// carry for the project-root refusal: the canonical user_home plus, on
+// Windows, $HOME itself — the canonical Profile spelling and an env
+// spelling (a redirected home in test and embedded environments) name
+// the same directory through different sources, and a root matching
+// either must be refused. The returned slice and every entry are owned
+// by `allocator`: free each entry and the slice with that allocator
+// (request arenas free_all instead).
+user_homes :: proc(allocator := context.allocator) -> []string {
+	homes := make([dynamic]string, 0, 2, allocator)
+	collect :: proc(homes: ^[dynamic]string, allocator: mem.Allocator, spelling: string) {
+		if spelling == "" {
+			return
+		}
+		for h in homes^ {
+			if path_equal_any_sep(h, spelling) {
+				return
+			}
+		}
+		append(homes, strings.clone(spelling, allocator))
+	}
+	canonical := user_home(allocator)
+	if canonical != "" {
+		collect(&homes, allocator, canonical)
+		delete(canonical, allocator)
+	}
+	when ODIN_OS == .Windows {
+		if v, ok := os.lookup_env_alloc("HOME", context.temp_allocator); ok {
+			collect(&homes, allocator, v)
+		}
+	}
+	out := make([]string, len(homes), allocator)
+	copy(out, homes[:])
+	delete(homes)
+	return out
 }
 
 // forward_slash_view returns `path` with Windows backslashes turned into
@@ -102,6 +171,14 @@ path_prefix_equal :: proc(path, prefix: string) -> bool {
 	p_slash := forward_slash_view(path)
 	f_slash := forward_slash_view(prefix)
 	return path_equal(p_slash[:len(f_slash)], f_slash)
+}
+
+// path_equal_any_sep is path_equal with separator normalization: both
+// spellings compare as forward-slash views, so "C:/Users/x" and
+// "C:\Users\x" name one path. The fold basis matches path_fold's, so
+// the family can never disagree about path identity.
+path_equal_any_sep :: proc(a, b: string) -> bool {
+	return path_equal(forward_slash_view(a), forward_slash_view(b))
 }
 
 // path_equal compares two path spellings with the filesystem's case
@@ -188,6 +265,104 @@ normalize_project_root :: proc(root: string, allocator := context.allocator) -> 
 		clean = abs
 	}
 	return strings.clone(clean, allocator), true
+}
+
+// windows_path_is_root reports whether a Windows path spelling names a
+// filesystem root: a current-drive root ("/", "\", "///"), a drive root
+// ("C:\", "c:/", or the drive-relative "C:"), a UNC share root
+// ("\\server\share"), or a verbatim/device form of any of these
+// ("\\?\C:\", "\\?\UNC\server\share", "\\.\PhysicalDrive0"). Lexical —
+// both separators are accepted, no filesystem is touched — so it stays
+// a shared declaration and the suite verifies Windows spellings on
+// every platform. It must run on the raw spelling: on Windows,
+// filepath.clean("/") collapses to "." (a bare separator is not a
+// rooted start there), and a cleaned root is no longer recognizable.
+windows_path_is_root :: proc(path: string) -> bool {
+	is_sep :: proc(c: u8) -> bool {
+		return c == '/' || c == '\\'
+	}
+	rest_is_seps :: proc(s: string) -> bool {
+		for i in 0..<len(s) {
+			if !is_sep(s[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	// host_share_is_root answers for the "host<sep>share" body of a UNC
+	// spelling: a share name present, then nothing but separators.
+	host_share_is_root :: proc(s: string) -> bool {
+		if len(s) == 0 {
+			return false
+		}
+		i := 0
+		for i < len(s) && !is_sep(s[i]) {
+			i += 1
+		}
+		if i == len(s) {
+			return false
+		}
+		j := i + 1
+		for j < len(s) && !is_sep(s[j]) {
+			j += 1
+		}
+		return j > i+1 && rest_is_seps(s[j:])
+	}
+	p := path
+	if len(p) == 0 {
+		return false
+	}
+	// Verbatim prefixes: `\\?\C:\` reduces to its plain spelling,
+	// `\\?\UNC\host\share` to the UNC body; the device namespace
+	// `\\.\name` is one component whose volume is the whole string.
+	if len(p) >= 4 && is_sep(p[0]) && is_sep(p[1]) && p[2] == '?' && is_sep(p[3]) {
+		if len(p) >= 8 && p[4] == 'U' && p[5] == 'N' && p[6] == 'C' && is_sep(p[7]) {
+			return host_share_is_root(p[8:])
+		}
+		p = p[4:]
+	} else if len(p) >= 4 && is_sep(p[0]) && is_sep(p[1]) && p[2] == '.' && is_sep(p[3]) {
+		return !strings.contains_any(p[4:], "/\\")
+	}
+	// Drive root, drive-relative included: volume letter plus nothing
+	// or separators.
+	if len(p) >= 2 && p[1] == ':' {
+		c := p[0]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			return rest_is_seps(p[2:])
+		}
+	}
+	// UNC share root: host and share after the leading pair.
+	if len(p) >= 3 && is_sep(p[0]) && is_sep(p[1]) && !is_sep(p[2]) {
+		return host_share_is_root(p[2:])
+	}
+	// Current-drive root: separators and nothing else.
+	return rest_is_seps(p)
+}
+
+// project_root_refused is the single rule for project roots aubade never
+// accepts: the user's home directory and a filesystem root — a daemon over
+// either indexes and snapshots every file below it. `root` may be the raw
+// or a resolved spelling (the Windows filesystem-root test reads the raw
+// form — see windows_path_is_root); `homes` is user_homes' candidate list
+// (empty leaves only the filesystem-root test active). The second return
+// is display text for the caller's error line.
+project_root_refused :: proc(root: string, homes: []string) -> (bool, string) {
+	for home in homes {
+		if home != "" && path_equal_any_sep(root, home) {
+			return true, "it is the user's home directory"
+		}
+	}
+	when ODIN_OS == .Windows {
+		if windows_path_is_root(root) {
+			return true, "it is a filesystem root"
+		}
+	} else {
+		parent := filepath.dir(root)
+		if parent == root {
+			return true, "it is a filesystem root"
+		}
+	}
+	return false, ""
 }
 
 // project_id derives the stable daemon directory name for a project root:

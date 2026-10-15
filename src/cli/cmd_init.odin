@@ -74,16 +74,9 @@ detect_applicable_clients :: proc() -> []string {
 	return names[:]
 }
 
-// user_home_dir resolves the user home directory for client config paths:
-// $HOME first (matching platform.aubade_home's ladder), then the core:os
-// fallback (USERPROFILE, HOMEDRIVE+HOMEPATH on Windows).
+// user_home_dir resolves the user home directory for client config paths.
+// The ladder itself lives in platform.user_home (the Profile known folder
+// on Windows, $HOME then the core:os fallback elsewhere).
 user_home_dir :: proc() -> string {
-	if home, ok := os.lookup_env_alloc("HOME", context.temp_allocator); ok && home != "" {
-		return home
-	}
-	home, err := os.user_home_dir(context.temp_allocator)
-	if err != nil || home == "" {
-		return ""
-	}
-	return home
+	return platform.user_home(context.temp_allocator)
 }

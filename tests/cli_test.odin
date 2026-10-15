@@ -1512,3 +1512,154 @@ cli_setup_zcode_refuses_unreadable_agents :: proc(t: ^testing.T) {
 	testing.expect_value(t, string(data), "user content\n")
 }
 }
+
+// The user's home directory and a filesystem root are never project roots.
+// An MCP client that spawns the child from an unrelated directory (a
+// service process parked in $HOME) must fail fast at resolution instead of
+// adopting that directory and indexing it. HOME and AUBADE_HOME are
+// isolated so the refusal is tested against a fake home, not the runner's.
+@(test)
+cli_refuses_home_and_filesystem_root_as_project :: proc(t: ^testing.T) {
+	home, herr := os.make_directory_temp("", "aubade-cli-home-", context.allocator)
+	if herr != nil {
+		testing.fail_now(t, "temp home failed")
+	}
+	defer {
+		_ = os.remove_all(home)
+		delete(home)
+	}
+	aubade, aerr := os.make_directory_temp("", "aubade-cli-state-", context.allocator)
+	markerless, merr := os.make_directory_temp("", "aubade-cli-bare-", context.allocator)
+	if aerr != nil || merr != nil {
+		testing.expectf(t, false, "temp dirs failed")
+		return
+	}
+	defer {
+		_ = os.remove_all(aubade)
+		_ = os.remove_all(markerless)
+		delete(aubade)
+		delete(markerless)
+	}
+
+	old_home, had_home := os.lookup_env_alloc("HOME", context.temp_allocator)
+	old_state, had_state := os.lookup_env_alloc("AUBADE_HOME", context.temp_allocator)
+	os.set_env("HOME", home)
+	os.set_env("AUBADE_HOME", aubade)
+	defer {
+		if had_home {
+			os.set_env("HOME", old_home)
+		} else {
+			os.unset_env("HOME")
+		}
+		if had_state {
+			os.set_env("AUBADE_HOME", old_state)
+		} else {
+			os.unset_env("AUBADE_HOME")
+		}
+	}
+
+	old_cwd, _ := os.get_working_directory(context.temp_allocator)
+	defer _ = os.set_working_directory(old_cwd)
+
+	// cwd fallback with no marker at or above the home.
+	if werr := os.set_working_directory(home); werr != nil {
+		testing.expectf(t, false, "chdir into the fake home failed")
+		return
+	}
+	testing.expect_value(t, cli.run({"mcp", "--project-from-cwd"}, "test"), 1)
+
+	// A .git marker sitting at the home itself resolves to the home: the
+	// refusal is on the resolved root, not on how it was found.
+	git_dir, _ := filepath.join([]string{home, ".git"}, context.temp_allocator)
+	if mkerr := os.make_directory(git_dir); mkerr != nil {
+		testing.expectf(t, false, "fake .git creation failed")
+		return
+	}
+	testing.expect_value(t, cli.run({"mcp", "--project-from-cwd"}, "test"), 1)
+
+	// Explicit selection of the home or the filesystem root.
+	testing.expect_value(t, cli.run({"mcp", "--project", home}, "test"), 1)
+	testing.expect_value(t, cli.run({"mcp", "--project", "/"}, "test"), 1)
+	when ODIN_OS == .Windows {
+		// Drive roots and UNC share roots are refused from the raw
+		// spelling — before normalization could fold "/" into the cwd.
+		testing.expect_value(t, cli.run({"mcp", "--project", `C:\`}, "test"), 1)
+		testing.expect_value(t, cli.run({"mcp", "--project", `\\server\share`}, "test"), 1)
+	}
+
+	// The cwd fallback itself stays: a marker-less directory that is not
+	// the home still resolves to itself (checked through the resolver, not
+	// a full session run). The expectation is the working directory's own
+	// spelling — on macOS it is the symlink-resolved /private/var form,
+	// not the temp-dir spelling the resolver never sees.
+	if werr := os.set_working_directory(markerless); werr != nil {
+		testing.expectf(t, false, "chdir into the marker-less dir failed")
+		return
+	}
+	cwd, _ := os.get_working_directory(context.temp_allocator)
+	g := cli.Globals{project_from_cwd = true}
+	root, code := cli.resolve_project_root("mcp", &g)
+	testing.expect_value(t, code, 0)
+	testing.expectf(t, platform.path_equal(root, cwd), "marker-less cwd must resolve to itself, got %s (cwd %s)", root, cwd)
+}
+
+// A $HOME spelled through a symlink still refuses: the working
+// directory is a physical path while $HOME keeps the logical spelling,
+// and macOS temp homes sit behind /var -> /private/var exactly like
+// this — the refusal must compare resolved spellings. A session that
+// slips past runs to EOF and exits 0, so the exit code is the whole
+// claim. The POSIX legs run this; creating symlinks on Windows needs
+// privileges the runner does not promise.
+@(test)
+cli_refuses_symlinked_home_spelling :: proc(t: ^testing.T) {
+	when ODIN_OS != .Windows {
+		home, herr := os.make_directory_temp("", "aubade-cli-homereal-", context.allocator)
+		link_dir, derr := os.make_directory_temp("", "aubade-cli-linkdir-", context.allocator)
+		aubade, aerr := os.make_directory_temp("", "aubade-cli-state-", context.allocator)
+		if herr != nil || derr != nil || aerr != nil {
+			testing.expectf(t, false, "temp dirs failed")
+			return
+		}
+		defer {
+			_ = os.remove_all(home)
+			_ = os.remove_all(link_dir)
+			_ = os.remove_all(aubade)
+			delete(home)
+			delete(link_dir)
+			delete(aubade)
+		}
+		link, _ := filepath.join({link_dir, "home"}, context.temp_allocator)
+		if serr := os.symlink(home, link); serr != nil {
+			testing.expectf(t, false, "symlink creation failed")
+			return
+		}
+
+		old_home, had_home := os.lookup_env_alloc("HOME", context.temp_allocator)
+		old_state, had_state := os.lookup_env_alloc("AUBADE_HOME", context.temp_allocator)
+		os.set_env("HOME", link)
+		os.set_env("AUBADE_HOME", aubade)
+		defer {
+			if had_home {
+				os.set_env("HOME", old_home)
+			} else {
+				os.unset_env("HOME")
+			}
+			if had_state {
+				os.set_env("AUBADE_HOME", old_state)
+			} else {
+				os.unset_env("AUBADE_HOME")
+			}
+		}
+
+		old_cwd, _ := os.get_working_directory(context.temp_allocator)
+		defer _ = os.set_working_directory(old_cwd)
+		if werr := os.set_working_directory(home); werr != nil {
+			testing.expectf(t, false, "chdir into the physical home failed")
+			return
+		}
+		// cwd resolves to the physical spelling; $HOME is the link.
+		testing.expect_value(t, cli.run({"mcp", "--project-from-cwd"}, "test"), 1)
+		// Explicit selection through the link spelling refuses too.
+		testing.expect_value(t, cli.run({"mcp", "--project", link}, "test"), 1)
+	}
+}
