@@ -1602,3 +1602,64 @@ cli_refuses_home_and_filesystem_root_as_project :: proc(t: ^testing.T) {
 	testing.expect_value(t, code, 0)
 	testing.expectf(t, platform.path_equal(root, cwd), "marker-less cwd must resolve to itself, got %s (cwd %s)", root, cwd)
 }
+
+// A $HOME spelled through a symlink still refuses: the working
+// directory is a physical path while $HOME keeps the logical spelling,
+// and macOS temp homes sit behind /var -> /private/var exactly like
+// this — the refusal must compare resolved spellings. A session that
+// slips past runs to EOF and exits 0, so the exit code is the whole
+// claim. The POSIX legs run this; creating symlinks on Windows needs
+// privileges the runner does not promise.
+@(test)
+cli_refuses_symlinked_home_spelling :: proc(t: ^testing.T) {
+	when ODIN_OS != .Windows {
+		home, herr := os.make_directory_temp("", "aubade-cli-homereal-", context.allocator)
+		link_dir, derr := os.make_directory_temp("", "aubade-cli-linkdir-", context.allocator)
+		aubade, aerr := os.make_directory_temp("", "aubade-cli-state-", context.allocator)
+		if herr != nil || derr != nil || aerr != nil {
+			testing.expectf(t, false, "temp dirs failed")
+			return
+		}
+		defer {
+			_ = os.remove_all(home)
+			_ = os.remove_all(link_dir)
+			_ = os.remove_all(aubade)
+			delete(home)
+			delete(link_dir)
+			delete(aubade)
+		}
+		link, _ := filepath.join({link_dir, "home"}, context.temp_allocator)
+		if serr := os.symlink(home, link); serr != nil {
+			testing.expectf(t, false, "symlink creation failed")
+			return
+		}
+
+		old_home, had_home := os.lookup_env_alloc("HOME", context.temp_allocator)
+		old_state, had_state := os.lookup_env_alloc("AUBADE_HOME", context.temp_allocator)
+		os.set_env("HOME", link)
+		os.set_env("AUBADE_HOME", aubade)
+		defer {
+			if had_home {
+				os.set_env("HOME", old_home)
+			} else {
+				os.unset_env("HOME")
+			}
+			if had_state {
+				os.set_env("AUBADE_HOME", old_state)
+			} else {
+				os.unset_env("AUBADE_HOME")
+			}
+		}
+
+		old_cwd, _ := os.get_working_directory(context.temp_allocator)
+		defer _ = os.set_working_directory(old_cwd)
+		if werr := os.set_working_directory(home); werr != nil {
+			testing.expectf(t, false, "chdir into the physical home failed")
+			return
+		}
+		// cwd resolves to the physical spelling; $HOME is the link.
+		testing.expect_value(t, cli.run({"mcp", "--project-from-cwd"}, "test"), 1)
+		// Explicit selection through the link spelling refuses too.
+		testing.expect_value(t, cli.run({"mcp", "--project", link}, "test"), 1)
+	}
+}

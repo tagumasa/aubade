@@ -14,6 +14,7 @@ import "core:strings"
 import "src:config"
 import "src:daemon"
 import "src:platform"
+import "src:safety"
 import "src:session"
 import "src:util"
 
@@ -248,6 +249,20 @@ strip_globals :: proc(args: []string, g: ^Globals, rest: ^[dynamic]string) -> bo
 	return true
 }
 
+// home_candidates_resolved returns the project-root refusal's home
+// candidates in their pathguard-resolved spellings (temp-owned). The
+// working directory is a physical path — getcwd resolves — while $HOME
+// carries the logical spelling, and macOS temp homes sit behind
+// /var -> /private/var exactly like that: only resolved spellings
+// compare equal against a resolved root.
+home_candidates_resolved :: proc() -> []string {
+	homes := platform.user_homes(context.temp_allocator)
+	for i in 0..<len(homes) {
+		homes[i] = safety.pathguard_resolve_root(homes[i], context.temp_allocator)
+	}
+	return homes
+}
+
 // resolve_project_root turns the globals into a project root: an explicit
 // path (or a registered project name, when the value is not an existing
 // path), or the upward search from the working directory (managed config,
@@ -301,7 +316,13 @@ resolve_project_root :: proc(cmd: string, g: ^Globals) -> (string, int) {
 		fmt.eprintln("aubade: cannot normalize project root")
 		return "", 1
 	}
-	if refused, why := platform.project_root_refused(root, platform.user_homes(context.temp_allocator)); refused {
+	// The home compare pairs resolved spellings (getcwd's physical root
+	// against the logical $HOME candidates) — the daemon backstop
+	// compares the same way.
+	if refused, why := platform.project_root_refused(
+		safety.pathguard_resolve_root(root, context.temp_allocator),
+		home_candidates_resolved(),
+	); refused {
 		refuse(root, why)
 		return "", 1
 	}
@@ -528,7 +549,11 @@ run_internal_daemon :: proc(args: []string) -> int {
 
 	// Refused roots print their reason here rather than surfacing as the
 	// generic init failure below; daemon_init enforces the rule silently.
-	if refused, why := platform.project_root_refused(root, platform.user_homes(context.temp_allocator)); refused {
+	// The compare pairs resolved spellings, as every refusal site does.
+	if refused, why := platform.project_root_refused(
+		safety.pathguard_resolve_root(root, context.temp_allocator),
+		home_candidates_resolved(),
+	); refused {
 		fmt.eprintf("aubade: refusing %s as the project root: %s\n", root, why)
 		return 1
 	}
